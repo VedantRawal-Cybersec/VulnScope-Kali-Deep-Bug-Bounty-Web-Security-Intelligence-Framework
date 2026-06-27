@@ -1,0 +1,35 @@
+trusted_external_tools:
+  nuclei:
+    status: planned
+    role: "Template-based vulnerability and misconfiguration checks"
+    allowed_modes: ["passive", "safe-active"]
+    auto_execute: false
+  katana:
+    status: planned
+    role: "High-performance crawling and JavaScript-aware discovery"
+    allowed_modes: ["passive", "safe-active"]
+    auto_execute: false
+  httpx:
+    status: planned
+    role: "HTTP metadata probing and enrichment"
+    allowed_modes: ["passive", "safe-active"]
+    auto_execute: false
+  ffuf:
+    status: planned
+    role: "Controlled content and parameter discovery"
+    allowed_modes: ["safe-active", "lab-aggressive"]
+    auto_execute: false
+  dalfox:
+    status: planned
+    role: "XSS signal collection and parameter analysis"
+    allowed_modes: ["safe-active", "lab-aggressive"]
+    auto_execute: false
+  sqlmap:
+    status: planned_restricted
+    role: "SQL injection signal validation in restricted detection-only mode"
+    allowed_modes: ["lab-aggressive"]
+    auto_execute: false
+policy:
+  unknown_tools_default: disabled
+  new_tools_require_manual_approval: true
+  destructive_modules_default: disabled
