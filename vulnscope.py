@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-VulnScope-Kali v0.1.0-alpha
+VulnScope-Kali v0.2.0-alpha
 Authorized Web Security Intelligence Framework for Kali Linux.
 
-Phase 1 provides safe passive assessment, same-domain crawling,
-header/cookie checks, endpoint discovery, parameter mapping, and reports.
+v0.2.0-alpha provides multi-module safe intelligence, same-domain crawling,
+IP route intelligence, robots/sitemap parsing, API mapping, safe XSS/SQLi
+signals, access-control hints, exposure review, correlation, and reports.
 """
 
 from __future__ import annotations
@@ -17,18 +18,19 @@ from core.banner import print_banner
 from core.orchestrator import VulnScopeScanner
 from core.validators import validate_target_url
 
-VERSION = "0.1.0-alpha"
+VERSION = "0.2.0-alpha"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="VulnScope-Kali: Deep Bug Bounty Web Security Intelligence Framework"
     )
+    parser.add_argument("--version", action="store_true", help="Show VulnScope-Kali version and exit")
     parser.add_argument("--url", help="Target URL, for example https://example.com")
     parser.add_argument(
         "--mode",
         choices=["passive", "safe-active"],
-        help="Scan mode. Phase 1 supports passive and safe-active.",
+        help="Scan mode. Current build supports passive and safe-active.",
     )
     parser.add_argument("--max-pages", type=int, default=30, help="Maximum pages to crawl")
     parser.add_argument(
@@ -58,6 +60,11 @@ def ask_for_mode() -> str:
 
 def main() -> int:
     args = parse_args()
+
+    if args.version:
+        print(f"VulnScope-Kali {VERSION}")
+        return 0
+
     print_banner(VERSION)
 
     raw_url = args.url or ask_for_url()
