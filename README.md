@@ -2,17 +2,17 @@
 
 **Deep Bug Bounty Web Security Intelligence Framework for Kali Linux**
 
-VulnScope-Kali is an authorized web security assessment framework designed to combine safe discovery, endpoint intelligence, security header analysis, parameter mapping, evidence correlation, confidence scoring, and professional reporting.
+VulnScope-Kali is an authorized web security assessment framework designed to combine safe discovery, endpoint intelligence, security header analysis, parameter mapping, evidence correlation, confidence scoring, adaptive knowledge, automation support, and professional reporting.
 
 > This project is built for authorized testing only: owned applications, local labs, CTF environments, and in-scope bug bounty targets where automated testing is permitted by the program policy.
 
 ## Current Version
 
-`v0.1.0-alpha` — Phase 1 scaffold and safe passive assessment engine.
+`v0.2.0-alpha` — Multi-module safe intelligence engine.
 
 ## Current Capabilities
 
-Phase 1 includes:
+Implemented modules:
 
 - Kali-style terminal banner
 - Interactive target URL input
@@ -20,32 +20,45 @@ Phase 1 includes:
 - Scan mode selection
 - URL validation
 - Same-domain scope guard
+- IP Route Intelligence
+- Trusted external tool readiness detection
 - Basic HTTP metadata collection
 - Security header audit
 - Cookie flag audit
+- CORS analysis
+- robots.txt and sitemap.xml parsing
 - Same-domain crawler
 - JavaScript file discovery
 - Endpoint extraction from JavaScript text
+- DeepRoute Intelligence Engine
+- API Surface Mapper
 - Parameter and form discovery
+- Access Control / IDOR candidate hints
+- Safe XSS precision signals
+- Safe SQLi signal analysis
+- Sensitive exposure signal finder
+- Evidence correlation engine
 - Finding evidence store
 - Markdown and JSON report generation
+- n8n AutoPilot automation blueprint
+- Trusted update source policy
+- AutoPilot environment scanner
+- GitHub Actions Python compile check
 
-## Planned Advanced Engines
-
-Future phases will add:
+## Advanced Engines Included as Safe Foundations
 
 - DeepRoute Intelligence Engine
-- ParamSense behavior engine
+- ParamSense-style parameter intelligence
 - API Surface Mapper
-- XSS Precision Module
+- XSS Precision Signal Module
 - SQLi Signal Module
 - Access Control / IDOR Hint Module
 - CORS & Client Trust Analyzer
 - Sensitive Exposure Finder
 - Evidence Correlation Engine
-- Adaptive Learning Engine
-- AutoPilot Update Engine
-- Controlled integrations with tools such as nuclei, katana, httpx, ffuf, dalfox, and restricted sqlmap detection mode
+- Adaptive Learning Knowledge Base
+- AutoPilot Update Engine blueprint
+- Controlled external-tool readiness layer for nuclei, katana, httpx, ffuf, dalfox, OWASP ZAP, and restricted sqlmap lab mode
 
 ## Ethical Guardrails
 
@@ -60,7 +73,10 @@ VulnScope-Kali is designed with safety controls from the beginning:
 - No database dumping
 - No destructive payloads
 - No out-of-scope scanning
-- Lab aggressive mode reserved only for local vulnerable labs in future versions
+- No unknown tool auto-execution
+- No automatic activation of risky modules
+- Safe XSS and SQLi modules are signal-based and non-destructive
+- Lab aggressive mode is disabled by default and reserved only for intentionally vulnerable local labs in future versions
 
 ## Installation
 
@@ -90,6 +106,12 @@ Safe active mode is currently conservative and does not perform exploit attempts
 python3 vulnscope.py --url https://example.com --mode safe-active --max-pages 25
 ```
 
+AutoPilot local environment check:
+
+```bash
+python3 autopilot/environment_scanner.py
+```
+
 ## Output
 
 Reports are generated in:
@@ -97,7 +119,8 @@ Reports are generated in:
 ```text
 reports/output/
 ├── target-report.md
-└── evidence.json
+├── evidence.json
+└── autopilot-environment.json
 ```
 
 ## Finding Philosophy
@@ -111,6 +134,7 @@ VulnScope-Kali does not rely on vague scanner output. Each finding is designed t
 - Evidence collected
 - Severity
 - Confidence
+- Status
 - Recommended validation
 - Suggested remediation
 
