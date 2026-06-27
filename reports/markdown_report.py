@@ -21,6 +21,8 @@ def generate_markdown_report(store: EvidenceStore, output_path: Path, target_url
     lines.append("")
     lines.append("## Scan Metrics")
     lines.append("")
+    ip_info = store.metadata.get("ip_route_intelligence", {})
+    lines.append(f"- Resolved IPs: `{ip_info.get('resolved_ip_count', 0)}`")
     lines.append(f"- Endpoints discovered: `{len(store.endpoints)}`")
     lines.append(f"- Forms detected: `{len(store.forms)}`")
     lines.append(f"- Parameters identified: `{store.metadata.get('parameters_identified', 0)}`")
@@ -28,6 +30,23 @@ def generate_markdown_report(store: EvidenceStore, output_path: Path, target_url
     lines.append(f"- JavaScript endpoints discovered: `{store.metadata.get('javascript_endpoints_discovered', 0)}`")
     lines.append(f"- Findings generated: `{len(store.findings)}`")
     lines.append("")
+
+    if ip_info:
+        lines.append("## IP Route Intelligence")
+        lines.append("")
+        lines.append(f"- **Host:** `{ip_info.get('host', '')}`")
+        lines.append(f"- **Resolved IP count:** `{ip_info.get('resolved_ip_count', 0)}`")
+        lines.append("- **Safety note:** DNS/IP metadata only. No IP range scan, port scan, or router interaction was performed.")
+        lines.append("")
+        resolved_ips = ip_info.get("resolved_ips", [])
+        if resolved_ips:
+            lines.append("| IP | Version | Private | Loopback | Global |")
+            lines.append("|---|---|---|---|---|")
+            for record in resolved_ips:
+                lines.append(
+                    f"| `{record.get('ip')}` | {record.get('version')} | {record.get('is_private')} | {record.get('is_loopback')} | {record.get('is_global')} |"
+                )
+            lines.append("")
 
     lines.append("## Findings Summary")
     lines.append("")
