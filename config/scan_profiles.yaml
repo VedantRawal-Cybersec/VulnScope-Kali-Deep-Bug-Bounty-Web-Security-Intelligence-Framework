@@ -1,0 +1,18 @@
+profiles:
+  passive:
+    description: "Collects metadata, links, headers, cookies, forms, JavaScript routes, and public attack-surface hints."
+    rate_limit_seconds: 0.4
+    max_pages_default: 30
+    same_domain_only: true
+    active_payloads: false
+  safe-active:
+    description: "Conservative assessment mode for authorized targets. Phase 1 does not execute exploit payloads."
+    rate_limit_seconds: 0.4
+    max_pages_default: 30
+    same_domain_only: true
+    active_payloads: false
+  lab-aggressive:
+    description: "Future mode reserved only for localhost, DVWA, Juice Shop, and intentionally vulnerable labs."
+    enabled: false
+    same_domain_only: true
+    active_payloads: true
