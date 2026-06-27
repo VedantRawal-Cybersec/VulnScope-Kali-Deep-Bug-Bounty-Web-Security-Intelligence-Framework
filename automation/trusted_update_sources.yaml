@@ -1,0 +1,49 @@
+trusted_sources:
+  projectdiscovery:
+    description: "Supported ProjectDiscovery tool and template updates"
+    repositories:
+      - "projectdiscovery/nuclei"
+      - "projectdiscovery/nuclei-templates"
+      - "projectdiscovery/katana"
+      - "projectdiscovery/httpx"
+    default_action: "review"
+  ffuf:
+    description: "ffuf release monitoring"
+    repositories:
+      - "ffuf/ffuf"
+    default_action: "review"
+  dalfox:
+    description: "Dalfox release monitoring"
+    repositories:
+      - "hahwul/dalfox"
+    default_action: "review"
+  owasp:
+    description: "OWASP security category and methodology references"
+    default_action: "knowledge_review"
+  portsigger:
+    description: "PortSwigger learning and web security pattern references"
+    default_action: "knowledge_review"
+
+blocked_by_default:
+  - "unknown GitHub tools"
+  - "unverified payload collections"
+  - "credential capture logic"
+  - "brute force modules"
+  - "database dumping logic"
+  - "out-of-scope automation"
+  - "auto exploit chaining"
+
+pull_request_policy:
+  auto_merge: false
+  require_manual_review: true
+  allowed_auto_pr_types:
+    - "documentation_update"
+    - "knowledge_base_pattern"
+    - "safe_detection_metadata"
+    - "tool_version_note"
+  disallowed_auto_pr_types:
+    - "new_active_payload"
+    - "new_aggressive_module"
+    - "unknown_tool_execution"
+    - "credential_collection"
+    - "destructive_check"
