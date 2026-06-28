@@ -1,0 +1,121 @@
+profiles:
+  passive-intel:
+    description: Passive enrichment only. Best for first look and safe demonstrations.
+    categories: [url_history, technology_detection, js_analysis]
+  bug-bounty-safe:
+    description: Controlled bug bounty workflow with rate limits and approval gates.
+    categories: [url_history, technology_detection, crawling, parameter_discovery, template_review, js_analysis]
+  api-heavy:
+    description: API-oriented workflow for routes, OpenAPI hints, object flows, and parameters.
+    categories: [technology_detection, crawling, parameter_discovery, api_discovery, template_review]
+  js-heavy:
+    description: JavaScript-heavy workflow for endpoint and client-side intelligence.
+    categories: [technology_detection, crawling, js_analysis, url_history]
+  deep-validation:
+    description: Evidence validation workflow after initial scan.
+    categories: [template_review, parameter_discovery]
+
+tools:
+  - name: gau
+    category: url_history
+    binary: gau
+    install:
+      type: go
+      package: github.com/lc/gau/v2/cmd/gau@latest
+    risk_level: passive
+    requires_approval: false
+    enabled_by_default: true
+    safe_command_template: "{binary} {host}"
+    output_file: "reports/output/arsenal/gau-urls.txt"
+    notes: "Passive historical URL enrichment."
+
+  - name: waybackurls
+    category: url_history
+    binary: waybackurls
+    install:
+      type: go
+      package: github.com/tomnomnom/waybackurls@latest
+    risk_level: passive
+    requires_approval: false
+    enabled_by_default: true
+    safe_command_template: "bash -lc 'echo {host} | {binary}'"
+    output_file: "reports/output/arsenal/waybackurls.txt"
+    notes: "Passive historical URL enrichment."
+
+  - name: httpx
+    category: technology_detection
+    binary: httpx
+    install:
+      type: go
+      package: github.com/projectdiscovery/httpx/cmd/httpx@latest
+    risk_level: controlled-active
+    requires_approval: true
+    enabled_by_default: true
+    safe_command_template: "{binary} -u {url} -title -tech-detect -status-code -follow-redirects -silent"
+    output_file: "reports/output/arsenal/httpx.txt"
+    notes: "HTTP probing and technology detection."
+
+  - name: katana
+    category: crawling
+    binary: katana
+    install:
+      type: go
+      package: github.com/projectdiscovery/katana/cmd/katana@latest
+    risk_level: controlled-active
+    requires_approval: true
+    enabled_by_default: true
+    safe_command_template: "{binary} -u {url} -d 2 -rl 3 -silent"
+    output_file: "reports/output/arsenal/katana-urls.txt"
+    notes: "Controlled low-depth same-target crawling."
+
+  - name: arjun
+    category: parameter_discovery
+    binary: arjun
+    install:
+      type: pipx_or_pip
+      package: arjun
+    risk_level: controlled-active
+    requires_approval: true
+    enabled_by_default: false
+    safe_command_template: "{binary} -u {url} --stable -t 2 --rate 5"
+    output_file: "reports/output/arsenal/arjun.txt"
+    notes: "Controlled parameter discovery. Use only with authorization."
+
+  - name: nuclei
+    category: template_review
+    binary: nuclei
+    install:
+      type: go
+      package: github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+    risk_level: controlled-active
+    requires_approval: true
+    enabled_by_default: true
+    safe_command_template: "{binary} -u {url} -severity info,low,medium -rl 3 -silent"
+    output_file: "reports/output/arsenal/nuclei-safe.txt"
+    notes: "Rate-limited non-critical template review. Avoid intrusive templates."
+
+  - name: subfinder
+    category: api_discovery
+    binary: subfinder
+    install:
+      type: go
+      package: github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+    risk_level: passive
+    requires_approval: true
+    enabled_by_default: false
+    safe_command_template: "{binary} -d {host} -silent"
+    output_file: "reports/output/arsenal/subfinder.txt"
+    notes: "Passive subdomain discovery. Only use when subdomains are explicitly in scope."
+
+  - name: linkfinder
+    category: js_analysis
+    binary: linkfinder
+    install:
+      type: pipx_or_pip
+      package: git+https://github.com/GerbenJavado/LinkFinder.git
+    risk_level: local-analysis
+    requires_approval: false
+    enabled_by_default: false
+    safe_command_template: "python3 -m linkfinder -i reports/output/evidence.json -o cli"
+    output_file: "reports/output/arsenal/linkfinder.txt"
+    notes: "Local JS-style endpoint extraction when available."
