@@ -15,7 +15,7 @@ AUTH_FILE = AUTH_DIR / "auth_profiles.local.json"
 class AuthAccount:
     label: str
     username: str
-    password: str
+    password: str = ""
 
 
 @dataclass
@@ -55,6 +55,42 @@ def setup_auth_profile() -> None:
     print(f"[+] Path: {AUTH_FILE}")
 
 
+def setup_google_oauth_profile(
+    name: str = "default",
+    target_url: str | None = None,
+    login_url: str | None = None,
+    account_a_email: str | None = None,
+    account_b_email: str | None = None,
+    interactive: bool = True,
+) -> AuthProfile:
+    print("┌──────────── Google/OAuth Profile Setup ────────────┐")
+    print("│ No Google password is requested or stored.          │")
+    print("│ Browser login is completed manually by the user.    │")
+    print("└─────────────────────────────────────────────────────┘")
+    if interactive:
+        name = input(f"Profile name [{name}]: ").strip() or name
+        target_url = target_url or input("Target base URL, e.g. https://app.example.com: ").strip()
+        login_url = login_url or input("Target login URL / Continue-with-Google page: ").strip()
+        account_a_email = account_a_email or input("Account A email/label: ").strip()
+        add_b = input("Add Account B for comparison? yes/no: ").strip().lower() in {"yes", "y"}
+        if add_b:
+            account_b_email = account_b_email or input("Account B email/label: ").strip()
+    if not target_url or not login_url or not account_a_email:
+        raise ValueError("target_url, login_url, and account_a_email are required for Google/OAuth profile setup")
+    profile = AuthProfile(
+        name=name,
+        target_url=target_url,
+        login_url=login_url,
+        account_a=AuthAccount(label="account_a", username=account_a_email, password=""),
+        account_b=AuthAccount(label="account_b", username=account_b_email, password="") if account_b_email else None,
+        notes="Google/OAuth profile. No Google password stored. Browser session state is saved after manual login.",
+    )
+    save_profile(profile)
+    print(f"[+] Saved Google/OAuth auth profile: {name}")
+    print(f"[+] Path: {AUTH_FILE}")
+    return profile
+
+
 def save_profile(profile: AuthProfile) -> None:
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
     data = load_all_profiles(raw=True)
@@ -78,7 +114,7 @@ def load_all_profiles(raw: bool = False) -> dict[str, Any]:
 def load_profile(name: str = "default") -> AuthProfile:
     data = load_all_profiles(raw=True)
     if name not in data:
-        raise FileNotFoundError(f"Auth profile not found: {name}. Run: python3 auth_mode.py --setup-accounts")
+        raise FileNotFoundError(f"Auth profile not found: {name}. Run: python3 auth_mode.py --setup-accounts or python3 auth_mode.py --setup-google-profile")
     item = data[name]
     account_b = item.get("account_b")
     return AuthProfile(
@@ -101,6 +137,6 @@ def redacted_profile_summary(name: str = "default") -> dict[str, Any]:
         "name": profile.name,
         "target_url": profile.target_url,
         "login_url": profile.login_url,
-        "account_a": {"label": profile.account_a.label, "username": profile.account_a.username, "password": "<LOCAL_ONLY>"},
-        "account_b": {"label": profile.account_b.label, "username": profile.account_b.username, "password": "<LOCAL_ONLY>"} if profile.account_b else None,
+        "account_a": {"label": profile.account_a.label, "username": profile.account_a.username, "password": "<LOCAL_ONLY>" if profile.account_a.password else "<NOT_STORED>"},
+        "account_b": {"label": profile.account_b.label, "username": profile.account_b.username, "password": "<LOCAL_ONLY>" if profile.account_b.password else "<NOT_STORED>"} if profile.account_b else None,
     }
