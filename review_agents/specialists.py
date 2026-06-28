@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 from review_agents.base_agent import AgentResult, BaseReviewAgent, collect_urls
 
@@ -129,6 +129,84 @@ class CORSCacheReviewAgent(BaseReviewAgent):
         return AgentResult(self.name, candidates=candidates[:150], confidence=0.55, notes=["CORS/cache posture requires context and data sensitivity review."])
 
 
+class SSRFReviewAgent(BaseReviewAgent):
+    name = "SSRFReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        urls = collect_urls(evidence)
+        keys = ["url", "uri", "redirect", "next", "callback", "webhook", "image", "avatar", "fetch", "target", "dest", "return"]
+        candidates = []
+        for url in urls[:1500]:
+            parsed = urlparse(url)
+            q = parse_qs(parsed.query)
+            hit = sorted(k for k in q.keys() if k.lower() in keys or any(x in k.lower() for x in ["url", "uri", "redirect", "callback", "webhook"]))
+            if hit:
+                candidates.append({"type": "ssrf_redirect_parameter_candidate", "url": url, "parameters": hit, "status": "REVIEW_CANDIDATE"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.62, notes=["Parameter names indicate review candidates only. Validation must be safe and authorized."])
+
+
+class JWTSessionReviewAgent(BaseReviewAgent):
+    name = "JWTSessionReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        endpoints = evidence.get("endpoints", []) if isinstance(evidence, dict) else []
+        candidates = []
+        for endpoint in endpoints[:500] if isinstance(endpoints, list) else []:
+            headers = endpoint.get("request_headers", {}) if isinstance(endpoint, dict) else {}
+            all_headers = " ".join(f"{k}:{v}" for k, v in headers.items()) if isinstance(headers, dict) else ""
+            if "<REDACTED>" in all_headers or "bearer" in all_headers.lower() or "jwt" in all_headers.lower():
+                candidates.append({"type": "jwt_session_review_candidate", "url": endpoint.get("url"), "status": "REVIEW_CANDIDATE", "note": "token material redacted; review storage/rotation/expiry manually"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.6, notes=["Tokens are redacted; this agent identifies session review areas without exposing secrets."])
+
+
+class FileUploadReviewAgent(BaseReviewAgent):
+    name = "FileUploadReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        urls = collect_urls(evidence)
+        candidates = []
+        for url in urls:
+            low = url.lower()
+            if any(x in low for x in ["upload", "file", "attachment", "media", "avatar", "document"]):
+                candidates.append({"type": "file_upload_surface_candidate", "url": url, "status": "REVIEW_CANDIDATE"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.61, notes=["File upload review requires safe manual checks for type, size, storage, and access controls."])
+
+
+class RateLimitReviewAgent(BaseReviewAgent):
+    name = "RateLimitReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        urls = collect_urls(evidence)
+        sensitive = [url for url in urls if re.search(r"login|otp|verify|reset|forgot|invite|coupon|checkout|payment|search|api", url, re.I)]
+        candidates = [{"type": "rate_limit_review_candidate", "url": url, "status": "REVIEW_CANDIDATE"} for url in sensitive[:150]]
+        return AgentResult(self.name, candidates=candidates, confidence=0.57, notes=["No brute forcing. Only review whether rate-limit posture should be manually verified under program rules."])
+
+
+class OAuthMisconfigReviewAgent(BaseReviewAgent):
+    name = "OAuthMisconfigReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        urls = collect_urls(evidence)
+        candidates = []
+        for url in urls:
+            low = url.lower()
+            if any(x in low for x in ["oauth", "sso", "saml", "oidc", "callback", "redirect_uri", "client_id"]):
+                candidates.append({"type": "oauth_sso_review_candidate", "url": url, "status": "REVIEW_CANDIDATE"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.64, notes=["OAuth/SSO candidates need owned-account browser validation, not blind automation."])
+
+
+class WebhookCallbackReviewAgent(BaseReviewAgent):
+    name = "WebhookCallbackReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        urls = collect_urls(evidence)
+        candidates = []
+        for url in urls:
+            if re.search(r"webhook|callback|notify|listener|event|subscription", url, re.I):
+                candidates.append({"type": "webhook_callback_review_candidate", "url": url, "status": "REVIEW_CANDIDATE"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.59, notes=["Review signing, replay protection, and authorization with owned test events only."])
+
+
 class ValidationReviewAgent(BaseReviewAgent):
     name = "ValidationReviewAgent"
 
@@ -151,5 +229,11 @@ SPECIALIST_AGENTS = [
     HeaderCookieReviewAgent(),
     GraphQLReviewAgent(),
     CORSCacheReviewAgent(),
+    SSRFReviewAgent(),
+    JWTSessionReviewAgent(),
+    FileUploadReviewAgent(),
+    RateLimitReviewAgent(),
+    OAuthMisconfigReviewAgent(),
+    WebhookCallbackReviewAgent(),
     ValidationReviewAgent(),
 ]
