@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-VulnScope-Kali v0.3.1-alpha
+VulnScope-Kali v0.3.2-alpha
 Authorized Web Security Intelligence Framework for Kali Linux.
 
-v0.3.1-alpha adds interactive local AI API key setup, key status checks,
-and local ignored env-file loading for the optional AI Analyst Engine.
+v0.3.2-alpha adds configurable HTTP timeout, delay, and retry controls for slow/CDN-heavy targets.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from core.banner import print_banner
 from core.orchestrator import VulnScopeScanner
 from core.validators import validate_target_url
 
-VERSION = "0.3.1-alpha"
+VERSION = "0.3.2-alpha"
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +35,9 @@ def parse_args() -> argparse.Namespace:
         help="Scan mode. Current build supports passive and safe-active.",
     )
     parser.add_argument("--max-pages", type=int, default=30, help="Maximum pages to crawl")
+    parser.add_argument("--timeout", type=int, default=30, help="HTTP read timeout in seconds")
+    parser.add_argument("--delay", type=float, default=0.7, help="Delay between HTTP requests in seconds")
+    parser.add_argument("--retries", type=int, default=2, help="Retry count for transient HTTP errors and timeouts")
     parser.add_argument(
         "--output-dir",
         default="reports/output",
@@ -102,6 +104,9 @@ def main() -> int:
     print(f"[+] Scheme          : {target.scheme.upper()}")
     print(f"[+] Host            : {target.host}")
     print("[+] Scope           : Same-domain only")
+    print(f"[+] HTTP Timeout    : {args.timeout}s")
+    print(f"[+] HTTP Delay      : {args.delay}s")
+    print(f"[+] HTTP Retries    : {args.retries}")
 
     if args.ai_review:
         print("[+] AI Review       : Enabled, redacted evidence only")
@@ -121,6 +126,9 @@ def main() -> int:
     print(f"│ Scan Mode        : {mode:<56} │")
     print(f"│ Crawl Scope      : {'Same domain only':<56} │")
     print(f"│ Max Pages        : {str(args.max_pages):<56} │")
+    print(f"│ HTTP Timeout     : {(str(args.timeout) + 's'):<56} │")
+    print(f"│ HTTP Delay       : {(str(args.delay) + 's'):<56} │")
+    print(f"│ HTTP Retries     : {str(args.retries):<56} │")
     print(f"│ AI Review        : {str(args.ai_review):<56} │")
     print(f"│ Output Directory : {args.output_dir[:56]:<56} │")
     print("└──────────────────────────────────────────────────────────────────────────────┘")
@@ -137,6 +145,9 @@ def main() -> int:
         output_dir=Path(args.output_dir),
         ai_review=args.ai_review,
         ai_providers=ai_providers,
+        timeout=args.timeout,
+        delay=args.delay,
+        retries=args.retries,
     )
     scanner.run()
     return 0
