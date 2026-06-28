@@ -39,6 +39,9 @@ class VulnScopeScanner:
         output_dir: Path,
         ai_review: bool = False,
         ai_providers: list[str] | None = None,
+        timeout: int = 30,
+        delay: float = 0.7,
+        retries: int = 2,
     ) -> None:
         self.target = target
         self.mode = mode
@@ -46,7 +49,10 @@ class VulnScopeScanner:
         self.output_dir = output_dir
         self.ai_review = ai_review
         self.ai_providers = ai_providers
-        self.request_engine = RequestEngine(timeout=10, delay=0.4)
+        self.timeout = timeout
+        self.delay = delay
+        self.retries = retries
+        self.request_engine = RequestEngine(timeout=timeout, delay=delay, retries=retries)
         self.store = EvidenceStore()
 
     def run(self) -> None:
@@ -64,7 +70,13 @@ class VulnScopeScanner:
         collect_http_metadata(self.store, root_response)
 
         if root_response.error:
-            console.print(f"[red][!] Root request failed: {root_response.error}[/red]")
+            console.print(f"[yellow][!] Root request failed but scan will continue safely:[/yellow] {root_response.error}")
+            console.print("[yellow][!] For slow/CDN-heavy sites, rerun with: --timeout 45 --delay 1.0 --retries 3 --max-pages 5[/yellow]")
+            self.store.metadata["root_probe_warning"] = {
+                "error": root_response.error,
+                "safe_continuation": True,
+                "suggested_command_flags": "--timeout 45 --delay 1.0 --retries 3 --max-pages 5",
+            }
         else:
             self.store.add_endpoint(root_response.url)
 
@@ -176,6 +188,9 @@ class VulnScopeScanner:
         table.add_row("Target", self.target.normalized_url)
         table.add_row("Mode", self.mode)
         table.add_row("AI Review", "Enabled" if self.ai_review else "Disabled")
+        table.add_row("Timeout", f"{self.timeout}s")
+        table.add_row("Delay", f"{self.delay}s")
+        table.add_row("Retries", str(self.retries))
         ip_info = self.store.metadata.get("ip_route_intelligence", {})
         table.add_row("Resolved IPs", str(ip_info.get("resolved_ip_count", 0)))
         tool_status = self.store.metadata.get("external_tool_status", [])
