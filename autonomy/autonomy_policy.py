@@ -20,6 +20,7 @@ class AutonomyPolicy:
     allow_authenticated_review: bool = False
     allow_model_council: bool = True
     allow_har_import: bool = True
+    allow_safe_discovery_probes: bool = True
     allow_report_generation: bool = True
     require_scope_policy: bool = True
     stop_on_scope_block: bool = True
@@ -32,6 +33,8 @@ class AutonomyPolicy:
     def allows_stage(self, stage: str) -> bool:
         if stage in {"scope", "passive_recon", "agent_review", "quality"}:
             return True
+        if stage == "safe_discovery":
+            return self.level >= 1
         if stage == "model_council":
             return self.allow_model_council and self.level >= 2
         if stage == "active_tools":
@@ -64,6 +67,7 @@ def load_autonomy_policy(path: str | Path = "autonomy_policy.yaml") -> AutonomyP
         allow_authenticated_review=bool(data.get("allow_authenticated_review", False)),
         allow_model_council=bool(data.get("allow_model_council", True)),
         allow_har_import=bool(data.get("allow_har_import", True)),
+        allow_safe_discovery_probes=bool(data.get("allow_safe_discovery_probes", True)),
         allow_report_generation=bool(data.get("allow_report_generation", True)),
         require_scope_policy=bool(data.get("require_scope_policy", True)),
         stop_on_scope_block=bool(data.get("stop_on_scope_block", True)),
@@ -83,10 +87,11 @@ allow_active_tools: false
 allow_authenticated_review: false
 allow_model_council: true
 allow_har_import: true
+allow_safe_discovery_probes: true
 allow_report_generation: true
 require_scope_policy: true
 stop_on_scope_block: true
 min_quality_threshold: 0.45
-notes: 'Safe autonomous mode. Increase level only for owned labs or explicitly authorized assets.'
+notes: 'Safe autonomous mode. Finds real misconfigurations and review candidates using low-impact evidence collection. Increase level only for owned labs or explicitly authorized assets.'
 """, encoding="utf-8")
     return p
