@@ -1,0 +1,12 @@
+level: 2
+max_cycles: 3
+max_runtime_minutes: 30
+allow_active_tools: false
+allow_authenticated_review: false
+allow_model_council: true
+allow_har_import: true
+allow_report_generation: true
+require_scope_policy: true
+stop_on_scope_block: true
+min_quality_threshold: 0.45
+notes: 'Safe autopilot. Keep active/authenticated automation disabled unless testing owned labs or explicitly authorized assets.'
