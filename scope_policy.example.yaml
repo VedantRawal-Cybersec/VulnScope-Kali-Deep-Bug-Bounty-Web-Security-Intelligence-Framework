@@ -1,0 +1,12 @@
+name: example-authorized-scope
+allowed_hosts:
+  - example.com
+  - '*.example.com'
+blocked_hosts:
+  - admin.example.com
+allowed_schemes:
+  - https
+max_requests_per_minute: 30
+active_testing_allowed: false
+authenticated_testing_allowed: false
+notes: 'Copy to scope_policy.yaml and edit for assets you own or are explicitly authorized to test.'
