@@ -11,6 +11,7 @@ from autonomy.autonomy_policy import load_autonomy_policy
 from findings.quality import load_findings_from_reports, reduce_low_quality
 from importers.har_importer import save_import
 from reports.report_v2 import build_report_v2
+from safe_discovery.non_exploit_discovery import SafeDiscoveryRunner
 from scope.policy import load_scope_policy
 from workflow.assessment_state import AssessmentState
 from workflow.checkpoint_store import load_checkpoint, save_checkpoint
@@ -47,6 +48,13 @@ class SafeAutonomyRunner:
         artifacts: dict[str, Any] = {}
         if self.har_path and self.policy.allow_har_import:
             artifacts["har_import"] = str(save_import(self.har_path))
+        if self.policy.allow_safe_discovery_probes and self.policy.allows_stage("safe_discovery"):
+            safe_result = SafeDiscoveryRunner(self.target).run()
+            artifacts["safe_discovery"] = {
+                "json": "reports/output/safe-discovery/safe-discovery.json",
+                "markdown": "reports/output/safe-discovery/safe-discovery.md",
+                "findings": safe_result.get("summary", {}).get("findings", 0),
+            }
         state = load_checkpoint(self.target) or AssessmentState(target=self.target, mode=self.mode)
         save_checkpoint(state)
         PhaseRunner(state).run_all()
@@ -54,7 +62,12 @@ class SafeAutonomyRunner:
         council = self.policy.allow_model_council and self.policy.level >= 2
         AgentCoreController(target=self.target, mode=self.mode, auto_yes=self.auto_yes, dry_run=False, provider=self.provider, council=council).run()
         artifacts["agent_core"] = "reports/output/agent_core/agent-core-summary.json"
-        items = load_findings_from_reports(["reports/output/agent_core/agent-core-summary.json", "reports/output/workflow/reportability-scores.json", "reports/output/imports/har-import.json"])
+        items = load_findings_from_reports([
+            "reports/output/safe-discovery/safe-discovery.json",
+            "reports/output/agent_core/agent-core-summary.json",
+            "reports/output/workflow/reportability-scores.json",
+            "reports/output/imports/har-import.json",
+        ])
         quality = reduce_low_quality(items, threshold=self.policy.min_quality_threshold)
         q_path = Path("reports/output/finding-quality.json")
         q_path.parent.mkdir(parents=True, exist_ok=True)
