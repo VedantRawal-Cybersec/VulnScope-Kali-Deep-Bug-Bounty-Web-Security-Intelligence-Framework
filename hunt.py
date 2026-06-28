@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import argparse
 
+from agent_core.controller import AgentCoreController
 from workflow.assessment_state import AssessmentState
 from workflow.checkpoint_store import load_checkpoint, save_checkpoint
 from workflow.phase_runner import PhaseRunner
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,6 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", default="bounty", choices=["bounty", "pentest", "comprehensive", "learning"])
     parser.add_argument("--resume", action="store_true", help="Resume checkpoint for the same target if present")
     parser.add_argument("--yes", action="store_true", help="Confirm scope statement non-interactively")
+    parser.add_argument("--agent-core", action="store_true", help="Run CAI-inspired agent core after phase workflow")
+    parser.add_argument("--dry-run", action="store_true", help="Plan actions without running optional external tool stages")
     return parser.parse_args()
 
 
@@ -30,7 +33,7 @@ def main() -> int:
         return 1
 
     print("┌──────────────────────── VulnScope Assessment Workflow ─────────────────────┐")
-    print("│ Phase-based workflow: recon → profile → agents → validation → report       │")
+    print("│ Phase workflow + specialist agents + optional CAI-inspired agent core.      │")
     print("│ Run only on owned or explicitly authorized assets.                         │")
     print("└────────────────────────────────────────────────────────────────────────────┘")
     if not args.yes:
@@ -47,6 +50,12 @@ def main() -> int:
         save_checkpoint(state)
 
     PhaseRunner(state).run_all()
+
+    if args.agent_core:
+        print("\n[+] Running CAI-inspired agent core")
+        AgentCoreController(target=args.target, mode=args.mode, auto_yes=args.yes, dry_run=args.dry_run).run()
+        print("[+] Agent core summary: reports/output/agent_core/agent-core-summary.json")
+
     print("\n[+] Workflow completed")
     print("[+] Final report: reports/output/workflow/vulnscope-assessment-report.md")
     print("[+] Checkpoint: reports/output/workflow/<target>-checkpoint.json")
