@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
@@ -17,7 +16,20 @@ PROFILE_ROOT = Path.home() / ".vulnscope" / "google_profiles"
 SCOPE_POLICY = ROOT / "scope_policy.yaml"
 AUTONOMY_POLICY = ROOT / "autonomy_policy.yaml"
 
-SAFE_DEFAULT_PROVIDER_ORDER = ["mistral", "local-rules", "ollama", "openrouter", "gemini", "fireworks", "cohere", "groq", "deepseek", "openai", "anthropic"]
+# Ordered for practical reliability. Providers that commonly fail because of billing/key/model issues are tried later.
+SAFE_DEFAULT_PROVIDER_ORDER = [
+    "mistral",
+    "local-rules",
+    "ollama",
+    "openrouter",
+    "gemini",
+    "fireworks",
+    "cohere",
+    "groq",
+    "deepseek",
+    "openai",
+    "anthropic",
+]
 
 
 @dataclass
@@ -34,7 +46,18 @@ class StepResult:
 
 
 class VulnScopeAgent:
-    def __init__(self, target: str, provider: str, mode: str, max_auth_pages: int, yes: bool, no_auth: bool, skip_tools: bool, allow_scope_write: bool) -> None:
+    def __init__(
+        self,
+        target: str,
+        provider: str,
+        mode: str,
+        max_auth_pages: int,
+        yes: bool,
+        no_auth: bool,
+        skip_tools: bool,
+        allow_scope_write: bool,
+        provider_fallback: bool = True,
+    ) -> None:
         self.target = target.rstrip("/")
         self.provider = provider
         self.mode = mode
@@ -43,6 +66,8 @@ class VulnScopeAgent:
         self.no_auth = no_auth
         self.skip_tools = skip_tools
         self.allow_scope_write = allow_scope_write
+        self.provider_fallback = provider_fallback
+        self.provider_test_results: dict[str, dict] = {}
         self.results: list[StepResult] = []
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -119,11 +144,54 @@ notes: "Safe autonomous orchestration. No destructive actions. No credential cap
         AUTONOMY_POLICY.write_text(content, encoding="utf-8")
 
     def _detect_provider(self) -> None:
-        if self.provider != "auto":
+        """Pick the first actually working provider, not just a configured one.
+
+        Configured means an env var exists. Working means a tiny provider test returns success.
+        This solves the common failure where many API keys are present but invalid, out of balance,
+        or using a removed model. If every cloud provider fails, fall back to local-rules so the
+        autonomous workflow can still produce structured review output.
+        """
+        if self.provider and self.provider != "auto" and not self.provider_fallback:
+            print(f"[+] Provider fallback disabled. Using: {self.provider}")
             return
-        # Keep this deterministic and fast. Mistral is preferred because it has been verified in user setup.
-        self.provider = "mistral"
-        print(f"[+] Auto-selected provider: {self.provider}")
+
+        candidates = SAFE_DEFAULT_PROVIDER_ORDER if self.provider == "auto" else [self.provider] + [p for p in SAFE_DEFAULT_PROVIDER_ORDER if p != self.provider]
+        print("[+] Testing AI providers for working autonomous mode...")
+        for provider in candidates:
+            ok, info = self._provider_usable(provider)
+            self.provider_test_results[provider] = info
+            status = "ok" if ok else "failed"
+            print(f"    - {provider}: {status}")
+            if ok:
+                self.provider = provider
+                print(f"[+] Selected working provider: {self.provider}")
+                return
+
+        self.provider = "local-rules"
+        print("[!] No external AI provider passed the live test. Falling back to local-rules.")
+
+    def _provider_usable(self, provider: str) -> tuple[bool, dict]:
+        if provider == "local-rules":
+            return True, {"provider": provider, "status": "local_fallback"}
+        started = time.time()
+        try:
+            proc = subprocess.run(
+                [sys.executable, "ai_provider_cli.py", "--test", "--provider", provider],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            info = {
+                "provider": provider,
+                "returncode": proc.returncode,
+                "elapsed_seconds": round(time.time() - started, 2),
+                "output_tail": combined[-1800:],
+            }
+            return proc.returncode == 0 and "[+]" in combined, info
+        except Exception as exc:
+            return False, {"provider": provider, "error": str(exc), "elapsed_seconds": round(time.time() - started, 2)}
 
     def _run_authenticated_profile_review(self) -> None:
         if self.no_auth:
@@ -200,6 +268,7 @@ notes: "Safe autonomous orchestration. No destructive actions. No credential cap
         summary = {
             "target": self.target,
             "provider": self.provider,
+            "provider_tests": self.provider_test_results,
             "mode": self.mode,
             "safe_auth_profiles_used": not self.no_auth,
             "steps": [asdict(r) for r in self.results],
@@ -219,6 +288,12 @@ notes: "Safe autonomous orchestration. No destructive actions. No credential cap
         }
         (REPORT_DIR / "vulnscope-agent-run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         md = ["# VulnScope Autonomous Agent Run", "", f"Target: `{self.target}`", f"Provider: `{self.provider}`", f"Mode: `{self.mode}`", ""]
+        if self.provider_test_results:
+            md.append("## Provider selection")
+            for provider, info in self.provider_test_results.items():
+                status = "selected" if provider == self.provider else ("failed" if info.get("returncode", 0) != 0 and provider != "local-rules" else "available")
+                md.append(f"- **{provider}**: {status}")
+            md.append("")
         md.append("## Steps")
         for r in self.results:
             status = "skipped" if r.skipped else ("ok" if r.returncode == 0 else f"returned {r.returncode}")
@@ -250,11 +325,12 @@ notes: "Safe autonomous orchestration. No destructive actions. No credential cap
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-command safe autonomous VulnScope agent")
     parser.add_argument("--target", required=True, help="Authorized target URL, e.g. https://example.com")
-    parser.add_argument("--provider", default="mistral", help="AI provider: mistral, local-rules, ollama, openrouter, etc. Use auto for default selection.")
+    parser.add_argument("--provider", default="auto", help="AI provider: auto, mistral, local-rules, ollama, openrouter, etc.")
     parser.add_argument("--mode", default="comprehensive", choices=["bounty", "comprehensive"])
     parser.add_argument("--max-auth-pages", type=int, default=12)
     parser.add_argument("--no-auth", action="store_true", help="Do not use saved Chrome account_a/account_b profiles")
     parser.add_argument("--skip-tools", action="store_true", help="Skip Auto Arsenal external tooling")
+    parser.add_argument("--no-provider-fallback", action="store_true", help="Use the requested provider without testing/fallback")
     parser.add_argument("--yes", action="store_true", help="Acknowledge authorized target and allow autonomous run")
     parser.add_argument("--no-scope-write", action="store_true", help="Do not auto-create/update scope_policy.yaml")
     return parser.parse_args()
@@ -274,6 +350,7 @@ def main() -> int:
         no_auth=args.no_auth,
         skip_tools=args.skip_tools,
         allow_scope_write=not args.no_scope_write,
+        provider_fallback=not args.no_provider_fallback,
     )
     return agent.run()
 
