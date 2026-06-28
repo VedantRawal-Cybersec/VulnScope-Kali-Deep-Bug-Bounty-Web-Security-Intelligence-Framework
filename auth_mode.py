@@ -7,9 +7,10 @@ from pathlib import Path
 from auth.account_comparator import compare_account_crawls
 from auth.auth_crawler import crawl_authenticated
 from auth.credential_store import list_profiles, load_profile, redacted_profile_summary, setup_auth_profile
+from auth.google_oauth_login import save_google_oauth_state
 from auth.playwright_login import save_login_state, read_state_summary
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,6 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--list-profiles", action="store_true")
     parser.add_argument("--profile", default="default")
     parser.add_argument("--login", action="store_true", help="Open browser login and save session state")
+    parser.add_argument("--google-login", action="store_true", help="Open real browser for Google/OAuth login and save session state without storing Google password")
+    parser.add_argument("--oauth-url", default="", help="Optional target-generated Google/OAuth URL. Prefer the target app's Continue with Google flow.")
     parser.add_argument("--crawl", action="store_true", help="Crawl authenticated pages with saved session")
     parser.add_argument("--compare-accounts", action="store_true", help="Compare Account A and Account B crawl samples")
     parser.add_argument("--full-auth", action="store_true", help="Login A/B if configured, crawl, then compare")
@@ -44,9 +47,21 @@ def main() -> int:
     profile = load_profile(args.profile)
     print("┌──────────── Authenticated Manual Validation Mode ────────────┐")
     print("│ Owned test accounts only. Credentials stay local.             │")
-    print("│ OTP/CAPTCHA/manual login is handled by pausing the browser.   │")
+    print("│ Google/OAuth mode never asks for or stores Google passwords.  │")
     print("└───────────────────────────────────────────────────────────────┘")
     print(redacted_profile_summary(args.profile))
+
+    if args.google_login:
+        if args.account in {"a", "both"}:
+            state = save_google_oauth_state(profile, profile.account_a, oauth_url=args.oauth_url or None, headless=args.headless)
+            print(read_state_summary(state))
+        if args.account in {"b", "both"}:
+            if not profile.account_b:
+                print("[!] Account B not configured")
+                return 1
+            state = save_google_oauth_state(profile, profile.account_b, oauth_url=args.oauth_url or None, headless=args.headless)
+            print(read_state_summary(state))
+        return 0
 
     if args.full_auth:
         login_and_crawl(profile, "a", args.max_pages, args.headless)
@@ -71,10 +86,10 @@ def main() -> int:
 
     if args.crawl:
         if args.account in {"a", "both"}:
-            state = Path(f"reports/output/auth/states/{profile.name}-account_a.json")
+            state = _state_path(profile.name, "account_a")
             crawl_authenticated(profile.target_url, state, "account_a", max_pages=args.max_pages, headless=args.headless)
         if args.account in {"b", "both"}:
-            state = Path(f"reports/output/auth/states/{profile.name}-account_b.json")
+            state = _state_path(profile.name, "account_b")
             crawl_authenticated(profile.target_url, state, "account_b", max_pages=args.max_pages, headless=args.headless)
         return 0
 
@@ -82,8 +97,14 @@ def main() -> int:
         compare_account_crawls("reports/output/auth/auth-crawl-account_a.json", "reports/output/auth/auth-crawl-account_b.json")
         return 0
 
-    print("[!] No action selected. Use --setup-accounts, --login, --crawl, --compare-accounts, or --full-auth")
+    print("[!] No action selected. Use --setup-accounts, --login, --google-login, --crawl, --compare-accounts, or --full-auth")
     return 1
+
+
+def _state_path(profile_name: str, account_label: str) -> Path:
+    google_state = Path(f"reports/output/auth/states/{profile_name}-{account_label}-google.json")
+    normal_state = Path(f"reports/output/auth/states/{profile_name}-{account_label}.json")
+    return google_state if google_state.exists() else normal_state
 
 
 def login_and_crawl(profile, account_name: str, max_pages: int, headless: bool) -> None:
