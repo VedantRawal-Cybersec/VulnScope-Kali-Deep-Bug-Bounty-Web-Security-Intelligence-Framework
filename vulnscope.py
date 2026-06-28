@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-VulnScope-Kali v0.2.0-alpha
+VulnScope-Kali v0.3.0-alpha
 Authorized Web Security Intelligence Framework for Kali Linux.
 
-v0.2.0-alpha provides multi-module safe intelligence, same-domain crawling,
-IP route intelligence, robots/sitemap parsing, API mapping, safe XSS/SQLi
-signals, access-control hints, exposure review, correlation, and reports.
+v0.3.0-alpha adds the optional AI Analyst Engine for redacted finding review,
+triage, false-positive reduction, and report-quality guidance using configured
+AI providers through local environment variables only.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from core.banner import print_banner
 from core.orchestrator import VulnScopeScanner
 from core.validators import validate_target_url
 
-VERSION = "0.2.0-alpha"
+VERSION = "0.3.0-alpha"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +37,16 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default="reports/output",
         help="Directory where reports will be written",
+    )
+    parser.add_argument(
+        "--ai-review",
+        action="store_true",
+        help="Enable AI Analyst Engine on redacted evidence. Requires provider API keys in environment variables.",
+    )
+    parser.add_argument(
+        "--ai-providers",
+        default="",
+        help="Comma-separated providers: openai,gemini,groq,openrouter. Default: auto-detect from environment.",
     )
     return parser.parse_args()
 
@@ -58,6 +68,12 @@ def ask_for_mode() -> str:
     return "passive"
 
 
+def parse_ai_providers(raw: str) -> list[str] | None:
+    if not raw.strip():
+        return None
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
 def main() -> int:
     args = parse_args()
 
@@ -75,18 +91,25 @@ def main() -> int:
     print(f"[+] Host            : {target.host}")
     print("[+] Scope           : Same-domain only")
 
+    if args.ai_review:
+        print("[+] AI Review       : Enabled, redacted evidence only")
+    else:
+        print("[+] AI Review       : Disabled")
+
     if not confirm_authorization(target.normalized_url):
         print("\n[!] Authorization not confirmed.")
         print("[!] Scan cancelled for safety.")
         return 1
 
     mode = args.mode or ask_for_mode()
+    ai_providers = parse_ai_providers(args.ai_providers)
 
     print("\n┌────────────────────────────── Scan Configuration ────────────────────────────┐")
     print(f"│ Target URL       : {target.normalized_url[:56]:<56} │")
     print(f"│ Scan Mode        : {mode:<56} │")
     print(f"│ Crawl Scope      : {'Same domain only':<56} │")
     print(f"│ Max Pages        : {str(args.max_pages):<56} │")
+    print(f"│ AI Review        : {str(args.ai_review):<56} │")
     print(f"│ Output Directory : {args.output_dir[:56]:<56} │")
     print("└──────────────────────────────────────────────────────────────────────────────┘")
 
@@ -100,6 +123,8 @@ def main() -> int:
         mode=mode,
         max_pages=args.max_pages,
         output_dir=Path(args.output_dir),
+        ai_review=args.ai_review,
+        ai_providers=ai_providers,
     )
     scanner.run()
     return 0
