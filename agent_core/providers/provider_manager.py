@@ -7,6 +7,9 @@ from agent_core.model_router import choose_model, provider_status
 from agent_core.prompt_firewall import sanitize_evidence_for_ai
 from agent_core.providers.anthropic_provider import AnthropicProvider
 from agent_core.providers.base_provider import BaseProvider, ProviderResponse
+from agent_core.providers.cohere_provider import CohereProvider
+from agent_core.providers.fireworks_provider import FireworksProvider
+from agent_core.providers.mistral_provider import MistralProvider
 from agent_core.providers.ollama_provider import OllamaProvider
 from agent_core.providers.openai_compatible_provider import DeepSeekProvider, GroqProvider, OpenAIProvider, OpenRouterProvider
 
@@ -17,6 +20,10 @@ PROVIDER_CLASSES: dict[str, type[BaseProvider]] = {
     "deepseek": DeepSeekProvider,
     "groq": GroqProvider,
     "openrouter": OpenRouterProvider,
+    "mistral": MistralProvider,
+    "fireworks": FireworksProvider,
+    "firework": FireworksProvider,
+    "cohere": CohereProvider,
     "ollama": OllamaProvider,
 }
 
@@ -27,6 +34,10 @@ PROVIDER_ENV: dict[str, str] = {
     "deepseek": "DEEPSEEK_API_KEY",
     "groq": "GROQ_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "firework": "FIREWORKS_API_KEY",
+    "cohere": "COHERE_API_KEY",
     "ollama": "OLLAMA_HOST",
 }
 
@@ -37,6 +48,10 @@ PROVIDER_MODEL_ENV: dict[str, str] = {
     "deepseek": "DEEPSEEK_MODEL",
     "groq": "GROQ_MODEL",
     "openrouter": "OPENROUTER_MODEL",
+    "mistral": "MISTRAL_MODEL",
+    "fireworks": "FIREWORKS_MODEL",
+    "firework": "FIREWORKS_MODEL",
+    "cohere": "COHERE_MODEL",
     "ollama": "OLLAMA_MODEL",
 }
 
