@@ -6,19 +6,24 @@ from pathlib import Path
 
 from auth.account_comparator import compare_account_crawls
 from auth.auth_crawler import crawl_authenticated
-from auth.credential_store import list_profiles, load_profile, redacted_profile_summary, setup_auth_profile
+from auth.credential_store import list_profiles, load_profile, redacted_profile_summary, setup_auth_profile, setup_google_oauth_profile
 from auth.google_oauth_login import save_google_oauth_state
 from auth.playwright_login import save_login_state, read_state_summary
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Authenticated Manual Validation Mode for owned test accounts")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--setup-accounts", action="store_true")
+    parser.add_argument("--setup-google-profile", action="store_true", help="Create a Google/OAuth profile without storing passwords")
     parser.add_argument("--list-profiles", action="store_true")
     parser.add_argument("--profile", default="default")
+    parser.add_argument("--target-url", default="", help="Target base URL for profile setup")
+    parser.add_argument("--login-url", default="", help="Target login URL or Continue-with-Google page for profile setup")
+    parser.add_argument("--account-a-email", default="", help="Account A email/label for Google/OAuth profile")
+    parser.add_argument("--account-b-email", default="", help="Optional Account B email/label for Google/OAuth comparison")
     parser.add_argument("--login", action="store_true", help="Open browser login and save session state")
     parser.add_argument("--google-login", action="store_true", help="Open real browser for Google/OAuth login and save session state without storing Google password")
     parser.add_argument("--oauth-url", default="", help="Optional target-generated Google/OAuth URL. Prefer the target app's Continue with Google flow.")
@@ -39,12 +44,38 @@ def main() -> int:
     if args.setup_accounts:
         setup_auth_profile()
         return 0
+    if args.setup_google_profile:
+        setup_google_oauth_profile(
+            name=args.profile,
+            target_url=args.target_url or None,
+            login_url=args.login_url or None,
+            account_a_email=args.account_a_email or None,
+            account_b_email=args.account_b_email or None,
+            interactive=not (args.target_url and args.login_url and args.account_a_email),
+        )
+        return 0
     if args.list_profiles:
-        for profile in list_profiles():
+        profiles = list_profiles()
+        if not profiles:
+            print("[!] No auth profiles found.")
+            print("[+] For Google/OAuth, run: python3 auth_mode.py --setup-google-profile")
+            return 0
+        for profile in profiles:
             print(profile)
         return 0
 
-    profile = load_profile(args.profile)
+    try:
+        profile = load_profile(args.profile)
+    except FileNotFoundError as exc:
+        print(f"[!] {exc}")
+        print("\nQuick fix for Google/OAuth:")
+        print("python3 auth_mode.py --setup-google-profile")
+        print("\nNon-interactive example:")
+        print("python3 auth_mode.py --setup-google-profile --profile default --target-url https://YOUR-APP.com --login-url https://YOUR-APP.com/login --account-a-email your-email@gmail.com")
+        print("\nThen run:")
+        print("python3 auth_mode.py --profile default --google-login --account a")
+        return 1
+
     print("┌──────────── Authenticated Manual Validation Mode ────────────┐")
     print("│ Owned test accounts only. Credentials stay local.             │")
     print("│ Google/OAuth mode never asks for or stores Google passwords.  │")
@@ -87,9 +118,17 @@ def main() -> int:
     if args.crawl:
         if args.account in {"a", "both"}:
             state = _state_path(profile.name, "account_a")
+            if not state.exists():
+                print(f"[!] Saved session not found: {state}")
+                print("[+] Run Google login first: python3 auth_mode.py --profile default --google-login --account a")
+                return 1
             crawl_authenticated(profile.target_url, state, "account_a", max_pages=args.max_pages, headless=args.headless)
         if args.account in {"b", "both"}:
             state = _state_path(profile.name, "account_b")
+            if not state.exists():
+                print(f"[!] Saved session not found: {state}")
+                print("[+] Run Google login first: python3 auth_mode.py --profile default --google-login --account b")
+                return 1
             crawl_authenticated(profile.target_url, state, "account_b", max_pages=args.max_pages, headless=args.headless)
         return 0
 
@@ -97,7 +136,7 @@ def main() -> int:
         compare_account_crawls("reports/output/auth/auth-crawl-account_a.json", "reports/output/auth/auth-crawl-account_b.json")
         return 0
 
-    print("[!] No action selected. Use --setup-accounts, --login, --google-login, --crawl, --compare-accounts, or --full-auth")
+    print("[!] No action selected. Use --setup-google-profile, --setup-accounts, --login, --google-login, --crawl, --compare-accounts, or --full-auth")
     return 1
 
 
