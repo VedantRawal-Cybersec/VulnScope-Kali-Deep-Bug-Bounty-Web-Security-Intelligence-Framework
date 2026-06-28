@@ -5,6 +5,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from ai.finding_review import run_ai_finding_review
 from core.correlation_engine import correlate_findings
 from core.evidence_store import EvidenceStore
 from core.external_tool_orchestrator import collect_external_tool_status
@@ -30,25 +31,35 @@ console = Console()
 
 
 class VulnScopeScanner:
-    def __init__(self, target: Target, mode: str, max_pages: int, output_dir: Path) -> None:
+    def __init__(
+        self,
+        target: Target,
+        mode: str,
+        max_pages: int,
+        output_dir: Path,
+        ai_review: bool = False,
+        ai_providers: list[str] | None = None,
+    ) -> None:
         self.target = target
         self.mode = mode
         self.max_pages = max_pages
         self.output_dir = output_dir
+        self.ai_review = ai_review
+        self.ai_providers = ai_providers
         self.request_engine = RequestEngine(timeout=10, delay=0.4)
         self.store = EvidenceStore()
 
     def run(self) -> None:
         console.print("\n[cyan][+] Initializing VulnScope-Kali Intelligence modules...[/cyan]")
-        self._print_module_status()
+        self._print_module_status(self.ai_review)
 
-        console.print("\n[cyan][01/17] Collecting IP route intelligence...[/cyan]")
+        console.print("\n[cyan][01/18] Collecting IP route intelligence...[/cyan]")
         collect_ip_route_intelligence(self.store, self.target.normalized_url)
 
-        console.print("[cyan][02/17] Detecting trusted external tool readiness...[/cyan]")
+        console.print("[cyan][02/18] Detecting trusted external tool readiness...[/cyan]")
         collect_external_tool_status(self.store)
 
-        console.print("[cyan][03/17] Probing root target...[/cyan]")
+        console.print("[cyan][03/18] Probing root target...[/cyan]")
         root_response = self.request_engine.get(self.target.normalized_url)
         collect_http_metadata(self.store, root_response)
 
@@ -57,13 +68,13 @@ class VulnScopeScanner:
         else:
             self.store.add_endpoint(root_response.url)
 
-        console.print("[cyan][04/17] Auditing security headers and cookies...[/cyan]")
+        console.print("[cyan][04/18] Auditing security headers and cookies...[/cyan]")
         audit_headers_and_cookies(self.store, root_response)
 
-        console.print("[cyan][05/17] Analyzing CORS posture...[/cyan]")
+        console.print("[cyan][05/18] Analyzing CORS posture...[/cyan]")
         analyze_cors(self.store, root_response)
 
-        console.print("[cyan][06/17] Parsing robots.txt and sitemap.xml...[/cyan]")
+        console.print("[cyan][06/18] Parsing robots.txt and sitemap.xml...[/cyan]")
         analyze_robots_and_sitemap(
             base_url=self.target.base_url,
             target_host=self.target.host,
@@ -71,7 +82,7 @@ class VulnScopeScanner:
             store=self.store,
         )
 
-        console.print("[cyan][07/17] Crawling same-domain pages...[/cyan]")
+        console.print("[cyan][07/18] Crawling same-domain pages...[/cyan]")
         responses = crawl_same_domain(
             start_url=root_response.url or self.target.normalized_url,
             target_host=self.target.host,
@@ -81,7 +92,7 @@ class VulnScopeScanner:
         )
         all_responses = [root_response] + responses
 
-        console.print("[cyan][08/17] Mining JavaScript endpoints...[/cyan]")
+        console.print("[cyan][08/18] Mining JavaScript endpoints...[/cyan]")
         mine_javascript_endpoints(
             responses=all_responses,
             target_host=self.target.host,
@@ -89,31 +100,38 @@ class VulnScopeScanner:
             store=self.store,
         )
 
-        console.print("[cyan][09/17] Classifying deep route intelligence...[/cyan]")
+        console.print("[cyan][09/18] Classifying deep route intelligence...[/cyan]")
         analyze_deep_routes(self.store)
 
-        console.print("[cyan][10/17] Mapping API surface...[/cyan]")
+        console.print("[cyan][10/18] Mapping API surface...[/cyan]")
         map_api_surface(self.store)
 
-        console.print("[cyan][11/17] Analyzing parameters and forms...[/cyan]")
+        console.print("[cyan][11/18] Analyzing parameters and forms...[/cyan]")
         analyze_parameters(self.store)
 
-        console.print("[cyan][12/17] Identifying access-control review candidates...[/cyan]")
+        console.print("[cyan][12/18] Identifying access-control review candidates...[/cyan]")
         analyze_access_control_hints(self.store)
 
-        console.print("[cyan][13/17] Running safe XSS precision signals...[/cyan]")
+        console.print("[cyan][13/18] Running safe XSS precision signals...[/cyan]")
         analyze_xss_precision(self.store, all_responses)
 
-        console.print("[cyan][14/17] Running safe SQLi signal analysis...[/cyan]")
+        console.print("[cyan][14/18] Running safe SQLi signal analysis...[/cyan]")
         analyze_sqli_signals(self.store, all_responses)
 
-        console.print("[cyan][15/17] Searching for sensitive exposure signals...[/cyan]")
+        console.print("[cyan][15/18] Searching for sensitive exposure signals...[/cyan]")
         find_sensitive_exposure_signals(self.store, all_responses)
 
-        console.print("[cyan][16/17] Correlating evidence and deduplicating findings...[/cyan]")
+        console.print("[cyan][16/18] Correlating evidence and deduplicating findings...[/cyan]")
         correlate_findings(self.store)
 
-        console.print("[cyan][17/17] Writing reports...[/cyan]")
+        if self.ai_review:
+            console.print("[cyan][17/18] Running AI Analyst Engine on redacted evidence...[/cyan]")
+            run_ai_finding_review(self.store, providers=self.ai_providers)
+            correlate_findings(self.store)
+        else:
+            console.print("[yellow][17/18] AI Analyst Engine skipped. Use --ai-review to enable.[/yellow]")
+
+        console.print("[cyan][18/18] Writing reports...[/cyan]")
         report_path = self.output_dir / "target-report.md"
         evidence_path = self.output_dir / "evidence.json"
         generate_markdown_report(self.store, report_path, self.target.normalized_url, self.mode)
@@ -122,7 +140,7 @@ class VulnScopeScanner:
         self._print_summary(report_path, evidence_path)
 
     @staticmethod
-    def _print_module_status() -> None:
+    def _print_module_status(ai_review: bool) -> None:
         table = Table(title="VulnScope Intelligence Modules")
         table.add_column("ID", style="cyan")
         table.add_column("Module")
@@ -144,7 +162,8 @@ class VulnScopeScanner:
             ("14", "SQLi Signal Analysis", "READY"),
             ("15", "Sensitive Exposure Finder", "READY"),
             ("16", "Evidence Correlation Engine", "READY"),
-            ("17", "Report Generator", "READY"),
+            ("17", "AI Analyst Engine", "READY" if ai_review else "OPTIONAL"),
+            ("18", "Report Generator", "READY"),
         ]
         for row in modules:
             table.add_row(*row)
@@ -156,6 +175,7 @@ class VulnScopeScanner:
         table.add_column("Value")
         table.add_row("Target", self.target.normalized_url)
         table.add_row("Mode", self.mode)
+        table.add_row("AI Review", "Enabled" if self.ai_review else "Disabled")
         ip_info = self.store.metadata.get("ip_route_intelligence", {})
         table.add_row("Resolved IPs", str(ip_info.get("resolved_ip_count", 0)))
         tool_status = self.store.metadata.get("external_tool_status", [])
