@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-VulnScope-Kali v0.3.0-alpha
+VulnScope-Kali v0.3.1-alpha
 Authorized Web Security Intelligence Framework for Kali Linux.
 
-v0.3.0-alpha adds the optional AI Analyst Engine for redacted finding review,
-triage, false-positive reduction, and report-quality guidance using configured
-AI providers through local environment variables only.
+v0.3.1-alpha adds interactive local AI API key setup, key status checks,
+and local ignored env-file loading for the optional AI Analyst Engine.
 """
 
 from __future__ import annotations
@@ -13,12 +12,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from ai.key_setup import setup_ai_keys, show_ai_key_status
+from ai.local_env import load_local_ai_env
 from core.authorization_guard import confirm_authorization
 from core.banner import print_banner
 from core.orchestrator import VulnScopeScanner
 from core.validators import validate_target_url
 
-VERSION = "0.3.0-alpha"
+VERSION = "0.3.1-alpha"
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +27,8 @@ def parse_args() -> argparse.Namespace:
         description="VulnScope-Kali: Deep Bug Bounty Web Security Intelligence Framework"
     )
     parser.add_argument("--version", action="store_true", help="Show VulnScope-Kali version and exit")
+    parser.add_argument("--setup-ai-keys", action="store_true", help="Interactively add AI provider API keys to local .env.local")
+    parser.add_argument("--ai-key-status", action="store_true", help="Show which AI provider keys are configured without revealing values")
     parser.add_argument("--url", help="Target URL, for example https://example.com")
     parser.add_argument(
         "--mode",
@@ -41,12 +44,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ai-review",
         action="store_true",
-        help="Enable AI Analyst Engine on redacted evidence. Requires provider API keys in environment variables.",
+        help="Enable AI Analyst Engine on redacted evidence. Requires provider API keys in environment variables or .env.local.",
     )
     parser.add_argument(
         "--ai-providers",
         default="",
-        help="Comma-separated providers: openai,gemini,groq,openrouter. Default: auto-detect from environment.",
+        help="Comma-separated providers: openai,gemini,groq,openrouter. Default: auto-detect from local config/environment.",
     )
     return parser.parse_args()
 
@@ -75,10 +78,19 @@ def parse_ai_providers(raw: str) -> list[str] | None:
 
 
 def main() -> int:
+    load_local_ai_env()
     args = parse_args()
 
     if args.version:
         print(f"VulnScope-Kali {VERSION}")
+        return 0
+
+    if args.setup_ai_keys:
+        setup_ai_keys()
+        return 0
+
+    if args.ai_key_status:
+        show_ai_key_status()
         return 0
 
     print_banner(VERSION)
