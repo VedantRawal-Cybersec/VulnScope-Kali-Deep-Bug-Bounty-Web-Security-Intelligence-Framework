@@ -22,6 +22,7 @@ class AutonomousStep:
 def build_plan(target: str, policy: AutonomyPolicy, has_har: bool = False) -> list[AutonomousStep]:
     steps: list[AutonomousStep] = [
         AutonomousStep("scope_check", "scope", "Confirm target is allowed by scope_policy.yaml", "scope.policy.check"),
+        AutonomousStep("safe_discovery", "safe_discovery", "Find real misconfigurations and review candidates using low-impact evidence collection", "safe_discovery_cli.py"),
         AutonomousStep("phase_workflow", "passive_recon", "Run phase workflow, passive recon, app profile, validation task creation", "PhaseRunner.run_all"),
         AutonomousStep("agent_core", "agent_review", "Run specialist agents over collected evidence", "AgentCoreController.run"),
         AutonomousStep("finding_quality", "quality", "Dedupe candidates and reduce low-quality findings", "finding_quality_cli.py"),
