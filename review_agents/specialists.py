@@ -84,6 +84,51 @@ class JSIntelReviewAgent(BaseReviewAgent):
         return AgentResult(self.name, candidates=candidates, confidence=0.66, notes=["JS findings need endpoint extraction and secret false-positive review."])
 
 
+class HeaderCookieReviewAgent(BaseReviewAgent):
+    name = "HeaderCookieReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        endpoints = evidence.get("endpoints", []) if isinstance(evidence, dict) else []
+        candidates = []
+        for endpoint in endpoints[:300] if isinstance(endpoints, list) else []:
+            headers = endpoint.get("response_headers", {}) if isinstance(endpoint, dict) else {}
+            low_headers = {str(k).lower(): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {}
+            missing = []
+            for name in ["content-security-policy", "x-frame-options", "strict-transport-security"]:
+                if name not in low_headers:
+                    missing.append(name)
+            if missing:
+                candidates.append({"type": "header_posture_candidate", "url": endpoint.get("url"), "missing_headers": missing, "status": "REVIEW_CANDIDATE"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.58, notes=["Header posture is contextual; absence alone is not a confirmed vulnerability."])
+
+
+class GraphQLReviewAgent(BaseReviewAgent):
+    name = "GraphQLReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        urls = collect_urls(evidence)
+        gql = [url for url in urls if re.search(r"graphql|graphiql|__schema", url, re.I)]
+        candidates = [{"type": "graphql_surface_candidate", "url": url, "status": "REVIEW_CANDIDATE"} for url in gql[:100]]
+        return AgentResult(self.name, candidates=candidates, confidence=0.67, notes=["GraphQL review requires authorization-aware manual validation."])
+
+
+class CORSCacheReviewAgent(BaseReviewAgent):
+    name = "CORSCacheReviewAgent"
+
+    def run(self, evidence: dict) -> AgentResult:
+        endpoints = evidence.get("endpoints", []) if isinstance(evidence, dict) else []
+        candidates = []
+        for endpoint in endpoints[:300] if isinstance(endpoints, list) else []:
+            headers = endpoint.get("response_headers", {}) if isinstance(endpoint, dict) else {}
+            if not isinstance(headers, dict):
+                continue
+            acao = str(headers.get("access-control-allow-origin", headers.get("Access-Control-Allow-Origin", "")))
+            cache = str(headers.get("cache-control", headers.get("Cache-Control", ""))).lower()
+            if acao == "*" or "public" in cache:
+                candidates.append({"type": "cors_cache_posture_candidate", "url": endpoint.get("url"), "acao": acao, "cache_control": cache, "status": "REVIEW_CANDIDATE"})
+        return AgentResult(self.name, candidates=candidates[:150], confidence=0.55, notes=["CORS/cache posture requires context and data sensitivity review."])
+
+
 class ValidationReviewAgent(BaseReviewAgent):
     name = "ValidationReviewAgent"
 
@@ -96,4 +141,15 @@ class ValidationReviewAgent(BaseReviewAgent):
         return AgentResult(self.name, candidates=candidates, confidence=0.8, notes=["Validation agent prioritizes proof quality over quantity."])
 
 
-SPECIALIST_AGENTS = [ReconReviewAgent(), AppProfileAgent(), APIReviewAgent(), AuthReviewAgent(), IDORBOLAReviewAgent(), JSIntelReviewAgent(), ValidationReviewAgent()]
+SPECIALIST_AGENTS = [
+    ReconReviewAgent(),
+    AppProfileAgent(),
+    APIReviewAgent(),
+    AuthReviewAgent(),
+    IDORBOLAReviewAgent(),
+    JSIntelReviewAgent(),
+    HeaderCookieReviewAgent(),
+    GraphQLReviewAgent(),
+    CORSCacheReviewAgent(),
+    ValidationReviewAgent(),
+]
