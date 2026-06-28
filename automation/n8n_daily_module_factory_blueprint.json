@@ -1,0 +1,77 @@
+{
+  "name": "VulnScope Daily Module Factory Blueprint",
+  "description": "Blueprint for a safe n8n workflow that proposes improvements through GitHub pull requests instead of pushing directly to main.",
+  "safety_model": {
+    "direct_main_push": false,
+    "manual_merge_required": true,
+    "allowed_paths": [
+      "docs/",
+      "arsenal/",
+      "agent/",
+      "integrations/",
+      "modules/",
+      "tests/"
+    ],
+    "blocked_paths": [
+      ".env",
+      ".env.local",
+      "secrets/",
+      "private/"
+    ],
+    "blocked_behaviors": [
+      "read secrets",
+      "execute arbitrary issue comments",
+      "run destructive shell",
+      "auto-merge",
+      "disable tests"
+    ]
+  },
+  "nodes": [
+    {
+      "name": "Daily Schedule",
+      "type": "Schedule Trigger",
+      "purpose": "Run once per day"
+    },
+    {
+      "name": "GitHub Search Roadmap Issues",
+      "type": "GitHub",
+      "purpose": "Find open issues labeled module-request or enhancement"
+    },
+    {
+      "name": "AI Module Planner",
+      "type": "AI Agent",
+      "purpose": "Create a safe implementation plan only. No shell commands. No secrets."
+    },
+    {
+      "name": "Path Guard",
+      "type": "Code",
+      "purpose": "Reject updates outside allowed paths"
+    },
+    {
+      "name": "Create Branch",
+      "type": "GitHub",
+      "purpose": "Create daily/module-factory-YYYYMMDD branch"
+    },
+    {
+      "name": "Create Or Update Files",
+      "type": "GitHub",
+      "purpose": "Commit generated docs/tests/module files only"
+    },
+    {
+      "name": "Open Pull Request",
+      "type": "GitHub",
+      "purpose": "Open PR for manual review"
+    },
+    {
+      "name": "Notify Owner",
+      "type": "Email/Telegram/Discord",
+      "purpose": "Send PR link and summary"
+    }
+  ],
+  "recommended_pr_checks": [
+    "python3 -m compileall .",
+    "python3 auto_mode.py --list-profiles",
+    "python3 auto_mode.py --healthcheck --profile bug-bounty-safe",
+    "python3 agentic_controller_cli.py --version"
+  ]
+}
