@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ai.ai_guardrails import build_ai_safety_instruction, redact_secrets
+from ai.local_env import load_local_ai_env
 from ai.provider_clients import AIProviderClient
 from core.evidence_store import EvidenceStore, Finding
 
@@ -20,11 +21,12 @@ def run_ai_finding_review(
     The AI review is disabled unless the CLI asks for it. Evidence is redacted
     before leaving the local machine. Results are advisory only.
     """
+    load_local_ai_env()
     providers = providers or _configured_providers()
     if not providers:
         store.metadata["ai_review"] = {
             "enabled": False,
-            "reason": "No AI providers requested or configured",
+            "reason": "No AI providers requested or configured. Run: python3 vulnscope.py --setup-ai-keys",
         }
         return
 
@@ -76,7 +78,7 @@ def run_ai_finding_review(
                 "successful_reviews": sum(1 for item in reviews if item.get("ok")),
             },
             recommended_validation=["Treat AI output as advisory and manually validate every security finding."],
-            remediation=["No remediation required. Keep API keys in environment variables or local secrets only."],
+            remediation=["No remediation required. Keep API keys in local ignored files or environment variables only."],
         )
     )
 
@@ -84,6 +86,7 @@ def run_ai_finding_review(
 def _configured_providers() -> list[str]:
     import os
 
+    load_local_ai_env()
     configured = []
     if os.getenv("OPENAI_API_KEY"):
         configured.append("openai")
@@ -144,6 +147,7 @@ def _safe_text(text: str) -> str:
 
 
 def review_evidence_file(evidence_path: str, providers: list[str] | None = None) -> dict[str, Any]:
+    load_local_ai_env()
     path = Path(evidence_path)
     data = json.loads(path.read_text(encoding="utf-8"))
     redacted = redact_secrets(data)
