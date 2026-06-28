@@ -1,0 +1,84 @@
+features:
+  model_routing:
+    label: "300+ AI Models"
+    status: implemented
+    direct_providers:
+      - openai
+      - anthropic
+      - deepseek
+      - gemini
+      - groq
+      - mistral
+      - cohere
+      - together
+      - fireworks
+      - perplexity
+    aggregator_providers:
+      - openrouter
+      - ollama
+    safety: "Secrets are loaded from local environment only and redacted before AI review."
+
+  security_tools:
+    label: "Built-in Security Tools"
+    status: controlled
+    allowed_categories:
+      - passive_reconnaissance
+      - web_validation
+      - authenticated_owned_account_review
+      - evidence_analysis
+      - reporting
+    blocked_by_default:
+      - credential_capture
+      - destructive_actions
+      - unauthorized_access
+      - persistence
+      - privilege_escalation_against_real_targets
+    safety: "Sensitive categories are not run by default. Lab-only actions require explicit user control."
+
+  battle_testing:
+    label: "Battle-tested workflow readiness"
+    status: framework_ready
+    validation_targets:
+      - local labs
+      - CTF boxes with permission
+      - owned apps
+      - bug bounty assets where scope allows testing
+    outputs:
+      - activity logs
+      - checkpoint files
+      - specialist results
+      - reportability scores
+
+  agent_architecture:
+    label: "Agent-based Architecture"
+    status: implemented
+    modules:
+      - agent_core
+      - review_agents
+      - workflow
+      - recon
+      - auth
+      - arsenal
+
+  guardrails:
+    label: "Guardrails Protection"
+    status: implemented
+    modules:
+      - agent_core.prompt_firewall
+      - agent_core.tool_safety_policy
+      - agent_core.human_gate
+      - authorization_guard
+    rules:
+      - no evidence equals no confirmed vulnerability
+      - owned accounts only for authenticated review
+      - redacted AI evidence
+      - human approval for controlled actions
+
+  research_orientation:
+    label: "Research-oriented"
+    status: implemented
+    artifacts:
+      - docs/AGENT_CORE.md
+      - docs/CAI_FEATURE_PARITY.md
+      - reports/output/agent_core/activity.jsonl
+      - reports/output/agent_core/workflow-memory.json
