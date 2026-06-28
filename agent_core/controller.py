@@ -7,6 +7,7 @@ from typing import Any
 from agent_core.activity_log import log_event
 from agent_core.agent_registry import registry_markdown
 from agent_core.model_router import choose_model, provider_status
+from agent_core.providers.provider_manager import safe_chat
 from agent_core.task_model import AgentObservation, AgentTask
 from agent_core.tool_router import build_tool_plan, run_tool_plan
 from agent_core.workflow_memory import remember_target
@@ -17,30 +18,33 @@ OUT_DIR = Path("reports/output/agent_core")
 
 
 class AgentCoreController:
-    def __init__(self, target: str, mode: str = "bounty", auto_yes: bool = False, dry_run: bool = False) -> None:
+    def __init__(self, target: str, mode: str = "bounty", auto_yes: bool = False, dry_run: bool = False, provider: str | None = None) -> None:
         self.target = target
         self.mode = mode
         self.auto_yes = auto_yes
         self.dry_run = dry_run
+        self.provider = provider
         OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def run(self) -> dict[str, Any]:
-        log_event("controller_start", {"target": self.target, "mode": self.mode})
+        log_event("controller_start", {"target": self.target, "mode": self.mode, "provider": self.provider})
         (OUT_DIR / "agent-registry.md").write_text(registry_markdown(), encoding="utf-8")
-        model_route = choose_model("deep_review")
+        model_route = choose_model("deep_review") if not self.provider else None
         tool_results = self.run_tool_stage()
         agent_results = self.run_agent_stage()
+        ai_review = self.run_ai_review(agent_results)
         summary = {
             "target": self.target,
             "mode": self.mode,
-            "model_route": model_route.__dict__,
+            "model_route": model_route.__dict__ if model_route else {"provider": self.provider, "reason": "explicit provider selected"},
             "providers": provider_status(),
             "tool_results": tool_results,
             "agent_results": agent_results,
+            "ai_review": ai_review,
             "policy": "Evidence-first review. Candidates are not confirmed until validated on authorized assets.",
         }
         (OUT_DIR / "agent-core-summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-        remember_target(self.target, {"mode": self.mode, "agent_count": len(agent_results), "tool_count": len(tool_results)})
+        remember_target(self.target, {"mode": self.mode, "agent_count": len(agent_results), "tool_count": len(tool_results), "provider": self.provider})
         log_event("controller_complete", {"target": self.target, "agent_count": len(agent_results)})
         return summary
 
@@ -80,6 +84,29 @@ class AgentCoreController:
             (out / f"{agent.name}.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
             results.append(result)
         return results
+
+    def run_ai_review(self, agent_results: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.dry_run:
+            return {"ok": False, "skipped": True, "reason": "dry-run mode"}
+        compact = []
+        for result in agent_results:
+            compact.append({
+                "agent": result.get("agent"),
+                "candidate_count": len(result.get("candidates", [])),
+                "confidence": result.get("confidence"),
+                "sample_candidates": result.get("candidates", [])[:5],
+            })
+        prompt = (
+            "Review these VulnScope specialist outputs. Return concise JSON-like guidance with: "
+            "top_priorities, false_positive_risks, next_safe_steps, and reportability_notes. "
+            "Do not request secrets. Do not suggest destructive or unauthorized actions.\n\n"
+            + json.dumps(compact, indent=2, ensure_ascii=False)
+        )
+        response = safe_chat(prompt, provider_name=self.provider, task_type="deep_review", system="You are a safe authorized-assessment reviewer. Evidence-first validation only.")
+        review = {"ok": response.ok, "provider": response.provider, "model": response.model, "content": response.content, "error": response.error}
+        (OUT_DIR / "ai-review.md").write_text(response.content or response.error or "", encoding="utf-8")
+        log_event("ai_review", review)
+        return review
 
     def _load_evidence(self) -> dict[str, Any]:
         sources = ["reports/output/recon/domain-expansion.json", "reports/output/evidence.json", "reports/output/auth/account-comparison.json"]
