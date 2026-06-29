@@ -36,11 +36,19 @@ def _ensure_path_env() -> dict[str, str]:
     return env
 
 
+def _sudo_apt(*args: str) -> bool:
+    """Non-interactive apt helper. Fails fast if sudo needs a password."""
+    if not shutil.which("sudo"):
+        return False
+    return _run(["sudo", "-n", "apt-get", *args])
+
+
 def ensure_prerequisites(install_type: str | None, yes: bool = False, allow_system: bool = True) -> bool:
     """Best-effort dependency repair for Kali/Linux.
 
     User-local installs are preferred. System package installation is attempted
-    only when `yes` and `allow_system` are both true.
+    only when `yes` and `allow_system` are both true. Sudo is non-interactive so
+    VulnScope will fail cleanly instead of hanging for a password.
     """
     if install_type == "go" and shutil.which("go"):
         return True
@@ -51,9 +59,9 @@ def ensure_prerequisites(install_type: str | None, yes: bool = False, allow_syst
     if not shutil.which("apt-get"):
         return False
     if install_type == "go":
-        return _run(["sudo", "apt-get", "update"]) and _run(["sudo", "apt-get", "install", "-y", "golang-go", "git"])
+        return _sudo_apt("update") and _sudo_apt("install", "-y", "golang-go", "git")
     if install_type == "pipx_or_pip":
-        return _run(["sudo", "apt-get", "update"]) and _run(["sudo", "apt-get", "install", "-y", "python3-pip", "pipx", "git"])
+        return _sudo_apt("update") and _sudo_apt("install", "-y", "python3-pip", "pipx", "git")
     return False
 
 
