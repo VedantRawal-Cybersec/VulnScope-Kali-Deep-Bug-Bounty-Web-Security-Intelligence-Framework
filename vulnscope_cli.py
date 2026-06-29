@@ -53,6 +53,7 @@ MENU = """
 [27] ARTEMIS Passive Autonomous         24/7 passive recon + ML-style prediction + reports
 [28] ARTEMIS Web Dashboard              Local passive intelligence dashboard on port 8080
 [29] ARTEMIS Init Config                Create artemis_config.yaml example
+[30] ARTEMIS Proxy Passive Bridge       Scope seeds + passive finding import, no active tests
 [0] Exit
 """
 
@@ -66,7 +67,7 @@ SAFE_COMMAND_PREFIXES = (
     "python3 api_intel_cli.py", "python3 auth_diff_v2_cli.py", "python3 reportability_cli.py",
     "python3 target_history_cli.py", "python3 vulnscope_modes_cli.py", "python3 google_pair_cli.py",
     "python3 safe_aegis_cli.py", "python3 aegis_public_search_cli.py", "python3 aegis_feedback_cli.py",
-    "python3 artemis_autonomous_cli.py", "python3 artemis_dashboard.py", "cat reports/output/",
+    "python3 artemis_autonomous_cli.py", "python3 artemis_dashboard.py", "python3 artemis_proxy_passive_cli.py", "cat reports/output/",
 )
 
 
@@ -99,16 +100,10 @@ def create_session_scope(target: str, include_subdomains: bool) -> Path:
     if include_subdomains and host not in {"localhost"} and not host.replace(".", "").isdigit():
         allowed.append("*." + host)
     lines = [
-        "name: vulnscope-confirmed-session",
-        "allowed_hosts:",
-        *[f"  - '{item}'" for item in allowed],
-        "blocked_hosts: []",
-        "allowed_schemes:", "  - https", "  - http",
-        "max_requests_per_minute: 30",
-        "active_testing_allowed: false",
-        "authenticated_testing_allowed: true",
-        "notes: 'Generated from VulnScope CLI after explicit user authorization confirmation. Safe evidence review only.'",
-        "",
+        "name: vulnscope-confirmed-session", "allowed_hosts:", *[f"  - '{item}'" for item in allowed],
+        "blocked_hosts: []", "allowed_schemes:", "  - https", "  - http", "max_requests_per_minute: 30",
+        "active_testing_allowed: false", "authenticated_testing_allowed: true",
+        "notes: 'Generated from VulnScope CLI after explicit user authorization confirmation. Safe evidence review only.'", "",
     ]
     SESSION_SCOPE.write_text("\n".join(lines), encoding="utf-8")
     AUTH_OUT.mkdir(parents=True, exist_ok=True)
@@ -179,6 +174,7 @@ def ai_full_review() -> None:
     provider = input("AI provider (blank to skip, e.g. anthropic/openai): ").strip() or None
     max_cycles = input("Max thinking cycles [8]: ").strip() or "8"
     use_google_pair = input("Run two-Google-account precision workflow if saved/login available? yes/no: ").strip().lower() in {"y", "yes"}
+    use_proxy = input("Run ARTEMIS Proxy Passive Bridge if local API is available? yes/no: ").strip().lower() in {"y", "yes"}
     commands = [
         ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
         ("Neural tool mind", f"python3 tool_mind_cli.py --target {target} --mode crazy --install-needed --yes", "1-30 min"),
@@ -186,6 +182,10 @@ def ai_full_review() -> None:
         ("AEGIS public search", f"python3 aegis_public_search_cli.py --target {target}", "5-30s"),
         ("AEGIS feedback planner", f"python3 aegis_feedback_cli.py --target {target}", "5-20s"),
         ("ARTEMIS passive intelligence", f"python3 artemis_autonomous_cli.py --config artemis_config.yaml --scope-policy {scope} --once", "30s-5 min"),
+    ]
+    if use_proxy:
+        commands.append(("ARTEMIS Proxy Passive Bridge", f"python3 artemis_proxy_passive_cli.py --target {target} --limit 80", "5-30s"))
+    commands += [
         ("Mega tools status", "python3 mega_tools_cli.py --status", "10-30s"),
         ("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --yes", "1-5 min"),
         ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
@@ -206,6 +206,7 @@ def ai_full_review() -> None:
     print("\n[+] Full review complete.")
     print("[+] Run history: reports/output/cli/interactive-full-review.json")
     print("[+] ARTEMIS: reports/output/artemis/run/artemis-run.md")
+    print("[+] Proxy Passive Bridge: reports/output/artemis/burp-safe/burp-safe.md")
     print("[+] AEGIS feedback: reports/output/aegis/feedback/feedback-plan.md")
     print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
     print("[+] Final report: reports/output/report-v2/executive-report-v2.md")
@@ -248,6 +249,7 @@ def menu_loop() -> None:
             elif choice == "27": run_step("ARTEMIS Passive Autonomous", "python3 artemis_autonomous_cli.py --config artemis_config.yaml --scope-policy scope_policy.yaml --once", "30s-5 min")
             elif choice == "28": run_step("ARTEMIS Web Dashboard", "python3 artemis_dashboard.py", "runs until Ctrl+C")
             elif choice == "29": run_step("ARTEMIS Init Config", "python3 artemis_autonomous_cli.py --init-config --config artemis_config.yaml", "instant")
+            elif choice == "30": target = optional_target_label(); run_step("ARTEMIS Proxy Passive Bridge", "python3 artemis_proxy_passive_cli.py" + (f" --target {target}" if target else ""), "5-30s")
             elif choice == "0": print("Goodbye."); return
             else: print("Invalid option.")
         except Exception as exc:
