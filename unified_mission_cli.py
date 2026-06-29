@@ -60,16 +60,24 @@ def write_artemis_runtime_config(target: str) -> Path:
     return path
 
 
-def build_stages(target: str, scope_policy: str, max_cycles: int, include_google_pair: bool) -> list[list[MissionStep]]:
+def build_stages(target: str, scope_policy: str, max_cycles: int, include_google_pair: bool, no_clean: bool = False) -> list[list[MissionStep]]:
     target_q = q(target)
     scope_q = q(scope_policy)
     host_q = q(host_from_target(target))
     artemis_cfg = q(str(write_artemis_runtime_config(target)))
+    preflight_cmd = f"python3 mission_preflight_cli.py --target {target_q} --scope-policy {scope_q}"
+    if no_clean:
+        preflight_cmd += " --no-clean"
     stages: list[list[MissionStep]] = []
 
-    # Stage 1: repair/prepare. Tool installs are kept single-threaded to avoid PATH and package-manager races.
+    # Stage 0: hard gate. Prevents typo targets and stale findings from previous missions.
     stages.append([
-        MissionStep("Neural Tool Mind", f"python3 tool_mind_cli.py --target {target_q} --mode crazy --install-needed --yes", 3600, critical=False),
+        MissionStep("Mission Preflight", preflight_cmd, 600, critical=True),
+    ])
+
+    # Stage 1: repair/prepare. Tool installs are single-threaded to avoid package-manager races.
+    stages.append([
+        MissionStep("Neural Tool Mind", f"python3 tool_mind_cli.py --target {target_q} --mode crazy --install-needed --yes", 3600),
     ])
 
     # Stage 2: independent low-risk intel and diagnostics in parallel.
@@ -104,19 +112,11 @@ def build_stages(target: str, scope_policy: str, max_cycles: int, include_google
         MissionStep("Target History", f"python3 target_history_cli.py --target {target_q}", 900),
     ])
 
-    # Stage 5: reporting. Report depends on cards/ranking, so this is ordered.
-    stages.append([
-        MissionStep("Evidence Cards", f"python3 evidence_cards_cli.py --target {target_q}", 900),
-    ])
-    stages.append([
-        MissionStep("Reportability Ranking", f"python3 reportability_cli.py --target {target_q}", 900),
-    ])
-    stages.append([
-        MissionStep("Final Report", f"python3 report_v2_cli.py --target {target_q}", 900),
-    ])
-    stages.append([
-        MissionStep("JARVIS Summary", f"python3 jarvis_summary_cli.py --target {target_q}", 900),
-    ])
+    # Stage 5+: ordered reporting.
+    stages.append([MissionStep("Evidence Cards", f"python3 evidence_cards_cli.py --target {target_q}", 900)])
+    stages.append([MissionStep("Reportability Ranking", f"python3 reportability_cli.py --target {target_q}", 900)])
+    stages.append([MissionStep("Final Report", f"python3 report_v2_cli.py --target {target_q}", 900)])
+    stages.append([MissionStep("JARVIS Summary", f"python3 jarvis_summary_cli.py --target {target_q}", 900)])
     return stages
 
 
@@ -124,13 +124,7 @@ def run_step(step: MissionStep) -> dict[str, Any]:
     started = time.time()
     try:
         proc = subprocess.run(["bash", "-lc", step.command], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=step.timeout)
-        return {
-            **step.as_dict(),
-            "ok": proc.returncode == 0,
-            "exit_code": proc.returncode,
-            "seconds": round(time.time() - started, 2),
-            "output_tail": proc.stdout[-5000:],
-        }
+        return {**step.as_dict(), "ok": proc.returncode == 0, "exit_code": proc.returncode, "seconds": round(time.time() - started, 2), "output_tail": proc.stdout[-5000:]}
     except Exception as exc:
         return {**step.as_dict(), "ok": False, "error": str(exc), "seconds": round(time.time() - started, 2), "output_tail": ""}
 
@@ -149,7 +143,7 @@ def run_stage(stage_index: int, steps: list[MissionStep], max_workers: int) -> l
             print(f"[{status}] {step.label} — {result.get('seconds')}s")
             tail = str(result.get("output_tail") or "").strip()
             if tail:
-                print(tail[-1200:])
+                print(tail[-1400:])
     return results
 
 
@@ -167,6 +161,7 @@ def summarize(results: list[dict[str, Any]], target: str) -> None:
             if not r.get("ok"):
                 print(f"- {r.get('label')} | exit={r.get('exit_code')} | see output tail in unified-mission.json")
     print("\nPrimary outputs:")
+    print("- reports/output/mission-preflight/preflight.md")
     print("- reports/output/unified-mission/unified-mission.md")
     print("- reports/output/evidence-cards/evidence-cards.md")
     print("- reports/output/reportability/reportability.md")
@@ -174,10 +169,10 @@ def summarize(results: list[dict[str, Any]], target: str) -> None:
     print("- reports/output/artemis/run/artemis-run.md")
 
 
-def run_mission(target: str, scope_policy: str, max_cycles: int, max_workers: int, include_google_pair: bool, plan_only: bool = False) -> dict[str, Any]:
+def run_mission(target: str, scope_policy: str, max_cycles: int, max_workers: int, include_google_pair: bool, plan_only: bool = False, no_clean: bool = False) -> dict[str, Any]:
     OUT.mkdir(parents=True, exist_ok=True)
     decision = load_scope_policy(scope_policy).check(target)
-    stages = build_stages(target, scope_policy, max_cycles, include_google_pair)
+    stages = build_stages(target, scope_policy, max_cycles, include_google_pair, no_clean=no_clean)
     plan = [[step.as_dict() for step in stage] for stage in stages]
     if plan_only:
         payload = {"target": target, "scope_policy": scope_policy, "plan_only": True, "stages": plan}
@@ -191,15 +186,18 @@ def run_mission(target: str, scope_policy: str, max_cycles: int, max_workers: in
         return payload
     started = time.time()
     all_results: list[dict[str, Any]] = []
+    stopped_early = False
     for i, stage in enumerate(stages, 1):
         stage_results = run_stage(i, stage, max_workers=max_workers)
         all_results.extend(stage_results)
         if any((not r.get("ok")) and r.get("critical") for r in stage_results):
+            stopped_early = True
             break
     payload = {
         "target": target,
         "scope_policy": scope_policy,
         "allowed": True,
+        "stopped_early": stopped_early,
         "started_at": started,
         "ended_at": time.time(),
         "seconds": round(time.time() - started, 2),
@@ -210,7 +208,7 @@ def run_mission(target: str, scope_policy: str, max_cycles: int, max_workers: in
         "stages": plan,
     }
     (OUT / "unified-mission.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = [f"# VulnScope Unified Autonomous Mission — {target}", "", f"Tasks: `{payload['summary']['tasks']}`", f"OK: `{payload['summary']['ok']}`", f"Failed/review: `{payload['summary']['failed']}`", "", "## Task Results"]
+    lines = [f"# VulnScope Unified Autonomous Mission — {target}", "", f"Stopped early: `{stopped_early}`", f"Tasks: `{payload['summary']['tasks']}`", f"OK: `{payload['summary']['ok']}`", f"Failed/review: `{payload['summary']['failed']}`", "", "## Task Results"]
     for r in all_results:
         lines.append(f"- `{r.get('label')}` ok=`{r.get('ok')}` seconds=`{r.get('seconds')}` command=`{r.get('command')}`")
     (OUT / "unified-mission.md").write_text("\n".join(lines), encoding="utf-8")
@@ -226,6 +224,7 @@ def main() -> int:
     parser.add_argument("--max-workers", type=int, default=6)
     parser.add_argument("--include-google-pair", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--no-clean", action="store_true", help="Do not clean stale output directories at preflight")
     parser.add_argument("--yes", action="store_true")
     args = parser.parse_args()
     if not args.yes and not args.plan_only:
@@ -233,8 +232,8 @@ def main() -> int:
         if answer != "YES":
             print(json.dumps({"started": False, "reason": "confirmation not provided"}, indent=2))
             return 1
-    result = run_mission(args.target, args.scope_policy, args.max_cycles, args.max_workers, args.include_google_pair, args.plan_only)
-    return 0 if result.get("allowed", True) is not False else 1
+    result = run_mission(args.target, args.scope_policy, args.max_cycles, args.max_workers, args.include_google_pair, args.plan_only, no_clean=args.no_clean)
+    return 0 if result.get("allowed", True) is not False and not result.get("stopped_early") else 1
 
 
 if __name__ == "__main__":
