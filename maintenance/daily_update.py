@@ -72,8 +72,9 @@ def collect_latest_intel() -> dict[str, Any]:
 
 def update_nuclei_templates() -> dict[str, Any]:
     checks = []
-    checks.append(_run(["bash", "-lc", "command -v nuclei >/dev/null 2>&1 && nuclei -update || true"]))
-    checks.append(_run(["bash", "-lc", "command -v nuclei >/dev/null 2>&1 && nuclei -update-templates || true"]))
+    # Nuclei v3.8.0 no longer accepts the old -update flag shown in earlier logs.
+    # Binary updates are handled by arsenal.installer.upgrade_tool(); this function only refreshes templates.
+    checks.append(_run(["bash", "-lc", "command -v nuclei >/dev/null 2>&1 && (nuclei -update-templates || nuclei -ut) || true"]))
     return {"nuclei_updates": checks}
 
 
