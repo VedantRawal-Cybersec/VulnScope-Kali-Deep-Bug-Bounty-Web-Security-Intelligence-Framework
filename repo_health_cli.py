@@ -17,6 +17,8 @@ NEEDED = ['requests', 'bs4', 'rich', 'yaml', 'jinja2', 'tldextract']
 CHECKS = [
     ['python3', 'auto_mode.py', '--version'],
     ['python3', 'coverage_matrix.py'],
+    ['python3', 'mega_tools_cli.py', '--status'],
+    ['python3', 'evidence_cards_cli.py', '--target', 'https://example.com'],
     ['python3', 'report_v2_cli.py', '--target', 'https://example.com'],
 ]
 
@@ -62,22 +64,28 @@ def main() -> int:
         actions.append(run(['python3', 'daily_update_cli.py', '--profile', 'bug-bounty-safe', '--force', '--yes'], 1800))
     comp = compile_all()
     cli = [run(c) for c in CHECKS]
+    imp = imports()
     data = {
         'started_at': started,
         'ended_at': time.time(),
         'actions': actions,
-        'imports': imports(),
+        'imports': imp,
         'compile': comp,
         'cli_checks': cli,
         'summary': {
             'compile_errors': len([x for x in comp if not x.get('ok')]),
-            'missing_imports': [x['module'] for x in imports() if not x.get('ok')],
+            'missing_imports': [x['module'] for x in imp if not x.get('ok')],
             'cli_failures': len([x for x in cli if not x.get('ok')]),
         },
     }
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / 'health.json').write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
     lines = ['# VulnScope Repo Health', '', f"Compile errors: `{data['summary']['compile_errors']}`", f"Missing imports: `{data['summary']['missing_imports']}`", f"CLI failures: `{data['summary']['cli_failures']}`", '']
+    if data['summary']['cli_failures']:
+        lines.append('## CLI Failures')
+        for item in cli:
+            if not item.get('ok'):
+                lines.append(f"- `{' '.join(item.get('command', []))}`: {item.get('error') or item.get('output_tail')}")
     for item in comp:
         if not item.get('ok'):
             lines.append(f"- `{item['file']}`: {item.get('error')}")
