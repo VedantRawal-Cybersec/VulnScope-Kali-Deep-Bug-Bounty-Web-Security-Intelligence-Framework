@@ -4,11 +4,10 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
 
@@ -17,6 +16,7 @@ EVENTS = Path("reports/output/control-center/events.jsonl")
 ARTEMIS = Path("reports/output/artemis/run/artemis-run.json")
 EVIDENCE = Path("reports/output/evidence-cards/evidence-cards.json")
 REPORTABILITY = Path("reports/output/reportability/reportability.json")
+MISSION_VERDICTS = Path("reports/output/mission-verdicts/mission-verdicts.json")
 CONFIG = Path("autonomous_control_config.yaml")
 RUN_LOCK = threading.Lock()
 CURRENT_PROCESS: subprocess.Popen | None = None
@@ -28,7 +28,7 @@ HTML = r"""
   <title>VulnScope Control Center</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#05070d; --panel:#0c1220; --panel2:#10192b; --line:#26364f; --text:#eaf2ff; --muted:#8ba3c7; --cyan:#59e6ff; --green:#59ff9c; --amber:#ffd166; --red:#ff5d73; }
+    :root { --bg:#05070d; --panel:#0c1220; --line:#26364f; --text:#eaf2ff; --muted:#8ba3c7; --cyan:#59e6ff; --green:#59ff9c; --amber:#ffd166; --red:#ff5d73; }
     * { box-sizing:border-box; }
     body { margin:0; background:radial-gradient(circle at top left,#15203a 0,#05070d 36%,#02030a 100%); color:var(--text); font-family:Inter,Segoe UI,Arial,sans-serif; }
     .layout { display:grid; grid-template-columns:280px 1fr; min-height:100vh; }
@@ -42,14 +42,12 @@ HTML = r"""
     .buttons { display:flex; gap:10px; flex-wrap:wrap; }
     button { border:1px solid var(--line); background:#0e2038; color:var(--text); padding:11px 14px; border-radius:12px; cursor:pointer; font-weight:700; }
     button.primary { background:linear-gradient(90deg,#0c9bb5,#1457ff); border-color:#3bdfff; }
-    button:hover { filter:brightness(1.14); }
     .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
     .card { background:linear-gradient(180deg,rgba(17,28,50,.95),rgba(7,12,23,.95)); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 20px 50px rgba(0,0,0,.25); }
     .metric { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:1px; }
     .value { font-size:27px; font-weight:800; margin-top:8px; }
     .ok { color:var(--green); } .warn { color:var(--amber); } .bad { color:var(--red); } .cyan { color:var(--cyan); }
-    .wide { grid-column:span 2; }
-    .full { grid-column:1/-1; }
+    .wide { grid-column:span 2; } .full { grid-column:1/-1; }
     .timeline { max-height:340px; overflow:auto; padding-right:6px; }
     .event { border-left:3px solid var(--cyan); padding:8px 0 8px 12px; margin:8px 0; color:#dce9ff; }
     .event small { color:var(--muted); display:block; margin-top:3px; }
@@ -73,21 +71,18 @@ HTML = r"""
   </aside>
   <main class="main">
     <div class="top">
-      <div><div class="title">Mission Control</div><div class="sub">Think → Plan → Correlate → Report</div></div>
-      <div class="buttons">
-        <button class="primary" onclick="runOnce()">Run Autonomous Cycle</button>
-        <button onclick="refresh()">Refresh</button>
-      </div>
+      <div><div class="title">Mission Control</div><div class="sub">Think → Plan → Correlate → Verdicts → Report</div></div>
+      <div class="buttons"><button class="primary" onclick="runOnce()">Run Autonomous Cycle</button><button onclick="refresh()">Refresh</button></div>
     </div>
     <section class="grid">
       <div class="card"><div class="metric">Running</div><div class="value" id="running">-</div></div>
       <div class="card"><div class="metric">Targets</div><div class="value" id="targets">-</div></div>
       <div class="card"><div class="metric">Events</div><div class="value" id="eventsCount">-</div></div>
-      <div class="card"><div class="metric">Findings</div><div class="value" id="findingsCount">-</div></div>
+      <div class="card"><div class="metric">Verdict Rows</div><div class="value" id="findingsCount">-</div></div>
       <div class="card wide"><h3>Current Phase</h3><div id="phase" class="console">-</div></div>
       <div class="card wide"><h3>JARVIS Next Action</h3><div id="nextAction" class="console">-</div></div>
       <div class="card wide"><h3>Mission Events</h3><div class="timeline" id="events"></div></div>
-      <div class="card wide"><h3>Top Review Items</h3><table><thead><tr><th>Type</th><th>Where</th><th>Why</th></tr></thead><tbody id="findings"></tbody></table></div>
+      <div class="card wide"><h3>Top Module Verdicts</h3><table><thead><tr><th>Module</th><th>Item</th><th>Verdict / Evidence</th></tr></thead><tbody id="findings"></tbody></table></div>
       <div class="card full"><h3>Last Run Targets</h3><table><thead><tr><th>Target</th><th>Allowed</th><th>Phases</th><th>Status</th></tr></thead><tbody id="targetRows"></tbody></table></div>
     </section>
   </main>
@@ -107,7 +102,7 @@ async function refresh(){
   document.getElementById('phase').textContent = JSON.stringify(s.current_phase || {}, null, 2);
   document.getElementById('nextAction').textContent = data.next_action || 'Run a cycle to generate next action.';
   document.getElementById('events').innerHTML = ev.slice(-80).reverse().map(e => `<div class="event"><b>${esc(e.type)}</b><small>${new Date((e.ts||0)*1000).toLocaleString()} · ${esc(e.level)}</small><small>${esc(JSON.stringify(e.payload||{}).slice(0,280))}</small></div>`).join('');
-  document.getElementById('findings').innerHTML = findings.slice(0,25).map(f => `<tr><td>${esc(f.type||f.title||f.category||'review')}</td><td><code>${esc(f.where||f.url||f.endpoint||'n/a')}</code></td><td>${esc(f.reason||f.why_flagged||f.safe_next_step||'Evidence correlation')}</td></tr>`).join('');
+  document.getElementById('findings').innerHTML = findings.slice(0,35).map(f => `<tr><td>${esc(f.module||f.type||f.title||f.category||'review')}</td><td><code>${esc(f.item||f.where||f.url||f.endpoint||'n/a')}</code></td><td><b>${esc(f.verdict||'REVIEW')}</b><br>${esc(f.evidence||f.reason||f.why_flagged||f.safe_next_step||'Evidence correlation')}</td></tr>`).join('');
   const rows = s.targets || s.last_run?.targets || [];
   document.getElementById('targetRows').innerHTML = rows.map(t => `<tr><td><code>${esc(t.target)}</code></td><td>${t.allowed ? '<span class="ok">yes</span>' : '<span class="bad">no</span>'}</td><td>${(t.phases||[]).length}</td><td>${esc(t.reason||((t.phases||[]).every(p=>p.ok)?'ok':'review'))}</td></tr>`).join('');
 }
@@ -141,6 +136,9 @@ def load_events(limit: int = 200) -> list[dict[str, Any]]:
 
 def collect_findings() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    verdicts = load_json(MISSION_VERDICTS)
+    if isinstance(verdicts, dict):
+        rows.extend([x for x in verdicts.get("rows", []) if isinstance(x, dict)])
     evidence = load_json(EVIDENCE)
     if isinstance(evidence, dict):
         rows.extend([x for x in (evidence.get("cards") or evidence.get("candidates") or []) if isinstance(x, dict)])
@@ -151,8 +149,8 @@ def collect_findings() -> list[dict[str, Any]]:
     if isinstance(artemis, dict):
         for t in artemis.get("targets", []):
             if isinstance(t, dict):
-                rows.append({"type": "ARTEMIS_TARGET_SUMMARY", "where": t.get("target"), "reason": str(t.get("decision", {})), "safe_next_step": "Review ARTEMIS report."})
-    return rows[:120]
+                rows.append({"module": "ARTEMIS", "item": t.get("target"), "verdict": t.get("report", {}).get("risk", "INFO"), "evidence": str(t.get("decision", {}))})
+    return rows[:200]
 
 
 def next_action(state: dict[str, Any], findings: list[dict[str, Any]]) -> str:
@@ -162,8 +160,11 @@ def next_action(state: dict[str, Any], findings: list[dict[str, Any]]) -> str:
     if not state.get("last_run"):
         return "No completed autonomous cycle yet. Press Run Autonomous Cycle."
     if not findings:
-        return "Low evidence. Run ARTEMIS passive mode, public search, and advanced correlation again."
-    return "Review the top evidence cards, validate only authorized findings manually, then generate the final report."
+        return "No verdict rows yet. Run the unified autonomous mission."
+    high = [f for f in findings if str(f.get("verdict", "")).upper() in {"REVIEW_HIGH", "HIGH", "VULNERABLE"}]
+    if high:
+        return "High-priority review rows exist. Open reports/output/mission-verdicts/mission-verdicts.md and validate authorized evidence manually."
+    return "Review the mission verdict report and final report, then rerun with corrected target/scope if needed."
 
 
 @app.route("/")
