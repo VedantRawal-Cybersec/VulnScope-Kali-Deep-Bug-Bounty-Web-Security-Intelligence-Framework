@@ -35,10 +35,11 @@ class Decision:
 
 class AutonomousDecisionEngine:
     """Safe planner that decides what VulnScope should do next."""
-    def __init__(self, target: str, provider: str | None = None, mode: str = "comprehensive") -> None:
+    def __init__(self, target: str, provider: str | None = None, mode: str = "comprehensive", scope_policy: str = "scope_policy.yaml") -> None:
         self.target = target
         self.provider = provider
         self.mode = mode
+        self.scope_policy = scope_policy
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         self.data = {name: self._load(path) for name, path in INPUTS.items()}
 
@@ -52,6 +53,7 @@ class AutonomousDecisionEngine:
         matrix = self.data.get("coverage_matrix") or {}
         google = self.data.get("google_context") or {}
         quality = self.data.get("quality") or {}
+        scope_arg = f" --scope-policy {self.scope_policy}" if self.scope_policy else ""
 
         if not matrix:
             decisions.append(Decision(5, "coverage", "build_module_coverage_matrix", "No module coverage matrix exists yet.", "python3 coverage_matrix.py"))
@@ -64,12 +66,12 @@ class AutonomousDecisionEngine:
             decisions.append(Decision(11, "maintenance", "repair_missing_tools", f"Healthcheck still shows {health.get('missing_count')} missing tools.", "python3 daily_update_cli.py --profile bug-bounty-safe --force --yes"))
 
         if not safe:
-            decisions.append(Decision(20, "discovery", "run_safe_discovery", "No safe-discovery evidence exists yet.", f"python3 autopilot_cli.py --target {self.target} --mode {self.mode} --yes"))
+            decisions.append(Decision(20, "discovery", "run_safe_discovery", "No safe-discovery evidence exists yet.", f"python3 autopilot_cli.py --target {self.target} --mode {self.mode}{scope_arg} --yes"))
         elif safe.get("summary", {}).get("findings", 0):
             decisions.append(Decision(35, "review", "review_safe_discovery", "Safe Discovery produced candidates that should be reviewed and correlated.", "cat reports/output/safe-discovery/safe-discovery.md"))
 
         if not comp:
-            decisions.append(Decision(25, "category_review", "run_comprehensive_suite", "No comprehensive category suite output exists yet.", f"python3 comprehensive_suite_cli.py --target {self.target} --yes"))
+            decisions.append(Decision(25, "category_review", "run_comprehensive_suite", "No comprehensive category suite output exists yet.", f"python3 comprehensive_suite_cli.py --target {self.target}{scope_arg} --yes"))
         else:
             summary = comp.get("summary", {})
             if summary.get("candidates", 0):
@@ -91,10 +93,10 @@ class AutonomousDecisionEngine:
                 decisions.append(Decision(70, "coverage", "increase_evidence", "No accepted/review findings yet. More evidence is needed before reporting.", f"python3 auto_mode.py --url {self.target} --profile bug-bounty-safe --full --yes"))
 
         if self.provider:
-            decisions.append(Decision(80, "model_review", "run_model_council", "Provider configured; run model council through autopilot for consensus review.", f"python3 autopilot_cli.py --target {self.target} --mode {self.mode} --provider {self.provider} --yes"))
+            decisions.append(Decision(80, "model_review", "run_model_council", "Provider configured; run model council through autopilot for consensus review.", f"python3 autopilot_cli.py --target {self.target} --mode {self.mode} --provider {self.provider}{scope_arg} --yes"))
 
         ordered = sorted(decisions, key=lambda d: d.priority)
-        payload = {"target": self.target, "mode": self.mode, "generated_at": started, "rules": {"state_change": False, "credential_collection": False, "out_of_scope": False}, "next_action": ordered[0].to_dict() if ordered else None, "decisions": [d.to_dict() for d in ordered], "inputs_seen": {k: bool(v) for k, v in self.data.items()}}
+        payload = {"target": self.target, "mode": self.mode, "scope_policy": self.scope_policy, "generated_at": started, "rules": {"state_change": False, "credential_collection": False, "out_of_scope": False}, "next_action": ordered[0].to_dict() if ordered else None, "decisions": [d.to_dict() for d in ordered], "inputs_seen": {k: bool(v) for k, v in self.data.items()}}
         (OUT_DIR / "decision-plan.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         (OUT_DIR / "decision-plan.md").write_text(self._markdown(payload), encoding="utf-8")
         return payload
@@ -120,5 +122,5 @@ class AutonomousDecisionEngine:
             lines += [f"### P{item['priority']} — {item['action']}", f"- Stage: `{item['stage']}`", f"- Reason: {item['reason']}", "```bash", item["command"], "```", ""]
         return "\n".join(lines)
 
-def build_decision_plan(target: str, provider: str | None = None, mode: str = "comprehensive") -> dict[str, Any]:
-    return AutonomousDecisionEngine(target=target, provider=provider, mode=mode).decide()
+def build_decision_plan(target: str, provider: str | None = None, mode: str = "comprehensive", scope_policy: str = "scope_policy.yaml") -> dict[str, Any]:
+    return AutonomousDecisionEngine(target=target, provider=provider, mode=mode, scope_policy=scope_policy).decide()
