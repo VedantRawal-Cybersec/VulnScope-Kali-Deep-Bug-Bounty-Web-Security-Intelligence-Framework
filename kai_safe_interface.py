@@ -98,13 +98,19 @@ def build_command(session: dict) -> list[str]:
 def main() -> int:
     session = ask_target_and_consent()
     print("\n[+] Repairing optional helper tools before autonomous scan")
-    subprocess.call(["python3", "tool_doctor_cli.py", "--install", "--yes"])
+    doctor_code = subprocess.call(["python3", "tool_doctor_cli.py", "--install", "--yes"])
+    if doctor_code != 0:
+        print("[!] Tool Doctor returned a non-zero exit code. Continuing because these helpers are optional.")
     cmd = build_command(session)
     print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
     code = subprocess.call(cmd)
-    print("\n[+] Scan finished. Open these reports:")
+    if code == 0:
+        print("\n[+] Scan finished successfully. Open these reports:")
+    else:
+        print(f"\n[!] Scan exited with code {code}. Open the reports/logs below to see the exact failing module:")
     print("- reports/output/autonomous-live/live-run.md")
+    print("- reports/output/autonomous-live/live-run.json")
     print("- reports/output/vulnscope-main/final-summary.md")
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
