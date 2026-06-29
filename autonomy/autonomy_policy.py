@@ -16,6 +16,8 @@ class AutonomyPolicy:
     level: int = 2
     max_cycles: int = 3
     max_runtime_minutes: int = 30
+    allow_daily_updates: bool = True
+    daily_update_max_age_hours: int = 24
     allow_active_tools: bool = False
     allow_authenticated_review: bool = False
     allow_model_council: bool = True
@@ -25,7 +27,7 @@ class AutonomyPolicy:
     require_scope_policy: bool = True
     stop_on_scope_block: bool = True
     min_quality_threshold: float = 0.45
-    notes: str = "Safe autonomy: plan, review, dedupe, report. No destructive or unauthorized actions."
+    notes: str = "Safe autonomy: plan, review, dedupe, report, and maintain tools. No destructive or unauthorized actions."
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -33,6 +35,8 @@ class AutonomyPolicy:
     def allows_stage(self, stage: str) -> bool:
         if stage in {"scope", "passive_recon", "agent_review", "quality"}:
             return True
+        if stage == "daily_update":
+            return self.allow_daily_updates and self.level >= 1
         if stage == "safe_discovery":
             return self.level >= 1
         if stage == "model_council":
@@ -63,6 +67,8 @@ def load_autonomy_policy(path: str | Path = "autonomy_policy.yaml") -> AutonomyP
         level=int(data.get("level", 2)),
         max_cycles=int(data.get("max_cycles", 3)),
         max_runtime_minutes=int(data.get("max_runtime_minutes", 30)),
+        allow_daily_updates=bool(data.get("allow_daily_updates", True)),
+        daily_update_max_age_hours=int(data.get("daily_update_max_age_hours", 24)),
         allow_active_tools=bool(data.get("allow_active_tools", False)),
         allow_authenticated_review=bool(data.get("allow_authenticated_review", False)),
         allow_model_council=bool(data.get("allow_model_council", True)),
@@ -83,6 +89,8 @@ def write_default_autonomy_policy(path: str | Path = "autonomy_policy.yaml") -> 
     p.write_text("""level: 2
 max_cycles: 3
 max_runtime_minutes: 30
+allow_daily_updates: true
+daily_update_max_age_hours: 24
 allow_active_tools: false
 allow_authenticated_review: false
 allow_model_council: true
@@ -92,6 +100,6 @@ allow_report_generation: true
 require_scope_policy: true
 stop_on_scope_block: true
 min_quality_threshold: 0.45
-notes: 'Safe autonomous mode. Finds real misconfigurations and review candidates using low-impact evidence collection. Increase level only for owned labs or explicitly authorized assets.'
+notes: 'Safe autonomous mode. Maintains curated tools daily, collects latest defensive intelligence, and finds review candidates using low-impact evidence collection.'
 """, encoding="utf-8")
     return p
