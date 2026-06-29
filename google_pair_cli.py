@@ -7,6 +7,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from auth.credential_store import load_all_profiles
+
 OUT = Path("reports/output/google-pair")
 
 PHASES = [
@@ -22,6 +24,10 @@ PHASES = [
     ("Evidence cards", "python3 evidence_cards_cli.py --target {target}"),
     ("Reportability", "python3 reportability_cli.py --target {target}"),
 ]
+SETUP_HELP = [
+    "python3 auth_mode.py --setup-google-profile",
+    "python3 auth_mode.py --profile default --persistent-google-login --account both",
+]
 
 
 def run(command: str, timeout: int = 1800) -> dict:
@@ -30,14 +36,30 @@ def run(command: str, timeout: int = 1800) -> dict:
     return {"command": command, "ok": p.returncode == 0, "exit_code": p.returncode, "seconds": round(time.time() - started, 2), "output_tail": p.stdout[-2500:]}
 
 
+def profile_exists(profile: str) -> bool:
+    return profile in load_all_profiles(raw=True)
+
+
+def write_payload(payload: dict) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "google-pair-run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="VulnScope two-Google-account precision workflow")
     parser.add_argument("--target", required=True)
     parser.add_argument("--profile", default="default")
     parser.add_argument("--max-pages", type=int, default=25)
     parser.add_argument("--skip-login", action="store_true", help="Use existing saved Google storage states")
+    parser.add_argument("--skip-if-missing", action="store_true", help="Return success with skipped status if the auth profile does not exist")
     parser.add_argument("--yes", action="store_true")
     args = parser.parse_args()
+
+    if not profile_exists(args.profile):
+        payload = {"target": args.target, "profile": args.profile, "ok": False, "skipped": args.skip_if_missing, "reason": "auth_profile_missing", "setup_required": True, "setup_help": SETUP_HELP, "history": []}
+        write_payload(payload)
+        print(json.dumps({"ok": args.skip_if_missing, "skipped": args.skip_if_missing, "reason": "auth_profile_missing", "setup_help": SETUP_HELP, "output": "reports/output/google-pair/google-pair-run.json"}, indent=2))
+        return 0 if args.skip_if_missing else 1
 
     if not args.yes:
         ans = input("Confirm both Google accounts are yours/test accounts and authorized for this target? yes/no: ").strip().lower()
@@ -45,7 +67,6 @@ def main() -> int:
             print(json.dumps({"started": False, "reason": "authorization not confirmed"}, indent=2))
             return 1
 
-    OUT.mkdir(parents=True, exist_ok=True)
     history = []
     failed = False
     failed_label = None
@@ -63,17 +84,14 @@ def main() -> int:
             failed_label = label
             break
 
-    payload = {"target": args.target, "profile": args.profile, "max_pages": args.max_pages, "ok": not failed, "failed_label": failed_label, "history": history, "setup_required": failed, "setup_help": [
-        "python3 auth_mode.py --setup-google-profile",
-        "python3 auth_mode.py --profile default --persistent-google-login --account both",
-    ], "outputs": {
+    payload = {"target": args.target, "profile": args.profile, "max_pages": args.max_pages, "ok": not failed, "skipped": False, "failed_label": failed_label, "history": history, "setup_required": failed, "setup_help": SETUP_HELP if failed else [], "outputs": {
         "account_compare": "reports/output/auth/account-comparison.md",
         "google_context": "reports/output/auth/google-context/google-context-review.md",
         "auth_diff_v2": "reports/output/auth/differential-v2/auth-diff-v2.md",
         "evidence_cards": "reports/output/evidence-cards/evidence-cards.md",
         "reportability": "reports/output/reportability/reportability.md",
     }}
-    (OUT / "google-pair-run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_payload(payload)
     print(json.dumps({"ok": not failed, "output": "reports/output/google-pair/google-pair-run.json", "phases": len(history), "failed_label": failed_label}, indent=2))
     return 1 if failed else 0
 
