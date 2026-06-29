@@ -1,0 +1,28 @@
+version: '3.9'
+services:
+  artemis-core:
+    build:
+      context: .
+      dockerfile: Dockerfile.artemis
+    volumes:
+      - ./reports:/app/reports
+      - ./artemis_config.yaml:/app/artemis_config.yaml:ro
+      - ./scope_policy.yaml:/app/scope_policy.yaml:ro
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_CSE_ID=${GOOGLE_CSE_ID:-}
+    command: python3 artemis_autonomous_cli.py --config artemis_config.yaml --scope-policy scope_policy.yaml --forever
+    restart: unless-stopped
+
+  artemis-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.artemis
+    volumes:
+      - ./reports:/app/reports
+    ports:
+      - "8080:8080"
+    command: python3 artemis_dashboard.py
+    depends_on:
+      - artemis-core
+    restart: unless-stopped
