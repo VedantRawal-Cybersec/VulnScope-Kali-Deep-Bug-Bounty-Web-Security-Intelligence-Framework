@@ -97,6 +97,8 @@ def build_command(session: dict) -> list[str]:
 
 def main() -> int:
     session = ask_target_and_consent()
+    print("\n[+] Repairing optional helper tools before autonomous scan")
+    subprocess.call(["python3", "tool_doctor_cli.py", "--install", "--yes"])
     cmd = build_command(session)
     print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
@@ -107,6 +109,7 @@ def main() -> int:
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
     print("- reports/output/kai-interface/direct-session.json")
+    print("- reports/output/tool-doctor/tool-doctor.md")
     return code
 
 
