@@ -24,38 +24,38 @@ BANNER = r"""
 """
 
 MENU = """
-[1] AI Autonomous Full Review          Target -> Confirm -> Tool Mind -> Think -> Run -> Correlate -> Report
-[2] Daily Tool Repair / Update         Install missing tools, update templates, fix PATH issues
-[3] AI Tool Mind Healthcheck           Think what tools are needed, install missing supported tools
-[4] Passive Domain Recon               Subdomains, archived URLs, high-value routes
-[5] Comprehensive Category Review      XSS/IDOR/SQLi/API/Auth/CORS/GraphQL/etc. review candidates
-[6] Google Auth Context Review         Review saved Google/OAuth session evidence safely
-[7] Report Builder                     Generate final executive + technical report
-[8] Show Last AI Decision Plan          See what the engine decided and why
-[9] Show Last Final Report              Open final Markdown report
-[10] Coverage Matrix                   Prove category/module coverage counts
-[11] Repo Health / Error Check          Compile check, dependency check, CLI smoke tests
-[12] Mega Tools 50+ Installer/Status    Best-effort install/status for large safe tool registry
-[13] Evidence Cards                    What/where/why/how-to-check cards from collected findings
-[14] Advanced Modes Orchestrator        Normalize -> Graph -> Tool Brain -> API -> Diff -> Reportability
-[15] Asset Graph                        Unified host/endpoint/param/finding graph
-[16] API Intelligence                   API, GraphQL, object-auth and mutation surface mapping
-[17] Account A/B Differential v2        Deeper owned-account comparison review
-[18] Reportability Ranking              Rank candidates by evidence strength
-[19] Target History / Diff              Track new endpoints, params, findings over time
-[20] Two Google Account Precision       Google A/B login, crawl, compare, diff, evidence cards
-[21] Neural Tool Mind / Auto Installer  Human-like tool reasoning + install/repair plan
-[22] Tool PATH Repair                   Fix installed-but-not-found binaries and shell PATH
-[23] JARVIS Run Summary                 Show findings, why flagged, and next actions inline
-[24] AEGIS-SAFE Full Mode               Non-destructive autonomous safe review pipeline
-[25] AEGIS Public Search Intel          Google Custom Search OSINT candidates, redacted
-[26] AEGIS Feedback Planner             PID-style next-action planning from weak/strong evidence
-[27] ARTEMIS Passive Autonomous         24/7 passive recon + ML-style prediction + reports
-[28] ARTEMIS Web Dashboard              Local passive intelligence dashboard on port 8080
-[29] ARTEMIS Init Config                Create artemis_config.yaml example
-[30] ARTEMIS Proxy Passive Bridge       Scope seeds + passive finding import, no active tests
-[31] Control Center UI                  High-end autonomous mission interface on port 8090
-[32] Control Center Daemon              Full safe autonomous loop once/forever
+[1] UNIFIED AUTONOMOUS MISSION          Target -> Confirm -> Parallel modules -> Correlate -> Report
+[2] Daily Tool Repair / Update          Install missing tools, update templates, fix PATH issues
+[3] AI Tool Mind Healthcheck            Think what tools are needed, install missing supported tools
+[4] Passive Domain Recon                Subdomains, archived URLs, high-value routes
+[5] Comprehensive Category Review       XSS/IDOR/SQLi/API/Auth/CORS/GraphQL/etc. review candidates
+[6] Google Auth Context Review          Review saved Google/OAuth session evidence safely
+[7] Report Builder                      Generate final executive + technical report
+[8] Show Last AI Decision Plan           See what the engine decided and why
+[9] Show Last Final Report               Open final Markdown report
+[10] Coverage Matrix                    Prove category/module coverage counts
+[11] Repo Health / Error Check           Compile check, dependency check, CLI smoke tests
+[12] Mega Tools 50+ Installer/Status     Best-effort install/status for large safe tool registry
+[13] Evidence Cards                     What/where/why/how-to-check cards from collected findings
+[14] Advanced Modes Orchestrator         Normalize -> Graph -> Tool Brain -> API -> Diff -> Reportability
+[15] Asset Graph                         Unified host/endpoint/param/finding graph
+[16] API Intelligence                    API, GraphQL, object-auth and mutation surface mapping
+[17] Account A/B Differential v2         Deeper owned-account comparison review
+[18] Reportability Ranking               Rank candidates by evidence strength
+[19] Target History / Diff               Track new endpoints, params, findings over time
+[20] Two Google Account Precision        Google A/B login, crawl, compare, diff, evidence cards
+[21] Neural Tool Mind / Auto Installer   Human-like tool reasoning + install/repair plan
+[22] Tool PATH Repair                    Fix installed-but-not-found binaries and shell PATH
+[23] JARVIS Run Summary                  Show findings, why flagged, and next actions inline
+[24] AEGIS-SAFE Full Mode                Non-destructive autonomous safe review pipeline
+[25] AEGIS Public Search Intel           Google Custom Search OSINT candidates, redacted
+[26] AEGIS Feedback Planner              PID-style next-action planning from weak/strong evidence
+[27] ARTEMIS Passive Autonomous          24/7 passive recon + ML-style prediction + reports
+[28] ARTEMIS Web Dashboard               Local passive intelligence dashboard on port 8080
+[29] ARTEMIS Init Config                 Create artemis_config.yaml example
+[30] ARTEMIS Proxy Passive Bridge        Scope seeds + passive finding import, no active tests
+[31] Control Center UI                   High-end autonomous mission interface on port 8090
+[32] Control Center Daemon               Unified autonomous loop once/forever
 [0] Exit
 """
 
@@ -70,7 +70,7 @@ SAFE_COMMAND_PREFIXES = (
     "python3 target_history_cli.py", "python3 vulnscope_modes_cli.py", "python3 google_pair_cli.py",
     "python3 safe_aegis_cli.py", "python3 aegis_public_search_cli.py", "python3 aegis_feedback_cli.py",
     "python3 artemis_autonomous_cli.py", "python3 artemis_dashboard.py", "python3 artemis_proxy_passive_cli.py",
-    "python3 autonomous_control_daemon.py", "python3 control_center_ui.py", "cat reports/output/",
+    "python3 unified_mission_cli.py", "python3 autonomous_control_daemon.py", "python3 control_center_ui.py", "cat reports/output/",
 )
 
 
@@ -106,7 +106,7 @@ def create_session_scope(target: str, include_subdomains: bool) -> Path:
         "name: vulnscope-confirmed-session", "allowed_hosts:", *[f"  - '{item}'" for item in allowed],
         "blocked_hosts: []", "allowed_schemes:", "  - https", "  - http", "max_requests_per_minute: 30",
         "active_testing_allowed: false", "authenticated_testing_allowed: true",
-        "notes: 'Generated from VulnScope CLI after explicit user authorization confirmation. Safe evidence review only.'", "",
+        "notes: 'Generated from VulnScope CLI after explicit user authorization confirmation. Unified safe evidence review only.'", "",
     ]
     SESSION_SCOPE.write_text("\n".join(lines), encoding="utf-8")
     AUTH_OUT.mkdir(parents=True, exist_ok=True)
@@ -174,44 +174,19 @@ def run_step(label: str, command: str, estimate: str = "varies") -> dict:
 
 def ai_full_review() -> None:
     target, scope = ask_target_and_scope()
-    provider = input("AI provider (blank to skip, e.g. anthropic/openai): ").strip() or None
     max_cycles = input("Max thinking cycles [8]: ").strip() or "8"
-    use_google_pair = input("Run two-Google-account precision workflow if saved/login available? yes/no: ").strip().lower() in {"y", "yes"}
-    use_proxy = input("Run ARTEMIS Proxy Passive Bridge if local API is available? yes/no: ").strip().lower() in {"y", "yes"}
-    commands = [
-        ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
-        ("Neural tool mind", f"python3 tool_mind_cli.py --target {target} --mode crazy --install-needed --yes", "1-30 min"),
-        ("Tool path repair", "python3 tool_path_repair_cli.py", "5-20s"),
-        ("AEGIS public search", f"python3 aegis_public_search_cli.py --target {target}", "5-30s"),
-        ("AEGIS feedback planner", f"python3 aegis_feedback_cli.py --target {target}", "5-20s"),
-        ("ARTEMIS passive intelligence", f"python3 artemis_autonomous_cli.py --config artemis_config.yaml --scope-policy {scope} --once", "30s-5 min"),
-    ]
-    if use_proxy:
-        commands.append(("ARTEMIS Proxy Passive Bridge", f"python3 artemis_proxy_passive_cli.py --target {target} --limit 80", "5-30s"))
-    commands += [
-        ("Mega tools status", "python3 mega_tools_cli.py --status", "10-30s"),
-        ("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --yes", "1-5 min"),
-        ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
-        ("Comprehensive category review", f"python3 comprehensive_suite_cli.py --target {target} --scope-policy {scope} --yes", "30s-3 min"),
-        ("Google/OAuth context review", "python3 google_context_cli.py", "5-30s"),
-    ]
+    workers = input("Parallel workers [6]: ").strip() or "6"
+    use_google_pair = input("Include two-Google-account precision if saved states exist? yes/no: ").strip().lower() in {"y", "yes"}
+    cmd = f"python3 unified_mission_cli.py --target {target} --scope-policy {scope} --max-cycles {max_cycles} --max-workers {workers} --yes"
     if use_google_pair:
-        commands.append(("Two Google Account Precision", f"python3 google_pair_cli.py --target {target} --profile default --max-pages 25 --yes", "5-30 min"))
-    commands += [
-        ("Advanced modes correlation", f"python3 vulnscope_modes_cli.py --target {target} --scope-policy {scope}", "30s-5 min"),
-        ("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s"),
-        ("Final report", f"python3 report_v2_cli.py --target {target}", "5-30s"),
-        ("JARVIS summary", f"python3 jarvis_summary_cli.py --target {target}", "instant"),
-    ]
-    history = [run_step(label, cmd, est) for label, cmd, est in commands]
+        cmd += " --include-google-pair"
+    result = run_step("Unified Autonomous Mission", cmd, "5-60 min")
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "interactive-full-review.json").write_text(json.dumps({"target": target, "scope": scope, "history": history}, indent=2), encoding="utf-8")
-    print("\n[+] Full review complete.")
-    print("[+] Run history: reports/output/cli/interactive-full-review.json")
-    print("[+] ARTEMIS: reports/output/artemis/run/artemis-run.md")
-    print("[+] Proxy Passive Bridge: reports/output/artemis/burp-safe/burp-safe.md")
-    print("[+] AEGIS feedback: reports/output/aegis/feedback/feedback-plan.md")
+    (OUT / "interactive-full-review.json").write_text(json.dumps({"target": target, "scope": scope, "history": [result]}, indent=2), encoding="utf-8")
+    print("\n[+] Unified autonomous mission complete.")
+    print("[+] Unified mission: reports/output/unified-mission/unified-mission.md")
     print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
+    print("[+] Reportability: reports/output/reportability/reportability.md")
     print("[+] Final report: reports/output/report-v2/executive-report-v2.md")
 
 
@@ -258,7 +233,7 @@ def menu_loop() -> None:
                 init = input("Create/update autonomous_control_config.yaml first? yes/no: ").strip().lower() in {"y", "yes"}
                 forever = input("Run forever on interval? yes/no: ").strip().lower() in {"y", "yes"}
                 cmd = "python3 autonomous_control_daemon.py " + ("--init-config " if init else "") + ("--forever" if forever else "--once")
-                run_step("Control Center Daemon", cmd.strip(), "30s-45 min")
+                run_step("Control Center Daemon", cmd.strip(), "30s-60 min")
             elif choice == "0": print("Goodbye."); return
             else: print("Invalid option.")
         except Exception as exc:
