@@ -26,9 +26,9 @@ BANNER = r"""
 """
 
 MENU = """
-[1] AI Autonomous Full Review          Target -> Confirm -> Think -> Run -> Correlate -> Report
+[1] AI Autonomous Full Review          Target -> Confirm -> Tool Mind -> Think -> Run -> Correlate -> Report
 [2] Daily Tool Repair / Update         Install missing tools, update templates, fix PATH issues
-[3] Tool Healthcheck                   Check installed/missing tool state
+[3] AI Tool Mind Healthcheck           Think what tools are needed, install missing supported tools
 [4] Passive Domain Recon               Subdomains, archived URLs, high-value routes
 [5] Comprehensive Category Review      XSS/IDOR/SQLi/API/Auth/CORS/GraphQL/etc. review candidates
 [6] Google Auth Context Review         Review saved Google/OAuth session evidence safely
@@ -46,6 +46,7 @@ MENU = """
 [18] Reportability Ranking              Rank candidates by evidence strength
 [19] Target History / Diff              Track new endpoints, params, findings over time
 [20] Two Google Account Precision       Google A/B login, crawl, compare, diff, evidence cards
+[21] Neural Tool Mind / Auto Installer  Human-like tool reasoning + install/repair plan
 [0] Exit
 """
 
@@ -65,6 +66,7 @@ SAFE_COMMAND_PREFIXES = (
     "python3 normalize_cli.py",
     "python3 asset_graph_cli.py",
     "python3 tool_brain_cli.py",
+    "python3 tool_mind_cli.py",
     "python3 api_intel_cli.py",
     "python3 auth_diff_v2_cli.py",
     "python3 reportability_cli.py",
@@ -151,6 +153,11 @@ def ask_target_and_scope() -> tuple[str, str]:
     return target, str(scope)
 
 
+def optional_target_label() -> str:
+    raw = input("Target URL/domain label (blank = use existing evidence only): ").strip()
+    return normalize_target(raw) if raw else ""
+
+
 def safe_command(command: str) -> bool:
     stripped = command.strip()
     forbidden = [";", "| sh", "bash -i", " nc ", " ncat ", "rm -rf", "curl ", "wget "]
@@ -191,6 +198,7 @@ def ai_full_review() -> None:
     use_google_pair = input("Run two-Google-account precision workflow if saved/login available? yes/no: ").strip().lower() in {"y", "yes"}
     commands = [
         ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
+        ("Neural tool mind", f"python3 tool_mind_cli.py --target {target} --mode crazy --install-needed --yes", "1-30 min"),
         ("Mega tools status", "python3 mega_tools_cli.py --status", "10-30s"),
         ("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --yes", "1-5 min"),
         ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
@@ -211,6 +219,7 @@ def ai_full_review() -> None:
     (OUT / "interactive-full-review.json").write_text(json.dumps({"target": target, "scope": scope, "history": history}, indent=2), encoding="utf-8")
     print("\n[+] Full review complete.")
     print("[+] Run history: reports/output/cli/interactive-full-review.json")
+    print("[+] Tool mind: reports/output/tool-mind/tool-mind.md")
     print("[+] Google pair: reports/output/google-pair/google-pair-run.json")
     print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
     print("[+] Asset graph: reports/output/asset-graph/asset-graph.md")
@@ -231,7 +240,9 @@ def menu_loop() -> None:
             elif choice == "2":
                 run_step("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --force --yes", "1-5 min")
             elif choice == "3":
-                run_step("Healthcheck", "python3 auto_mode.py --profile bug-bounty-safe --healthcheck", "5-20s")
+                target = optional_target_label()
+                cmd = "python3 tool_mind_cli.py --mode deep --install-needed --yes" + (f" --target {target}" if target else "")
+                run_step("AI Tool Mind Healthcheck", cmd, "1-30 min")
             elif choice == "4":
                 target, _ = ask_target_and_scope()
                 run_step("Passive recon", f"python3 domain_recon_cli.py --target {target_host(target)}", "1-5 min")
@@ -283,6 +294,16 @@ def menu_loop() -> None:
                 if skip:
                     cmd += " --skip-login"
                 run_step("Two Google Account Precision", cmd, "5-30 min")
+            elif choice == "21":
+                target = optional_target_label()
+                mode = input("Tool mind mode [deep/base/full/crazy]: ").strip() or "deep"
+                install = input("Install missing needed tools? yes/no: ").strip().lower() in {"y", "yes"}
+                cmd = f"python3 tool_mind_cli.py --mode {mode}"
+                if target:
+                    cmd += f" --target {target}"
+                if install:
+                    cmd += " --install-needed --yes"
+                run_step("Neural Tool Mind", cmd, "10s-30 min")
             elif choice == "0":
                 print("Goodbye.")
                 return
