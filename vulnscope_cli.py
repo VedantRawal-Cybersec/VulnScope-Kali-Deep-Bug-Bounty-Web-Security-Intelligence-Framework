@@ -26,7 +26,7 @@ BANNER = r"""
 """
 
 MENU = """
-[1] AI Autonomous Full Review          Target -> Confirm -> Think -> Run -> Report
+[1] AI Autonomous Full Review          Target -> Confirm -> Think -> Run -> Correlate -> Report
 [2] Daily Tool Repair / Update         Install missing tools, update templates, fix PATH issues
 [3] Tool Healthcheck                   Check installed/missing tool state
 [4] Passive Domain Recon               Subdomains, archived URLs, high-value routes
@@ -39,6 +39,12 @@ MENU = """
 [11] Repo Health / Error Check          Compile check, dependency check, CLI smoke tests
 [12] Mega Tools 50+ Installer/Status    Best-effort install/status for large safe tool registry
 [13] Evidence Cards                    What/where/why/how-to-check cards from collected findings
+[14] Advanced Modes Orchestrator        Normalize -> Graph -> Tool Brain -> API -> Diff -> Reportability
+[15] Asset Graph                        Unified host/endpoint/param/finding graph
+[16] API Intelligence                   API, GraphQL, object-auth and mutation surface mapping
+[17] Account A/B Differential v2        Deeper owned-account comparison review
+[18] Reportability Ranking              Rank candidates by evidence strength
+[19] Target History / Diff              Track new endpoints, params, findings over time
 [0] Exit
 """
 
@@ -55,6 +61,14 @@ SAFE_COMMAND_PREFIXES = (
     "python3 repo_health_cli.py",
     "python3 mega_tools_cli.py",
     "python3 evidence_cards_cli.py",
+    "python3 normalize_cli.py",
+    "python3 asset_graph_cli.py",
+    "python3 tool_brain_cli.py",
+    "python3 api_intel_cli.py",
+    "python3 auth_diff_v2_cli.py",
+    "python3 reportability_cli.py",
+    "python3 target_history_cli.py",
+    "python3 vulnscope_modes_cli.py",
     "cat reports/output/",
 )
 
@@ -179,6 +193,7 @@ def ai_full_review() -> None:
         ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
         ("Comprehensive category review", f"python3 comprehensive_suite_cli.py --target {target} --scope-policy {scope} --yes", "30s-3 min"),
         ("Google/OAuth context review", "python3 google_context_cli.py", "5-30s"),
+        ("Advanced modes correlation", f"python3 vulnscope_modes_cli.py --target {target} --scope-policy {scope}", "30s-5 min"),
         ("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s"),
         ("Final report", f"python3 report_v2_cli.py --target {target}", "5-30s"),
     ]
@@ -190,6 +205,9 @@ def ai_full_review() -> None:
     print("\n[+] Full review complete.")
     print("[+] Run history: reports/output/cli/interactive-full-review.json")
     print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
+    print("[+] Asset graph: reports/output/asset-graph/asset-graph.md")
+    print("[+] Tool brain: reports/output/tool-brain/tool-brain-plan.md")
+    print("[+] Reportability: reports/output/reportability/reportability.md")
     print("[+] Final report: reports/output/report-v2/executive-report-v2.md")
 
 
@@ -232,6 +250,23 @@ def menu_loop() -> None:
             elif choice == "13":
                 target = normalize_target(input("Target label for evidence cards: ").strip())
                 run_step("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s")
+            elif choice == "14":
+                target, scope = ask_target_and_scope()
+                run_step("Advanced modes", f"python3 vulnscope_modes_cli.py --target {target} --scope-policy {scope}", "30s-5 min")
+            elif choice == "15":
+                target = normalize_target(input("Target label: ").strip())
+                run_step("Asset graph", f"python3 asset_graph_cli.py --target {target}", "5-30s")
+            elif choice == "16":
+                target = normalize_target(input("Target label: ").strip())
+                run_step("API intelligence", f"python3 api_intel_cli.py --target {target}", "5-30s")
+            elif choice == "17":
+                run_step("Auth differential v2", "python3 auth_diff_v2_cli.py", "5-30s")
+            elif choice == "18":
+                target = normalize_target(input("Target label: ").strip())
+                run_step("Reportability", f"python3 reportability_cli.py --target {target}", "5-30s")
+            elif choice == "19":
+                target = normalize_target(input("Target label: ").strip())
+                run_step("Target history", f"python3 target_history_cli.py --target {target}", "5-30s")
             elif choice == "0":
                 print("Goodbye.")
                 return
