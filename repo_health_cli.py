@@ -22,6 +22,7 @@ CHECKS = [
     ['python3', 'tool_path_repair_cli.py'],
     ['python3', 'mission_preflight_cli.py', '--target', 'https://example.com', '--scope-policy', 'scope_policy.example.yaml', '--no-clean'],
     ['python3', 'unified_mission_cli.py', '--target', 'https://example.com', '--scope-policy', 'scope_policy.example.yaml', '--plan-only'],
+    ['python3', 'mission_verdicts_cli.py', '--target', 'https://example.com'],
     ['python3', 'normalize_cli.py', '--target', 'https://example.com'],
     ['python3', 'asset_graph_cli.py', '--target', 'https://example.com'],
     ['python3', 'tool_brain_cli.py', '--target', 'https://example.com'],
