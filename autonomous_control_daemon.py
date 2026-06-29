@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -28,13 +29,9 @@ class ControlConfig:
     scope_policy: str = "scope_policy.yaml"
     interval_minutes: int = 360
     max_cycles: int = 8
-    enable_tool_mind: bool = True
-    enable_artemis: bool = True
-    enable_aegis_safe: bool = True
-    enable_proxy_passive_bridge: bool = True
+    max_workers: int = 6
     enable_google_pair: bool = False
-    enable_final_report: bool = True
-    notes: str = "Safe authorized-only autonomy."
+    notes: str = "Safe authorized-only autonomy. Unified parallel mission mode."
 
 
 def write_default_config(path: str | Path = CONFIG_DEFAULT) -> Path:
@@ -61,13 +58,9 @@ def load_config(path: str | Path = CONFIG_DEFAULT) -> ControlConfig:
         scope_policy=str(data.get("scope_policy", "scope_policy.yaml")),
         interval_minutes=int(data.get("interval_minutes", 360)),
         max_cycles=int(data.get("max_cycles", 8)),
-        enable_tool_mind=bool(data.get("enable_tool_mind", True)),
-        enable_artemis=bool(data.get("enable_artemis", True)),
-        enable_aegis_safe=bool(data.get("enable_aegis_safe", True)),
-        enable_proxy_passive_bridge=bool(data.get("enable_proxy_passive_bridge", True)),
+        max_workers=int(data.get("max_workers", 6)),
         enable_google_pair=bool(data.get("enable_google_pair", False)),
-        enable_final_report=bool(data.get("enable_final_report", True)),
-        notes=str(data.get("notes", "Safe authorized-only autonomy.")),
+        notes=str(data.get("notes", "Safe authorized-only autonomy. Unified parallel mission mode.")),
     )
 
 
@@ -92,7 +85,7 @@ def save_state(data: dict[str, Any]) -> None:
     STATE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def run_command(label: str, command: str, timeout: int = 3600) -> dict[str, Any]:
+def run_command(label: str, command: str, timeout: int = 7200) -> dict[str, Any]:
     event("phase_started", {"label": label, "command": command})
     started = time.time()
     proc = subprocess.run(["bash", "-lc", command], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -102,42 +95,24 @@ def run_command(label: str, command: str, timeout: int = 3600) -> dict[str, Any]
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
         "seconds": round(time.time() - started, 2),
-        "output_tail": proc.stdout[-4000:],
+        "output_tail": proc.stdout[-5000:],
     }
     event("phase_finished", {"label": label, "ok": result["ok"], "seconds": result["seconds"]}, "info" if result["ok"] else "warning")
     return result
 
 
-def build_phases(target: str, cfg: ControlConfig) -> list[tuple[str, str, int]]:
-    phases: list[tuple[str, str, int]] = []
-    if cfg.enable_tool_mind:
-        phases += [
-            ("Tool Mind", f"python3 tool_mind_cli.py --target {target} --mode crazy --install-needed --yes", 3600),
-            ("Tool PATH Repair", "python3 tool_path_repair_cli.py", 600),
-        ]
-    if cfg.enable_artemis:
-        phases.append(("ARTEMIS Passive Intelligence", f"python3 artemis_autonomous_cli.py --config artemis_config.yaml --scope-policy {cfg.scope_policy} --once", 1800))
-    phases += [
-        ("AEGIS Public Search", f"python3 aegis_public_search_cli.py --target {target}", 600),
-        ("AEGIS Feedback Planner", f"python3 aegis_feedback_cli.py --target {target}", 600),
-    ]
-    if cfg.enable_aegis_safe:
-        phases.append(("AEGIS-SAFE", f"python3 safe_aegis_cli.py --target {target} --scope-policy {cfg.scope_policy} --cycles {cfg.max_cycles} --yes", 3600))
-    if cfg.enable_proxy_passive_bridge:
-        phases.append(("Proxy Passive Bridge", f"python3 artemis_proxy_passive_cli.py --target {target} --limit 80", 600))
+def unified_command(target: str, cfg: ControlConfig) -> str:
+    cmd = (
+        "python3 unified_mission_cli.py "
+        f"--target {shlex.quote(target)} "
+        f"--scope-policy {shlex.quote(cfg.scope_policy)} "
+        f"--max-cycles {cfg.max_cycles} "
+        f"--max-workers {cfg.max_workers} "
+        "--yes"
+    )
     if cfg.enable_google_pair:
-        phases.append(("Google A/B Precision", f"python3 google_pair_cli.py --target {target} --profile default --max-pages 25 --skip-login --yes", 3600))
-    phases += [
-        ("Advanced Correlation", f"python3 vulnscope_modes_cli.py --target {target} --scope-policy {cfg.scope_policy}", 1800),
-        ("Evidence Cards", f"python3 evidence_cards_cli.py --target {target}", 600),
-        ("Reportability", f"python3 reportability_cli.py --target {target}", 600),
-    ]
-    if cfg.enable_final_report:
-        phases += [
-            ("Final Report", f"python3 report_v2_cli.py --target {target}", 600),
-            ("JARVIS Summary", f"python3 jarvis_summary_cli.py --target {target}", 600),
-        ]
-    return phases
+        cmd += " --include-google-pair"
+    return cmd
 
 
 def run_once(cfg: ControlConfig) -> dict[str, Any]:
@@ -145,7 +120,7 @@ def run_once(cfg: ControlConfig) -> dict[str, Any]:
     started = time.time()
     state = {"running": True, "started_at": started, "config": asdict(cfg), "targets": [], "current_phase": None}
     save_state(state)
-    event("control_run_started", {"targets": cfg.targets, "scope_policy": cfg.scope_policy})
+    event("control_run_started", {"targets": cfg.targets, "scope_policy": cfg.scope_policy, "mode": "unified_parallel"})
     target_rows = []
     for target in cfg.targets:
         decision = policy.check(target)
@@ -154,13 +129,11 @@ def run_once(cfg: ControlConfig) -> dict[str, Any]:
             event("target_blocked", {"target": target, "reason": decision.reason}, "warning")
             target_rows.append(row)
             continue
-        for label, command, timeout in build_phases(target, cfg):
-            state["current_phase"] = {"target": target, "label": label, "command": command, "started_at": time.time()}
-            save_state(state)
-            result = run_command(label, command, timeout=timeout)
-            row["phases"].append(result)
-            if not result["ok"] and label in {"Tool Mind", "AEGIS-SAFE"}:
-                break
+        cmd = unified_command(target, cfg)
+        state["current_phase"] = {"target": target, "label": "Unified Parallel Mission", "command": cmd, "started_at": time.time()}
+        save_state(state)
+        result = run_command("Unified Parallel Mission", cmd, timeout=7200)
+        row["phases"].append(result)
         target_rows.append(row)
     finished = time.time()
     final_state = {
@@ -172,6 +145,7 @@ def run_once(cfg: ControlConfig) -> dict[str, Any]:
         "targets": target_rows,
         "current_phase": None,
         "outputs": {
+            "unified_mission": "reports/output/unified-mission/unified-mission.md",
             "jarvis": "inline terminal output",
             "control_state": str(STATE),
             "events": str(EVENTS),
@@ -181,7 +155,7 @@ def run_once(cfg: ControlConfig) -> dict[str, Any]:
         },
     }
     save_state(final_state)
-    event("control_run_finished", {"seconds": final_state["seconds"], "targets": len(target_rows)})
+    event("control_run_finished", {"seconds": final_state["seconds"], "targets": len(target_rows), "mode": "unified_parallel"})
     return final_state
 
 
@@ -202,11 +176,11 @@ def main() -> int:
         print(json.dumps({"created": str(write_default_config(args.config))}, indent=2))
         return 0
     cfg = load_config(args.config)
-    result = run_once(cfg) if not args.forever else None
     if args.forever:
         run_forever(cfg)
-    else:
-        print(json.dumps({"state": str(STATE), "seconds": result.get("seconds") if result else None}, indent=2))
+        return 0
+    result = run_once(cfg)
+    print(json.dumps({"state": str(STATE), "seconds": result.get("seconds"), "mode": "unified_parallel"}, indent=2))
     return 0
 
 
