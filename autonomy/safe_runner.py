@@ -10,6 +10,7 @@ from autonomy.autonomous_planner import build_plan, plan_to_markdown
 from autonomy.autonomy_policy import load_autonomy_policy
 from findings.quality import load_findings_from_reports, reduce_low_quality
 from importers.har_importer import save_import
+from maintenance.daily_update import update_if_due
 from reports.report_v2 import build_report_v2
 from safe_discovery.non_exploit_discovery import SafeDiscoveryRunner
 from scope.policy import load_scope_policy
@@ -46,6 +47,8 @@ class SafeAutonomyRunner:
             self._save(result)
             return result
         artifacts: dict[str, Any] = {}
+        if self.policy.allows_stage("daily_update"):
+            artifacts["daily_update"] = update_if_due(max_age_seconds=self.policy.daily_update_max_age_hours * 3600, yes=True)
         if self.har_path and self.policy.allow_har_import:
             artifacts["har_import"] = str(save_import(self.har_path))
         if self.policy.allow_safe_discovery_probes and self.policy.allows_stage("safe_discovery"):
