@@ -16,7 +16,7 @@ OUT = Path('reports/output/repo-health')
 NEEDED = ['requests', 'bs4', 'rich', 'yaml', 'jinja2', 'tldextract', 'flask']
 CHECKS = [
     ['python3', 'vulnscope.py', '--version'],
-    ['python3', 'vulnscope_agent.py', '--config', 'agent_config.yaml', '--dry-run'],
+    ['python3', 'vulnscope_agent.py', '--config', 'agent_config.yaml', '--dry-run', '--yes'],
     ['python3', 'auto_mode.py', '--version'],
     ['python3', 'coverage_matrix.py'],
     ['python3', 'mega_tools_cli.py', '--status'],
