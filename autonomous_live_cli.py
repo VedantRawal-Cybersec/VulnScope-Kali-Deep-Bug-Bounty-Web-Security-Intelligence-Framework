@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 OUT = Path("reports/output/autonomous-live")
 SESSION_SCOPE = Path("scope_policy.session.yaml")
 ARTEMIS_LIVE_CONFIG = OUT / "artemis-live.yaml"
+CURRENT_TARGET_FILE = Path("reports/output/current-target-session.json")
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -41,6 +42,32 @@ REPORTS = {
     "final": "reports/output/report-v2/executive-report-v2.md",
     "summary": "reports/output/vulnscope-main/final-summary.md",
 }
+
+TARGET_OUTPUT_DIRS = [
+    "reports/output/mission-preflight",
+    "reports/output/domain-recon",
+    "reports/output/aegis-public-search",
+    "reports/output/aegis-feedback",
+    "reports/output/artemis",
+    "reports/output/proxy-passive",
+    "reports/output/google-pair",
+    "reports/output/google-context",
+    "reports/output/safe-loop-v2",
+    "reports/output/comprehensive-suite",
+    "reports/output/vulnscope-modes",
+    "reports/output/normalized",
+    "reports/output/asset-graph",
+    "reports/output/api-intel",
+    "reports/output/auth-diff-v2",
+    "reports/output/target-history",
+    "reports/output/evidence-cards",
+    "reports/output/reportability",
+    "reports/output/mission-verdicts",
+    "reports/output/report-v2",
+    "reports/output/vulnscope-main",
+    "reports/output/canary-review-matrix",
+    "reports/output/precision-assurance",
+]
 
 KEYWORDS = [
     "found", "candidate", "endpoint", "subdomain", "url", "route", "param", "risk", "review",
@@ -110,7 +137,7 @@ class AgentTerminalUI:
             print(self.c("█ " + line + " " * pad + "█", CYAN + BOLD))
         print(self.c("█" + " " * (self.width - 2) + "█", CYAN + BOLD))
         title = "VULNSCOPE AUTONOMOUS AGENT TOOL"
-        sub = "Agent Interaction • Live Tool Calls • Surface Map • 20-Area Evidence Review • Final Verdicts"
+        sub = "Agent Interaction • Live Tool Calls • Surface Map • Target-Isolated Reports • Final Verdicts"
         print(self.c("█ " + title.center(self.width - 4) + " █", MAGENTA + BOLD))
         print(self.c("█ " + sub.center(self.width - 4) + " █", YELLOW + BOLD))
         print(self.c("█" * self.width + "\n", CYAN + BOLD))
@@ -169,6 +196,21 @@ def host_from_target(target: str) -> str:
     if not host:
         raise ValueError("Invalid target")
     return host.lower()
+
+
+def reset_target_outputs(target: str) -> dict[str, Any]:
+    """Remove previous target-dependent reports so a new user URL cannot reuse old findings."""
+    target = normalize_target(target)
+    host = host_from_target(target)
+    removed: list[str] = []
+    for raw in TARGET_OUTPUT_DIRS:
+        p = Path(raw)
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
+            removed.append(str(p))
+    CURRENT_TARGET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CURRENT_TARGET_FILE.write_text(json.dumps({"target": target, "host": host, "started_at": time.time(), "removed_output_dirs": removed}, indent=2), encoding="utf-8")
+    return {"target": target, "host": host, "removed_dirs": removed}
 
 
 def write_scope(target: str, include_subdomains: bool) -> None:
@@ -250,7 +292,8 @@ def run_step(step: Step, ui: AgentTerminalUI) -> dict[str, Any]:
     return result
 
 
-def scan_report_text() -> str:
+def scan_report_text(target: str) -> str:
+    host = host_from_target(target)
     root = Path("reports/output")
     chunks: list[str] = []
     if not root.exists():
@@ -258,7 +301,9 @@ def scan_report_text() -> str:
     for p in root.rglob("*"):
         if p.suffix.lower() in {".json", ".md", ".txt"} and p.stat().st_size < 2500000:
             try:
-                chunks.append(p.read_text(encoding="utf-8", errors="ignore")[:220000])
+                text = p.read_text(encoding="utf-8", errors="ignore")[:220000]
+                if host in text or "target" in text.lower() or str(p).startswith("reports/output/tool"):
+                    chunks.append(text)
             except Exception:
                 pass
     return "\n".join(chunks)
@@ -267,8 +312,8 @@ def scan_report_text() -> str:
 def surface_snapshot(target: str) -> dict[str, Any]:
     host = host_from_target(target)
     base = ".".join(host.split(".")[-2:]) if "." in host else host
-    text = scan_report_text()
-    urls = sorted(set(re.findall(r"https?://[^\s\"'<>),]+", text)))
+    text = scan_report_text(target)
+    urls = sorted(set(u for u in re.findall(r"https?://[^\s\"'<>),]+", text) if host in u or base in u))
     domains = sorted(set(re.findall(r"\b[a-zA-Z0-9._-]+\." + re.escape(base) + r"\b", text)))
     paths = sorted(set(re.findall(r"(?<![A-Za-z0-9])/[A-Za-z0-9_./?=&%:-]{2,}", text)))
     params = sorted(set(re.findall(r"[?&]([A-Za-z0-9_:-]{2,})=", text)))
@@ -282,7 +327,7 @@ def build_steps(target: str, include_google_pair: bool, max_cycles: int) -> list
     aq = shlex.quote(str(ARTEMIS_LIVE_CONFIG))
     steps = [
         Step("STAGE 1", "Mission Preflight", f"python3 mission_preflight_cli.py --target {tq} --scope-policy {sq}", "Now I will validate target scope, DNS, typo risk, stale output state, and mission readiness.", 600, False),
-        Step("STAGE 2", "Tool Doctor", "python3 tool_doctor_cli.py --install --yes", "Now I will repair optional helper tools and make the arsenal stronger before evidence collection.", 1800, True),
+        Step("STAGE 2", "Tool Doctor", "python3 tool_doctor_cli.py --install --yes --top 100", "Now I will repair the top safe helper toolset and make the arsenal stronger before evidence collection.", 1800, True),
         Step("STAGE 2", "Tool PATH Repair", "python3 tool_path_repair_cli.py", "Now I will check whether binaries are visible in PATH and repair user-local links.", 600, True),
         Step("STAGE 2", "Coverage Matrix", "python3 coverage_matrix.py", "Now I will check every coverage area so weak zones are visible before the scan.", 600, True),
         Step("STAGE 2", "Mega Tools Status", "python3 mega_tools_cli.py --status", "Now I will inspect the larger tool registry and record available modules.", 900, True),
@@ -307,6 +352,7 @@ def build_steps(target: str, include_google_pair: bool, max_cycles: int) -> list
         Step("STAGE 6", "Evidence Cards", f"python3 evidence_cards_cli.py --target {tq}", "Now I will convert raw evidence into readable finding cards.", 900, True),
         Step("STAGE 6", "Reportability Ranking", f"python3 reportability_cli.py --target {tq}", "Now I will rank findings by severity, confidence, and manual validation value.", 900, True),
         Step("STAGE 6", "Mission Verdict Report", f"python3 mission_verdicts_cli.py --target {tq}", "Now I will consolidate every module into a final verdict table.", 900, True),
+        Step("STAGE 6", "Canary Review Matrix", f"python3 canary_review_matrix_cli.py --target {tq}", "Now I will generate the 20-area canary review matrix for the current target only.", 900, True),
         Step("STAGE 6", "Final Report", f"python3 report_v2_cli.py --target {tq}", "Now I will build the executive report.", 900, True),
         Step("STAGE 6", "JARVIS Summary", f"python3 jarvis_summary_cli.py --target {tq}", "Now I will print the terminal summary and next actions.", 900, True),
     ]
@@ -363,6 +409,7 @@ def write_final(ui: AgentTerminalUI, results: list[dict[str, Any]], target: str)
     high = [r for r in rows if str(r.get("severity", "")).upper() in {"CRITICAL", "HIGH"} or str(r.get("verdict", "")).upper() in {"REVIEW_HIGH", "HIGH_PRIORITY", "VULNERABLE"}]
     payload = {
         "target": target,
+        "host": host_from_target(target),
         "tasks": len(results),
         "ok": len([r for r in results if r.get("ok")]),
         "failed": len([r for r in results if not r.get("ok")]),
@@ -374,7 +421,7 @@ def write_final(ui: AgentTerminalUI, results: list[dict[str, Any]], target: str)
     }
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "live-run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = [f"# VulnScope Live Autonomous Run — {target}", "", f"Tasks: `{payload['tasks']}`", f"OK: `{payload['ok']}`", f"Failed/review: `{payload['failed']}`", f"UI I/O/R: `{ui.total_i}/{ui.total_o}/{ui.total_r}`", "", "## High Priority Rows"]
+    lines = [f"# VulnScope Live Autonomous Run — {target}", "", f"Host: `{host_from_target(target)}`", f"Tasks: `{payload['tasks']}`", f"OK: `{payload['ok']}`", f"Failed/review: `{payload['failed']}`", f"UI I/O/R: `{ui.total_i}/{ui.total_o}/{ui.total_r}`", "", "## High Priority Rows"]
     if high:
         for row in high[:30]:
             lines.append(f"- `{row.get('module')}` `{row.get('item')}` verdict=`{row.get('verdict')}` severity=`{row.get('severity')}` evidence=`{str(row.get('evidence',''))[:300]}`")
@@ -389,6 +436,7 @@ def write_final(ui: AgentTerminalUI, results: list[dict[str, Any]], target: str)
 
 def run_live(target: str, include_subdomains: bool, include_google_pair: bool, workers: int, max_cycles: int) -> int:
     target = normalize_target(target)
+    clean_info = reset_target_outputs(target)
     OUT.mkdir(parents=True, exist_ok=True)
     write_scope(target, include_subdomains)
     write_artemis_config(target)
@@ -396,7 +444,7 @@ def run_live(target: str, include_subdomains: bool, include_google_pair: bool, w
     steps = build_steps(target, include_google_pair, max_cycles)
     ui = AgentTerminalUI(total_steps=len(steps))
     ui.banner(target, include_subdomains, include_google_pair, workers, max_cycles)
-    ui.agent("Authorization is confirmed. I will think step-by-step, choose a safe module, run it, observe evidence, and update the live target map after every action.", {"target": target, "scope_policy": str(SESSION_SCOPE)})
+    ui.agent("Authorization is confirmed. I reset old target outputs, locked scope to the entered URL, and will only map evidence for this current target.", clean_info)
     results: list[dict[str, Any]] = []
     current_stage = ""
     start = time.time()
@@ -409,13 +457,14 @@ def run_live(target: str, include_subdomains: bool, include_google_pair: bool, w
         result = run_step(step, ui)
         results.append(result)
         snap = surface_snapshot(target)
-        ui.agent(f"After {step.label}, I am updating the map of subdomains, URLs, routes, and parameters being reviewed.", snap)
+        ui.agent(f"After {step.label}, I am updating the map for {host_from_target(target)} only.", snap)
         if not result.get("ok") and not result.get("optional"):
             ui.agent(f"{step.label} failed and is required. I will stop so the final result is not misleading.", {"exit_code": result.get("exit_code"), "error": result.get("error")})
             break
     payload = write_final(ui, results, target)
     print("\n" + ui.border("Final Output"))
     print(ui.c(f"TARGET                : {target}", WHITE + BOLD))
+    print(ui.c(f"HOST                  : {host_from_target(target)}", WHITE + BOLD))
     print(ui.c(f"TOTAL MODULE TASKS    : {payload['tasks']}", WHITE))
     print(ui.c(f"SUCCESSFUL TASKS      : {payload['ok']}", GREEN + BOLD))
     print(ui.c(f"FAILED / REVIEW TASKS : {payload['failed']}", YELLOW if payload["failed"] else GREEN))
@@ -436,7 +485,7 @@ def run_live(target: str, include_subdomains: bool, include_google_pair: bool, w
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VulnScope agent-interaction autonomous live CLI")
+    parser = argparse.ArgumentParser(description="VulnScope target-isolated autonomous live CLI")
     parser.add_argument("--target", required=True)
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--include-google-pair", action="store_true")
