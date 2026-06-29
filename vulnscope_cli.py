@@ -47,6 +47,7 @@ MENU = """
 [19] Target History / Diff              Track new endpoints, params, findings over time
 [20] Two Google Account Precision       Google A/B login, crawl, compare, diff, evidence cards
 [21] Neural Tool Mind / Auto Installer  Human-like tool reasoning + install/repair plan
+[22] Tool PATH Repair                   Fix installed-but-not-found binaries and shell PATH
 [0] Exit
 """
 
@@ -67,6 +68,7 @@ SAFE_COMMAND_PREFIXES = (
     "python3 asset_graph_cli.py",
     "python3 tool_brain_cli.py",
     "python3 tool_mind_cli.py",
+    "python3 tool_path_repair_cli.py",
     "python3 api_intel_cli.py",
     "python3 auth_diff_v2_cli.py",
     "python3 reportability_cli.py",
@@ -199,6 +201,7 @@ def ai_full_review() -> None:
     commands = [
         ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
         ("Neural tool mind", f"python3 tool_mind_cli.py --target {target} --mode crazy --install-needed --yes", "1-30 min"),
+        ("Tool path repair", "python3 tool_path_repair_cli.py", "5-20s"),
         ("Mega tools status", "python3 mega_tools_cli.py --status", "10-30s"),
         ("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --yes", "1-5 min"),
         ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
@@ -220,6 +223,7 @@ def ai_full_review() -> None:
     print("\n[+] Full review complete.")
     print("[+] Run history: reports/output/cli/interactive-full-review.json")
     print("[+] Tool mind: reports/output/tool-mind/tool-mind.md")
+    print("[+] Tool path repair: reports/output/tool-path-repair/tool-path-repair.md")
     print("[+] Google pair: reports/output/google-pair/google-pair-run.json")
     print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
     print("[+] Asset graph: reports/output/asset-graph/asset-graph.md")
@@ -304,6 +308,8 @@ def menu_loop() -> None:
                 if install:
                     cmd += " --install-needed --yes"
                 run_step("Neural Tool Mind", cmd, "10s-30 min")
+            elif choice == "22":
+                run_step("Tool PATH Repair", "python3 tool_path_repair_cli.py", "5-20s")
             elif choice == "0":
                 print("Goodbye.")
                 return
