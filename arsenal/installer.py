@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -15,8 +16,21 @@ TOOLS_HOME = Path.home() / ".vulnscope" / "tools"
 GO_ROOT = TOOLS_HOME / "go"
 GO_BIN = Path.home() / "go" / "bin"
 LOCAL_BIN = TOOLS_HOME / "bin"
-LOG_DIR = Path("reports/output/arsenal")
+USER_LOCAL_BIN = Path.home() / ".local" / "bin"
 PIPX_HOME = Path.home() / ".local" / "share" / "pipx" / "venvs"
+LOG_DIR = Path("reports/output/arsenal")
+
+ALIASES: dict[str, list[str]] = {
+    "linkfinder": ["linkfinder", "LinkFinder", "linkfinder.py", "LinkFinder.py"],
+    "xnLinkFinder": ["xnLinkFinder", "xnlinkfinder", "xnlinkfinder.py"],
+    "graphw00f": ["graphw00f", "Graphw00f", "graphw00f.py"],
+    "Gxss": ["Gxss", "gxss"],
+}
+
+
+def names_for(binary: str) -> list[str]:
+    names = [binary] + ALIASES.get(binary, []) + ALIASES.get(binary.lower(), [])
+    return list(dict.fromkeys([x for x in names if x]))
 
 
 def is_installed(tool: ArsenalTool) -> bool:
@@ -24,18 +38,25 @@ def is_installed(tool: ArsenalTool) -> bool:
 
 
 def _find_binary(binary: str) -> str | None:
-    found = shutil.which(binary)
-    if found:
-        return found
-    candidates = [GO_BIN / binary, LOCAL_BIN / binary, Path.home() / ".local" / "bin" / binary, GO_ROOT / "bin" / binary]
-    for item in candidates:
-        if item.exists():
-            return str(item)
-    for root in [PIPX_HOME, TOOLS_HOME]:
-        if root.exists():
-            for item in root.rglob(binary):
-                if item.is_file():
+    for name in names_for(binary):
+        found = shutil.which(name)
+        if found:
+            return found
+    wanted = {x.lower() for x in names_for(binary)}
+    roots = [LOCAL_BIN, GO_BIN, USER_LOCAL_BIN, GO_ROOT / "bin", PIPX_HOME, TOOLS_HOME]
+    for root in roots:
+        if not root.exists():
+            continue
+        for name in names_for(binary):
+            direct = root / name
+            if direct.exists() and direct.is_file():
+                return str(direct)
+        try:
+            for item in root.rglob("*"):
+                if item.is_file() and item.name.lower() in wanted:
                     return str(item)
+        except Exception:
+            continue
     return None
 
 
@@ -48,27 +69,52 @@ def _run(command: list[str], *, env: dict[str, str] | None = None) -> bool:
 
 def _ensure_path_env() -> dict[str, str]:
     env = dict(os.environ)
-    extra = [str(GO_ROOT / "bin"), str(GO_BIN), str(LOCAL_BIN), str(Path.home() / ".local" / "bin")]
+    extra = [str(LOCAL_BIN), str(GO_ROOT / "bin"), str(GO_BIN), str(USER_LOCAL_BIN)]
     env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
-    env.setdefault("GOBIN", str(GO_BIN))
+    env["GOBIN"] = str(LOCAL_BIN)
+    env["GOPATH"] = str(Path.home() / "go")
     return env
 
 
+def _chmod_executable(path: Path) -> None:
+    try:
+        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except Exception:
+        pass
+
+
+def _symlink_or_copy(found: str, binary: str) -> None:
+    LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+    src = Path(found)
+    _chmod_executable(src)
+    for name in names_for(binary)[:1]:
+        target = LOCAL_BIN / name
+        if target.exists():
+            _chmod_executable(target)
+            continue
+        try:
+            target.symlink_to(src)
+        except Exception:
+            try:
+                shutil.copy2(src, target)
+            except Exception:
+                pass
+        _chmod_executable(target)
+
+
+def _post_install_repair(binary: str) -> None:
+    found = _find_binary(binary)
+    if found:
+        _symlink_or_copy(found, binary)
+
+
 def _sudo_apt(*args: str) -> bool:
-    """Non-interactive apt helper. Fails fast if sudo needs a password."""
     if not shutil.which("sudo"):
         return False
     return _run(["sudo", "-n", "apt-get", *args])
 
 
 def ensure_prerequisites(install_type: str | None, yes: bool = False, allow_system: bool = True) -> bool:
-    """Best-effort dependency repair for Kali/Linux.
-
-    For Go tools, VulnScope first tries apt. If sudo cannot run non-interactively,
-    it bootstraps an official user-local Go release under ~/.vulnscope/tools/go
-    so gau, waybackurls, katana, httpx, nuclei, and similar Go tools can install
-    without requiring a root password.
-    """
     if install_type == "go" and _go_command():
         return True
     if install_type == "pipx_or_pip" and (shutil.which("pipx") or shutil.which("pip3") or shutil.which("pip")):
@@ -82,9 +128,7 @@ def ensure_prerequisites(install_type: str | None, yes: bool = False, allow_syst
             return True
     if install_type == "go":
         return _bootstrap_user_go()
-    if install_type == "pipx_or_pip" and not shutil.which("pipx"):
-        return shutil.which("pip3") is not None or shutil.which("pip") is not None
-    return False
+    return shutil.which("python3") is not None
 
 
 def install_tool(tool: ArsenalTool, yes: bool = False, allow_system: bool = True) -> bool:
@@ -96,7 +140,6 @@ def install_tool(tool: ArsenalTool, yes: bool = False, allow_system: bool = True
     if not package:
         print(f"[!] {tool.name}: missing package in catalog")
         return False
-
     print("\n┌──────────────────── Arsenal Install/Repair Request ────────────────────┐")
     print(f"Tool      : {tool.name}")
     print(f"Category  : {tool.category}")
@@ -111,24 +154,24 @@ def install_tool(tool: ArsenalTool, yes: bool = False, allow_system: bool = True
         if answer not in {"yes", "y"}:
             print(f"[!] Skipped install: {tool.name}")
             return False
-
     ensure_prerequisites(install_type, yes=yes, allow_system=allow_system)
     if install_type == "go":
-        ok = _install_go(package)
+        ok = _install_go(package, tool.binary)
     elif install_type == "pipx_or_pip":
         ok = _install_pip(package, tool.binary)
     else:
         print(f"[!] Unsupported install type for {tool.name}: {install_type}")
         return False
-    if ok and is_installed(tool):
-        print(f"[+] {tool.name} installed/repaired successfully")
+    _post_install_repair(tool.binary)
+    found = _find_binary(tool.binary)
+    if ok and found:
+        print(f"[+] {tool.name} installed/repaired successfully: {found}")
         return True
-    print(f"[!] {tool.name} install command finished but binary was not found in PATH")
-    return is_installed(tool)
+    print(f"[!] {tool.name} install finished but binary was not discovered. See reports/output/arsenal/install-repair.log")
+    return found is not None
 
 
 def upgrade_tool(tool: ArsenalTool, yes: bool = False, allow_system: bool = True) -> bool:
-    """Refresh a curated tool to its catalog package version, usually @latest."""
     if not yes:
         answer = input(f"Update {tool.name} from curated source? yes/no: ").strip().lower()
         if answer not in {"yes", "y"}:
@@ -138,7 +181,7 @@ def upgrade_tool(tool: ArsenalTool, yes: bool = False, allow_system: bool = True
     install_type = tool.install.get("type")
     package = tool.install.get("package")
     if install_type == "go" and package:
-        return _install_go(package)
+        return _install_go(package, tool.binary)
     if install_type == "pipx_or_pip" and package:
         return _upgrade_pip(package, tool.binary)
     return False
@@ -149,12 +192,10 @@ def _go_command() -> str | None:
     if found:
         return found
     local = GO_ROOT / "bin" / "go"
-    if local.exists():
-        return str(local)
-    return None
+    return str(local) if local.exists() else None
 
 
-def _install_go(package: str) -> bool:
+def _install_go(package: str, binary: str | None = None) -> bool:
     go = _go_command()
     if not go and not _bootstrap_user_go():
         print("[!] Go is not installed and user-local Go bootstrap failed.")
@@ -162,10 +203,13 @@ def _install_go(package: str) -> bool:
     go = _go_command()
     if not go:
         return False
-    GO_BIN.mkdir(parents=True, exist_ok=True)
+    LOCAL_BIN.mkdir(parents=True, exist_ok=True)
     command = [go, "install", package]
     print("[+] " + " ".join(command))
-    return _run(command, env=_ensure_path_env())
+    ok = _run(command, env=_ensure_path_env())
+    if binary:
+        _post_install_repair(binary)
+    return ok
 
 
 def _bootstrap_user_go() -> bool:
@@ -201,39 +245,19 @@ def _bootstrap_user_go() -> bool:
 
 
 def _install_pip(package: str, binary: str) -> bool:
-    if shutil.which("pipx"):
-        command = ["pipx", "install", "--force", package]
-    else:
-        command = ["python3", "-m", "pip", "install", "--user", "--upgrade", package]
+    command = ["pipx", "install", "--force", package] if shutil.which("pipx") else ["python3", "-m", "pip", "install", "--user", "--upgrade", package]
     print("[+] " + " ".join(command))
     ok = _run(command, env=_ensure_path_env())
-    _repair_python_binary(binary)
+    _post_install_repair(binary)
     return ok
 
 
 def _upgrade_pip(package: str, binary: str) -> bool:
-    if shutil.which("pipx") and not package.startswith("git+"):
-        command = ["pipx", "upgrade", package]
-    elif shutil.which("pipx"):
-        command = ["pipx", "install", "--force", package]
-    else:
-        command = ["python3", "-m", "pip", "install", "--user", "--upgrade", package]
+    command = ["pipx", "install", "--force", package] if shutil.which("pipx") else ["python3", "-m", "pip", "install", "--user", "--upgrade", package]
     print("[+] " + " ".join(command))
     ok = _run(command, env=_ensure_path_env())
-    _repair_python_binary(binary)
+    _post_install_repair(binary)
     return ok
-
-
-def _repair_python_binary(binary: str) -> None:
-    LOCAL_BIN.mkdir(parents=True, exist_ok=True)
-    found = _find_binary(binary)
-    if found:
-        target = LOCAL_BIN / binary
-        if not target.exists():
-            try:
-                target.symlink_to(found)
-            except Exception:
-                pass
 
 
 def ensure_profile_tools(tools: list[ArsenalTool], auto_install: bool = False, yes: bool = False, allow_system: bool = True) -> dict[str, bool]:
