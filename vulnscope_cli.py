@@ -37,6 +37,8 @@ MENU = """
 [9] Show Last Final Report              Open final Markdown report
 [10] Coverage Matrix                   Prove category/module coverage counts
 [11] Repo Health / Error Check          Compile check, dependency check, CLI smoke tests
+[12] Mega Tools 50+ Installer/Status    Best-effort install/status for large safe tool registry
+[13] Evidence Cards                    What/where/why/how-to-check cards from collected findings
 [0] Exit
 """
 
@@ -51,6 +53,8 @@ SAFE_COMMAND_PREFIXES = (
     "python3 report_v2_cli.py",
     "python3 safe_loop_v2_cli.py",
     "python3 repo_health_cli.py",
+    "python3 mega_tools_cli.py",
+    "python3 evidence_cards_cli.py",
     "cat reports/output/",
 )
 
@@ -170,10 +174,12 @@ def ai_full_review() -> None:
     max_cycles = input("Max thinking cycles [8]: ").strip() or "8"
     commands = [
         ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
+        ("Mega tools status", "python3 mega_tools_cli.py --status", "10-30s"),
         ("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --yes", "1-5 min"),
         ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
         ("Comprehensive category review", f"python3 comprehensive_suite_cli.py --target {target} --scope-policy {scope} --yes", "30s-3 min"),
         ("Google/OAuth context review", "python3 google_context_cli.py", "5-30s"),
+        ("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s"),
         ("Final report", f"python3 report_v2_cli.py --target {target}", "5-30s"),
     ]
     history = []
@@ -183,6 +189,7 @@ def ai_full_review() -> None:
     (OUT / "interactive-full-review.json").write_text(json.dumps({"target": target, "scope": scope, "history": history}, indent=2), encoding="utf-8")
     print("\n[+] Full review complete.")
     print("[+] Run history: reports/output/cli/interactive-full-review.json")
+    print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
     print("[+] Final report: reports/output/report-v2/executive-report-v2.md")
 
 
@@ -218,6 +225,13 @@ def menu_loop() -> None:
                 run_step("Coverage matrix", "python3 coverage_matrix.py", "5-15s")
             elif choice == "11":
                 run_step("Repo health", "python3 repo_health_cli.py --install-python-deps --tool-update", "1-10 min")
+            elif choice == "12":
+                install = input("Install missing supported mega tools? yes/no: ").strip().lower() in {"y", "yes"}
+                cmd = "python3 mega_tools_cli.py --install-missing --yes" if install else "python3 mega_tools_cli.py --status"
+                run_step("Mega tools", cmd, "10s-30 min")
+            elif choice == "13":
+                target = normalize_target(input("Target label for evidence cards: ").strip())
+                run_step("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s")
             elif choice == "0":
                 print("Goodbye.")
                 return
