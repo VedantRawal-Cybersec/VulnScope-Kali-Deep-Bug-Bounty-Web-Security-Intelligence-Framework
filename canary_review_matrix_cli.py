@@ -6,6 +6,7 @@ import json
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 OUT = Path('reports/output/canary-review-matrix')
 REPORT_ROOT = Path('reports/output')
@@ -46,14 +47,30 @@ PATTERNS = {
 }
 
 
-def read_corpus() -> str:
+def normalize_target(raw: str) -> str:
+    raw = raw.strip()
+    return raw if '://' in raw else 'https://' + raw
+
+
+def host_from_target(target: str) -> str:
+    parsed = urlparse(normalize_target(target))
+    host = parsed.hostname or parsed.netloc or ''
+    if not host:
+        raise ValueError('invalid target')
+    return host.lower()
+
+
+def read_corpus(target: str) -> str:
+    host = host_from_target(target)
     chunks = []
     if not REPORT_ROOT.exists():
         return ''
     for p in REPORT_ROOT.rglob('*'):
         if p.suffix.lower() in {'.json', '.md', '.txt'} and p.stat().st_size < 2500000:
             try:
-                chunks.append(p.read_text(encoding='utf-8', errors='ignore')[:220000])
+                text = p.read_text(encoding='utf-8', errors='ignore')[:220000]
+                if host in text or str(p).startswith('reports/output/tool'):
+                    chunks.append(text)
             except Exception:
                 pass
     return '\n'.join(chunks)
@@ -88,26 +105,28 @@ def make_row(row, text: str) -> dict:
     verdict = 'SAFE' if hits == 0 else 'REVIEW_MANUAL'
     if number in {2, 15, 19} and hits > 0:
         verdict = 'VULNERABLE'
-    return {'number': number, 'category': category, 'classification': classification, 'detection_method': method, 'verdict': verdict, 'report_field': verdict, 'evidence': f'evidence_hits={hits}; source=existing VulnScope reports; safe marker/canary mode only'}
+    return {'number': number, 'category': category, 'classification': classification, 'detection_method': method, 'verdict': verdict, 'report_field': verdict, 'evidence': f'evidence_hits={hits}; target_scoped=true; safe marker/canary mode only'}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Generate safe canary review matrix from existing VulnScope evidence')
+    parser = argparse.ArgumentParser(description='Generate safe canary review matrix from current target evidence only')
     parser.add_argument('--target', required=True)
     args = parser.parse_args()
-    text = read_corpus()
+    target = normalize_target(args.target)
+    host = host_from_target(target)
+    text = read_corpus(target)
     rows = [make_row(r, text) for r in ROWS]
     counts = {}
     for r in rows:
         counts[r['verdict']] = counts.get(r['verdict'], 0) + 1
-    payload = {'target': args.target, 'generated_at': time.time(), 'summary': {'counts': counts, 'rows': len(rows)}, 'rows': rows}
+    payload = {'target': target, 'host': host, 'generated_at': time.time(), 'summary': {'counts': counts, 'rows': len(rows), 'target_scoped': True}, 'rows': rows}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / 'canary-review-matrix.json').write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
-    lines = [f"# Canary Review Matrix — {args.target}", '', 'Safe marker/canary mode. The matrix summarizes existing VulnScope evidence and does not run destructive checks.', '', '| # | Category | Class | Method | Verdict | Evidence |', '|---:|---|---|---|---|---|']
+    lines = [f"# Canary Review Matrix — {target}", '', f'Host: `{host}`', '', 'Safe marker/canary mode. The matrix summarizes current-target VulnScope evidence and does not run destructive checks.', '', '| # | Category | Class | Method | Verdict | Evidence |', '|---:|---|---|---|---|---|']
     for r in rows:
         lines.append(f"| {r['number']} | {r['category']} | {r['classification']} | {r['detection_method']} | **{r['verdict']}** | {r['evidence']} |")
     (OUT / 'canary-review-matrix.md').write_text('\n'.join(lines), encoding='utf-8')
-    print(json.dumps({'summary': payload['summary'], 'report': 'reports/output/canary-review-matrix/canary-review-matrix.md'}, indent=2))
+    print(json.dumps({'summary': payload['summary'], 'host': host, 'report': 'reports/output/canary-review-matrix/canary-review-matrix.md'}, indent=2))
     return 0
 
 if __name__ == '__main__':
