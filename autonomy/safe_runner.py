@@ -34,6 +34,8 @@ class SafeAutonomyRunner:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def run(self) -> dict[str, Any]:
+        from auth.google_context_review import GoogleContextReview
+        from vuln_categories.comprehensive_suite import ComprehensiveCategorySuite
         started = time.time()
         scope_decision = self.scope_policy.check(self.target)
         plan = build_plan(self.target, self.policy, has_har=bool(self.har_path))
@@ -53,24 +55,19 @@ class SafeAutonomyRunner:
             artifacts["har_import"] = str(save_import(self.har_path))
         if self.policy.allow_safe_discovery_probes and self.policy.allows_stage("safe_discovery"):
             safe_result = SafeDiscoveryRunner(self.target).run()
-            artifacts["safe_discovery"] = {
-                "json": "reports/output/safe-discovery/safe-discovery.json",
-                "markdown": "reports/output/safe-discovery/safe-discovery.md",
-                "findings": safe_result.get("summary", {}).get("findings", 0),
-            }
+            artifacts["safe_discovery"] = {"json": "reports/output/safe-discovery/safe-discovery.json", "markdown": "reports/output/safe-discovery/safe-discovery.md", "findings": safe_result.get("summary", {}).get("findings", 0)}
         state = load_checkpoint(self.target) or AssessmentState(target=self.target, mode=self.mode)
         save_checkpoint(state)
         PhaseRunner(state).run_all()
         artifacts["phase_report"] = "reports/output/workflow/vulnscope-assessment-report.md"
+        g = GoogleContextReview().run()
+        artifacts["google_context"] = {"json": "reports/output/auth/google-context/google-context-review.json", "candidates": g.get("summary", {}).get("candidates", 0)}
+        c = ComprehensiveCategorySuite(target=self.target).run()
+        artifacts["comprehensive_suite"] = {"json": "reports/output/comprehensive-suite/comprehensive-suite.json", "summary": c.get("summary", {})}
         council = self.policy.allow_model_council and self.policy.level >= 2
         AgentCoreController(target=self.target, mode=self.mode, auto_yes=self.auto_yes, dry_run=False, provider=self.provider, council=council).run()
         artifacts["agent_core"] = "reports/output/agent_core/agent-core-summary.json"
-        items = load_findings_from_reports([
-            "reports/output/safe-discovery/safe-discovery.json",
-            "reports/output/agent_core/agent-core-summary.json",
-            "reports/output/workflow/reportability-scores.json",
-            "reports/output/imports/har-import.json",
-        ])
+        items = load_findings_from_reports(["reports/output/safe-discovery/safe-discovery.json", "reports/output/comprehensive-suite/comprehensive-suite.json", "reports/output/auth/google-context/google-context-review.json", "reports/output/agent_core/agent-core-summary.json", "reports/output/workflow/reportability-scores.json", "reports/output/imports/har-import.json"])
         quality = reduce_low_quality(items, threshold=self.policy.min_quality_threshold)
         q_path = Path("reports/output/finding-quality.json")
         q_path.parent.mkdir(parents=True, exist_ok=True)
