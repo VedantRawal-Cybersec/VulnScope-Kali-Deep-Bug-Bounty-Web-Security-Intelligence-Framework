@@ -1,0 +1,12 @@
+targets:
+  - https://example.com
+scope_policy: scope_policy.yaml
+interval_minutes: 360
+max_cycles: 8
+enable_tool_mind: true
+enable_artemis: true
+enable_aegis_safe: true
+enable_proxy_passive_bridge: true
+enable_google_pair: false
+enable_final_report: true
+notes: "Autonomous Control Center runs safe authorized-only workflows. It does not exploit, evade, dump secrets, or change remote state."
