@@ -14,6 +14,7 @@ INPUTS = {
     "safe_discovery": "reports/output/safe-discovery/safe-discovery.json",
     "category_suite": "reports/output/category-suite/category-suite.json",
     "comprehensive_suite": "reports/output/comprehensive-suite/comprehensive-suite.json",
+    "coverage_matrix": "reports/output/tool-matrix/tool-matrix.json",
     "google_context": "reports/output/auth/google-context/google-context-review.json",
     "auth_compare": "reports/output/auth/account-comparison.json",
     "quality": "reports/output/finding-quality.json",
@@ -33,11 +34,7 @@ class Decision:
         return asdict(self)
 
 class AutonomousDecisionEngine:
-    """Safe planner that decides what VulnScope should do next.
-
-    It only recommends or runs safe framework steps. It does not create exploit
-    payloads, brute-force identifiers, collect credentials, or alter server state.
-    """
+    """Safe planner that decides what VulnScope should do next."""
     def __init__(self, target: str, provider: str | None = None, mode: str = "comprehensive") -> None:
         self.target = target
         self.provider = provider
@@ -52,8 +49,14 @@ class AutonomousDecisionEngine:
         maintenance = self.data.get("maintenance") or {}
         safe = self.data.get("safe_discovery") or {}
         comp = self.data.get("comprehensive_suite") or {}
+        matrix = self.data.get("coverage_matrix") or {}
         google = self.data.get("google_context") or {}
         quality = self.data.get("quality") or {}
+
+        if not matrix:
+            decisions.append(Decision(5, "coverage", "build_module_coverage_matrix", "No module coverage matrix exists yet.", "python3 coverage_matrix.py"))
+        elif matrix.get("minimum_modules_per_category", 0) < 5:
+            decisions.append(Decision(6, "coverage", "repair_module_coverage", "Coverage matrix is below the required five modules per category.", "python3 coverage_matrix.py"))
 
         if not maintenance:
             decisions.append(Decision(10, "maintenance", "run_daily_update", "No daily maintenance result found.", "python3 daily_update_cli.py --profile bug-bounty-safe --yes"))
@@ -66,7 +69,7 @@ class AutonomousDecisionEngine:
             decisions.append(Decision(35, "review", "review_safe_discovery", "Safe Discovery produced candidates that should be reviewed and correlated.", "cat reports/output/safe-discovery/safe-discovery.md"))
 
         if not comp:
-            decisions.append(Decision(25, "category_review", "run_comprehensive_suite", "No comprehensive vulnerability-category suite output exists yet.", f"python3 comprehensive_suite_cli.py --target {self.target} --yes"))
+            decisions.append(Decision(25, "category_review", "run_comprehensive_suite", "No comprehensive category suite output exists yet.", f"python3 comprehensive_suite_cli.py --target {self.target} --yes"))
         else:
             summary = comp.get("summary", {})
             if summary.get("candidates", 0):
@@ -91,15 +94,7 @@ class AutonomousDecisionEngine:
             decisions.append(Decision(80, "model_review", "run_model_council", "Provider configured; run model council through autopilot for consensus review.", f"python3 autopilot_cli.py --target {self.target} --mode {self.mode} --provider {self.provider} --yes"))
 
         ordered = sorted(decisions, key=lambda d: d.priority)
-        payload = {
-            "target": self.target,
-            "mode": self.mode,
-            "generated_at": started,
-            "rules": {"exploit_execution": False, "state_change": False, "credential_collection": False, "out_of_scope": False},
-            "next_action": ordered[0].to_dict() if ordered else None,
-            "decisions": [d.to_dict() for d in ordered],
-            "inputs_seen": {k: bool(v) for k, v in self.data.items()},
-        }
+        payload = {"target": self.target, "mode": self.mode, "generated_at": started, "rules": {"state_change": False, "credential_collection": False, "out_of_scope": False}, "next_action": ordered[0].to_dict() if ordered else None, "decisions": [d.to_dict() for d in ordered], "inputs_seen": {k: bool(v) for k, v in self.data.items()}}
         (OUT_DIR / "decision-plan.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         (OUT_DIR / "decision-plan.md").write_text(self._markdown(payload), encoding="utf-8")
         return payload
