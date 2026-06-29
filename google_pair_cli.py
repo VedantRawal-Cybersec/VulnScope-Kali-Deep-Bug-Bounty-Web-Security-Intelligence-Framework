@@ -47,6 +47,8 @@ def main() -> int:
 
     OUT.mkdir(parents=True, exist_ok=True)
     history = []
+    failed = False
+    failed_label = None
     for label, template in PHASES:
         if args.skip_login and label == "Google login both accounts":
             history.append({"label": label, "skipped": True, "reason": "--skip-login"})
@@ -57,9 +59,14 @@ def main() -> int:
         print(result.get("output_tail", "")[-1500:])
         history.append({"label": label, "result": result})
         if not result.get("ok"):
+            failed = True
+            failed_label = label
             break
 
-    payload = {"target": args.target, "profile": args.profile, "max_pages": args.max_pages, "history": history, "outputs": {
+    payload = {"target": args.target, "profile": args.profile, "max_pages": args.max_pages, "ok": not failed, "failed_label": failed_label, "history": history, "setup_required": failed, "setup_help": [
+        "python3 auth_mode.py --setup-google-profile",
+        "python3 auth_mode.py --profile default --persistent-google-login --account both",
+    ], "outputs": {
         "account_compare": "reports/output/auth/account-comparison.md",
         "google_context": "reports/output/auth/google-context/google-context-review.md",
         "auth_diff_v2": "reports/output/auth/differential-v2/auth-diff-v2.md",
@@ -67,8 +74,8 @@ def main() -> int:
         "reportability": "reports/output/reportability/reportability.md",
     }}
     (OUT / "google-pair-run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps({"output": "reports/output/google-pair/google-pair-run.json", "phases": len(history)}, indent=2))
-    return 0
+    print(json.dumps({"ok": not failed, "output": "reports/output/google-pair/google-pair-run.json", "phases": len(history), "failed_label": failed_label}, indent=2))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
