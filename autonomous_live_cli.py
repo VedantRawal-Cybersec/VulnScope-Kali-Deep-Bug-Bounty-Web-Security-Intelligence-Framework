@@ -42,6 +42,11 @@ REPORTS = {
     "summary": "reports/output/vulnscope-main/final-summary.md",
 }
 
+KEYWORDS = [
+    "found", "candidate", "endpoint", "subdomain", "url", "route", "param", "risk", "review",
+    "critical", "high", "medium", "low", "missing", "header", "api", "auth", "cors", "hsts", "admin", "login",
+]
+
 NOISE = [
     "Message from Kali developers",
     "This is a minimal installation of Kali Linux",
@@ -49,11 +54,14 @@ NOISE = [
     "touch ~/.hushlogin",
 ]
 
-KEYWORDS = [
-    "found", "candidate", "endpoint", "subdomain", "url", "route", "param", "risk",
-    "review", "critical", "high", "medium", "low", "missing", "header", "api",
-    "auth", "idor", "bola", "xss", "sqli", "cors", "hsts", "admin", "login",
-]
+BIG_LOGO = r"""
+██╗   ██╗██╗   ██╗██╗     ███╗   ██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+██║   ██║██║   ██║██║     ████╗  ██║██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+██║   ██║██║   ██║██║     ██╔██╗ ██║███████╗██║     ██║   ██║██████╔╝█████╗  
+╚██╗ ██╔╝██║   ██║██║     ██║╚██╗██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝  
+ ╚████╔╝ ╚██████╔╝███████╗██║ ╚████║███████║╚██████╗╚██████╔╝██║     ███████╗
+  ╚═══╝   ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝     ╚══════╝
+"""
 
 
 @dataclass
@@ -61,114 +69,98 @@ class Step:
     stage: str
     label: str
     command: str
+    thought: str
     timeout: int = 1800
-    optional: bool = False
-    thought: str = ""
+    optional: bool = True
 
 
 class AgentTerminalUI:
-    """Cyan/yellow agent-interaction UI inspired by the reference screenshot."""
-
     def __init__(self, total_steps: int) -> None:
         self.total_steps = max(1, total_steps)
-        self.completed_steps = 0
+        self.done = 0
+        self.turn = 0
         self.total_i = 0
         self.total_o = 0
         self.total_r = 0
-        self.turn = 0
-        self.width = max(96, min(140, shutil.get_terminal_size((110, 30)).columns))
-        self.started = time.time()
+        self.width = max(110, min(150, shutil.get_terminal_size((120, 30)).columns))
 
-    def _c(self, text: str, color: str) -> str:
+    def c(self, text: str, color: str) -> str:
         return f"{color}{text}{RESET}"
 
-    def _border(self, title: str | None = None) -> str:
-        if not title:
-            return self._c("═" * self.width, CYAN)
-        clean = f" {title} "
-        fill = max(0, self.width - len(clean))
-        return self._c(clean + "═" * fill, CYAN)
+    def border(self, title: str) -> str:
+        label = f" {title} "
+        return self.c(label + "═" * max(0, self.width - len(label)), CYAN)
 
-    def _context_bar(self) -> str:
-        pct = min(100.0, (self.completed_steps / self.total_steps) * 100.0)
-        filled = max(1, int(pct / 10)) if pct else 0
-        return self._c("█" * filled, GREEN) + self._c("░" * (10 - filled), GRAY) + f" {pct:05.1f}%"
+    def context(self) -> str:
+        pct = min(100.0, (self.done / self.total_steps) * 100.0)
+        bars = int(pct / 10)
+        return self.c("█" * bars, GREEN) + self.c("░" * (10 - bars), GRAY) + f" {pct:05.1f}%"
 
-    def _money(self) -> str:
-        return "$0.0000"
-
-    def stats_line(self, cur_i: int = 0, cur_o: int = 0, cur_r: int = 0) -> str:
+    def stats(self, i: int = 0, o: int = 0, r: int = 0) -> str:
         return (
-            f"Current: I:{self._c(str(cur_i), GREEN)} O:{self._c(str(cur_o), RED)} R:{self._c(str(cur_r), YELLOW)} ({self._money()}) | "
-            f"Total: I:{self._c(str(self.total_i), GREEN)} O:{self._c(str(self.total_o), RED)} R:{self._c(str(self.total_r), YELLOW)} ({self._money()}) | "
-            f"Context: {self._context_bar()}"
+            f"Current: I:{self.c(str(i), GREEN)} O:{self.c(str(o), RED)} R:{self.c(str(r), YELLOW)} ($0.0000) | "
+            f"Total: I:{self.c(str(self.total_i), GREEN)} O:{self.c(str(self.total_o), RED)} R:{self.c(str(self.total_r), YELLOW)} ($0.0000) | "
+            f"Context: {self.context()} {self.c('■', GREEN)}"
         )
 
-    def banner(self, target: str, include_subdomains: bool, include_google_pair: bool, workers: int, cycles: int) -> None:
-        print(self._c("\n" + "█" * self.width, CYAN + BOLD))
-        print(self._c("█" + " " * (self.width - 2) + "█", CYAN + BOLD))
-        print(self._c("█   VULNSCOPE AUTONOMOUS AGENT TERMINAL".ljust(self.width - 1) + "█", CYAN + BOLD))
-        print(self._c("█   Agent Interaction • Tool Calls • Live Surface Map • Verdicts".ljust(self.width - 1) + "█", MAGENTA + BOLD))
-        print(self._c("█" + " " * (self.width - 2) + "█", CYAN + BOLD))
-        print(self._c("█" * self.width + "\n", CYAN + BOLD))
-        print(self._c(f"MISSION ID       : VS-{time.strftime('%Y%m%d-%H%M%S')}", WHITE + BOLD))
-        print(self._c(f"TARGET           : {target}", WHITE + BOLD))
-        print(self._c(f"SUBDOMAINS       : {include_subdomains}", WHITE))
-        print(self._c(f"TWO-ACCOUNT MODE : {include_google_pair}", WHITE))
-        print(self._c(f"WORKERS/CYCLES   : {workers}/{cycles}", WHITE))
-        print(self._c("MODE             : Safe Authorized Review", WHITE))
+    def banner(self, target: str, include_subdomains: bool, two_account: bool, workers: int, cycles: int) -> None:
+        print(self.c("\n" + "█" * self.width, CYAN + BOLD))
+        for line in BIG_LOGO.strip("\n").splitlines():
+            pad = max(0, self.width - len(line) - 2)
+            print(self.c("█ " + line + " " * pad + "█", CYAN + BOLD))
+        print(self.c("█" + " " * (self.width - 2) + "█", CYAN + BOLD))
+        title = "VULNSCOPE AUTONOMOUS AGENT TOOL"
+        sub = "Agent Interaction • Live Tool Calls • Surface Map • 20-Area Evidence Review • Final Verdicts"
+        print(self.c("█ " + title.center(self.width - 4) + " █", MAGENTA + BOLD))
+        print(self.c("█ " + sub.center(self.width - 4) + " █", YELLOW + BOLD))
+        print(self.c("█" * self.width + "\n", CYAN + BOLD))
+        print(self.c(f"MISSION ID       : VS-{time.strftime('%Y%m%d-%H%M%S')}", WHITE + BOLD))
+        print(self.c(f"TARGET           : {target}", WHITE + BOLD))
+        print(self.c(f"SUBDOMAINS       : {include_subdomains}", WHITE))
+        print(self.c(f"TWO-ACCOUNT MODE : {two_account}", WHITE))
+        print(self.c(f"WORKERS/CYCLES   : {workers}/{cycles}", WHITE))
+        print(self.c("MODE             : Safe Authorized Review", WHITE))
 
-    def agent(self, title: str, message: str, data: dict[str, Any] | None = None) -> None:
+    def agent(self, message: str, data: dict[str, Any] | None = None) -> None:
         self.turn += 1
-        cur_i = len(message) + (len(json.dumps(data, ensure_ascii=False)) if data else 0)
+        raw_data = json.dumps(data, ensure_ascii=False) if data else ""
+        cur_i = len(message) + len(raw_data)
         self.total_i += cur_i
-        print("\n" + self._border("Agent Interaction"))
-        print(self._c(f"[{self.turn}] Agent: VulnScope Autonomous Tester >> ", GREEN + BOLD) + self._c(message, YELLOW))
+        print("\n" + self.border("Agent Interaction"))
+        print(self.c(f"[{self.turn}] Agent: VulnScope Autonomous Tester >> ", GREEN + BOLD) + self.c(message, YELLOW))
         if data:
-            preview = json.dumps(data, ensure_ascii=False)[:900]
-            print(self._c("     data >> ", CYAN) + self._c(preview, WHITE))
-        print(self.stats_line(cur_i=cur_i, cur_o=0, cur_r=0) + " " + self._c("■", GREEN))
+            print(self.c("     data >> ", CYAN) + self.c(raw_data[:1000], WHITE))
+        print(self.stats(i=cur_i))
 
-    def tool_start(self, label: str, command: str) -> None:
-        args = {"module": label, "command": command}
-        print("\n" + self._border("tool_call"))
-        print(self._c("vulnscope_safe_module", GREEN + BOLD) + "(" + self._c("command", YELLOW) + "=" + shlex.quote(label) + ", " + self._c("args", YELLOW) + "=" + json.dumps(args, ensure_ascii=False)[:650] + ")")
-        print(self.stats_line(cur_i=len(command), cur_o=0, cur_r=0) + " " + self._c("■", GREEN))
+    def tool_start(self, step: Step) -> None:
+        args = {"module": step.label, "stage": step.stage, "command": step.command}
+        print("\n" + self.border("tool_call"))
+        print(self.c("vulnscope_safe_module", GREEN + BOLD) + "(" + self.c("command", YELLOW) + "=" + shlex.quote(step.label) + ", " + self.c("args", YELLOW) + "=" + json.dumps(args, ensure_ascii=False)[:850] + ")")
+        print(self.stats(i=len(step.command)))
 
-    def tool_done(self, label: str, result: dict[str, Any]) -> None:
+    def tool_done(self, result: dict[str, Any]) -> None:
         output = str(result.get("output_tail") or "")
         cur_o = len(output)
         cur_r = len(extract_interesting_lines(output))
         self.total_o += cur_o
         self.total_r += cur_r
-        self.completed_steps += 1
+        self.done += 1
         ok = bool(result.get("ok"))
-        color = GREEN if ok else YELLOW if result.get("optional") else RED
+        col = GREEN if ok else YELLOW if result.get("optional") else RED
         status = "OK" if ok else "REVIEW" if result.get("optional") else "FAILED"
-        print(self._c(f"\n{status}: {label} [{result.get('seconds', 0)}s]", color + BOLD))
-        for line in extract_interesting_lines(output)[:9]:
-            print(self._c("  ├─ ", CYAN) + line[:210])
-        if not ok and output and not extract_interesting_lines(output):
-            print(self._c("  └─ ", color) + output[-500:].replace("\n", " | ")[:500])
-        print(self.stats_line(cur_i=0, cur_o=cur_o, cur_r=cur_r) + " " + self._c("■", GREEN))
-
-    def snapshot(self, target: str, label: str, snap: dict[str, list[str]]) -> None:
-        self.agent(
-            "Live Surface Snapshot",
-            f"After {label}, I am updating the target map with observed hosts, URLs, routes, and parameters.",
-            {"hosts": snap.get("domains", [])[:8], "urls": snap.get("urls", [])[:6], "paths": snap.get("paths", [])[:8], "params": snap.get("params", [])[:12]},
-        )
-
-
-def color(text: str, ansi: str) -> str:
-    return f"{ansi}{text}{RESET}"
+        print(self.c(f"\n{status}: {result.get('label')} [{result.get('seconds', 0)}s]", col + BOLD))
+        for item in extract_interesting_lines(output)[:10]:
+            print(self.c("  ├─ ", CYAN) + item[:220])
+        if output and not extract_interesting_lines(output) and not ok:
+            print(self.c("  └─ ", col) + output[-600:].replace("\n", " | ")[:600])
+        print(self.stats(o=cur_o, r=cur_r))
 
 
 def normalize_target(raw: str) -> str:
-    value = raw.strip()
-    if not value:
+    raw = raw.strip()
+    if not raw:
         raise ValueError("Target cannot be empty")
-    return value if "://" in value else "https://" + value
+    return raw if "://" in raw else "https://" + raw
 
 
 def host_from_target(target: str) -> str:
@@ -179,7 +171,7 @@ def host_from_target(target: str) -> str:
     return host.lower()
 
 
-def write_scope(target: str, include_subdomains: bool) -> Path:
+def write_scope(target: str, include_subdomains: bool) -> None:
     host = host_from_target(target)
     allowed = [host]
     if include_subdomains and host != "localhost" and not host.replace(".", "").isdigit():
@@ -198,26 +190,15 @@ def write_scope(target: str, include_subdomains: bool) -> Path:
         "notes: 'Generated by autonomous_live_cli.py after explicit user consent. Safe authorized review only.'",
         "",
     ]), encoding="utf-8")
-    return SESSION_SCOPE
 
 
-def write_artemis_config(target: str) -> Path:
+def write_artemis_config(target: str) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     ARTEMIS_LIVE_CONFIG.write_text("\n".join([
-        "targets:",
-        f"  - {target}",
-        "passive_only: true",
-        "require_scope_policy: true",
-        "interval_minutes: 360",
-        "report_every_cycles: 1",
-        "google_search_limit: 5",
-        "max_public_records: 1500",
-        "respect_rate_limits: true",
-        "no_secret_values_in_reports: true",
-        "notes: 'Generated by autonomous live CLI. Authorized safe review only.'",
-        "",
+        "targets:", f"  - {target}", "passive_only: true", "require_scope_policy: true",
+        "interval_minutes: 360", "report_every_cycles: 1", "google_search_limit: 5",
+        "max_public_records: 1500", "respect_rate_limits: true", "no_secret_values_in_reports: true", "",
     ]), encoding="utf-8")
-    return ARTEMIS_LIVE_CONFIG
 
 
 def clean_output(text: str) -> str:
@@ -236,49 +217,37 @@ def clean_output(text: str) -> str:
 
 
 def extract_interesting_lines(output: str) -> list[str]:
-    found: list[str] = []
+    rows: list[str] = []
     for item in output.splitlines():
         low = item.lower()
-        if any(word in low for word in KEYWORDS):
-            found.append(item.strip())
-    return found
+        if any(k in low for k in KEYWORDS):
+            rows.append(item.strip())
+    return rows
 
 
-def python_script_missing(command: str) -> str | None:
+def script_missing(command: str) -> str | None:
     parts = shlex.split(command)
-    if len(parts) >= 2 and parts[0].startswith("python") and parts[1].endswith(".py"):
-        if not Path(parts[1]).exists():
-            return parts[1]
+    if len(parts) >= 2 and parts[0].startswith("python") and parts[1].endswith(".py") and not Path(parts[1]).exists():
+        return parts[1]
     return None
 
 
-def run_command(step: Step, ui: AgentTerminalUI) -> dict[str, Any]:
-    missing = python_script_missing(step.command)
-    ui.tool_start(step.label, step.command)
+def run_step(step: Step, ui: AgentTerminalUI) -> dict[str, Any]:
+    ui.tool_start(step)
+    missing = script_missing(step.command)
     if missing:
         result = {"label": step.label, "command": step.command, "ok": bool(step.optional), "optional": step.optional, "exit_code": 0 if step.optional else 127, "seconds": 0, "output_tail": f"Optional script not present: {missing}"}
-        ui.tool_done(step.label, result)
+        ui.tool_done(result)
         return result
     started = time.time()
     try:
         proc = subprocess.run(["bash", "-lc", step.command], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=step.timeout)
         output = clean_output(proc.stdout)
-        ok = proc.returncode == 0 or step.optional
-        result = {"label": step.label, "command": step.command, "ok": ok, "optional": step.optional, "exit_code": proc.returncode, "seconds": round(time.time() - started, 2), "output_tail": output[-7000:]}
+        result = {"label": step.label, "stage": step.stage, "command": step.command, "ok": proc.returncode == 0 or step.optional, "optional": step.optional, "exit_code": proc.returncode, "seconds": round(time.time() - started, 2), "output_tail": output[-8000:]}
     except Exception as exc:
-        result = {"label": step.label, "command": step.command, "ok": bool(step.optional), "optional": step.optional, "error": str(exc), "seconds": round(time.time() - started, 2), "output_tail": str(exc)}
-    ui.tool_done(step.label, result)
+        result = {"label": step.label, "stage": step.stage, "command": step.command, "ok": bool(step.optional), "optional": step.optional, "error": str(exc), "seconds": round(time.time() - started, 2), "output_tail": str(exc)}
+    ui.tool_done(result)
     return result
-
-
-def load_json(path: str | Path) -> Any:
-    p = Path(path)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return None
 
 
 def scan_report_text() -> str:
@@ -287,7 +256,7 @@ def scan_report_text() -> str:
     if not root.exists():
         return ""
     for p in root.rglob("*"):
-        if p.suffix.lower() in {".json", ".md", ".txt"} and p.stat().st_size < 2_500_000:
+        if p.suffix.lower() in {".json", ".md", ".txt"} and p.stat().st_size < 2500000:
             try:
                 chunks.append(p.read_text(encoding="utf-8", errors="ignore")[:220000])
             except Exception:
@@ -295,7 +264,7 @@ def scan_report_text() -> str:
     return "\n".join(chunks)
 
 
-def surface_snapshot(target: str) -> dict[str, list[str]]:
+def surface_snapshot(target: str) -> dict[str, Any]:
     host = host_from_target(target)
     base = ".".join(host.split(".")[-2:]) if "." in host else host
     text = scan_report_text()
@@ -303,44 +272,43 @@ def surface_snapshot(target: str) -> dict[str, list[str]]:
     domains = sorted(set(re.findall(r"\b[a-zA-Z0-9._-]+\." + re.escape(base) + r"\b", text)))
     paths = sorted(set(re.findall(r"(?<![A-Za-z0-9])/[A-Za-z0-9_./?=&%:-]{2,}", text)))
     params = sorted(set(re.findall(r"[?&]([A-Za-z0-9_:-]{2,})=", text)))
-    return {"domains": domains[:40], "urls": urls[:40], "paths": paths[:45], "params": params[:30]}
+    return {"hosts": domains[:10], "urls": urls[:8], "paths": paths[:12], "params": params[:14]}
 
 
 def build_steps(target: str, include_google_pair: bool, max_cycles: int) -> list[Step]:
-    target_q = shlex.quote(target)
-    host_q = shlex.quote(host_from_target(target))
-    scope_q = shlex.quote(str(SESSION_SCOPE))
-    artemis_q = shlex.quote(str(ARTEMIS_LIVE_CONFIG))
-    steps: list[Step] = [
-        Step("STAGE 1: PREFLIGHT", "Mission Preflight", f"python3 mission_preflight_cli.py --target {target_q} --scope-policy {scope_q}", 600, False, "I will validate the target, scope policy, DNS resolution, typo risk, and stale output state."),
-        Step("STAGE 2: TOOLING", "Tool Doctor", "python3 tool_doctor_cli.py --install --yes", 1800, True, "I will repair optional helper binaries and wrappers before collection starts."),
-        Step("STAGE 2: TOOLING", "Tool PATH Repair", "python3 tool_path_repair_cli.py", 600, True, "I will verify PATH visibility for local, Go, pipx, and user-local tools."),
-        Step("STAGE 2: TOOLING", "Coverage Matrix", "python3 coverage_matrix.py", 600, True, "I will check module coverage so weak zones are visible before the review."),
-        Step("STAGE 2: TOOLING", "Mega Tools Status", "python3 mega_tools_cli.py --status", 900, True, "I will inspect the wider tool registry and record what is ready."),
-        Step("STAGE 3: INTELLIGENCE", "Neural Tool Mind", f"python3 tool_mind_cli.py --target {target_q} --mode crazy --install-needed --yes", 3600, True, "I will decide which supporting tools matter based on the current evidence corpus."),
-        Step("STAGE 3: INTELLIGENCE", "Passive Domain Recon", f"python3 domain_recon_cli.py --target {host_q}", 1800, True, "I will collect passive hosts, archive URLs, and public routes inside the confirmed scope."),
-        Step("STAGE 3: INTELLIGENCE", "AEGIS Public Search", f"python3 aegis_public_search_cli.py --target {target_q}", 900, True, "I will use configured public-search sources if available and record gaps if they are not configured."),
-        Step("STAGE 3: INTELLIGENCE", "AEGIS Feedback Planner", f"python3 aegis_feedback_cli.py --target {target_q}", 900, True, "I will turn previous observations into the next safe review priorities."),
-        Step("STAGE 3: INTELLIGENCE", "ARTEMIS Passive Intelligence", f"python3 artemis_autonomous_cli.py --config {artemis_q} --scope-policy {scope_q} --once", 2400, True, "I will generate passive intelligence predictions from public evidence."),
-        Step("STAGE 4: REVIEW", "Safe Evidence Loop", f"python3 safe_loop_v2_cli.py --target {target_q} --mode comprehensive --scope-policy {scope_q} --max-cycles {max_cycles} --yes", 3600, True, "I will review URLs, headers, routes, and parameters in safe evidence-first mode."),
-        Step("STAGE 4: REVIEW", "Comprehensive Category Review", f"python3 comprehensive_suite_cli.py --target {target_q} --scope-policy {scope_q} --yes", 2400, True, "I will run broad non-destructive category checks and generate manual review items."),
-        Step("STAGE 4: REVIEW", "Proxy Passive Bridge", f"python3 artemis_proxy_passive_cli.py --target {target_q} --limit 100", 900, True, "I will import passive proxy observations if a local proxy API is available."),
+    tq = shlex.quote(target)
+    hq = shlex.quote(host_from_target(target))
+    sq = shlex.quote(str(SESSION_SCOPE))
+    aq = shlex.quote(str(ARTEMIS_LIVE_CONFIG))
+    steps = [
+        Step("STAGE 1", "Mission Preflight", f"python3 mission_preflight_cli.py --target {tq} --scope-policy {sq}", "Now I will validate target scope, DNS, typo risk, stale output state, and mission readiness.", 600, False),
+        Step("STAGE 2", "Tool Doctor", "python3 tool_doctor_cli.py --install --yes", "Now I will repair optional helper tools and make the arsenal stronger before evidence collection.", 1800, True),
+        Step("STAGE 2", "Tool PATH Repair", "python3 tool_path_repair_cli.py", "Now I will check whether binaries are visible in PATH and repair user-local links.", 600, True),
+        Step("STAGE 2", "Coverage Matrix", "python3 coverage_matrix.py", "Now I will check every coverage area so weak zones are visible before the scan.", 600, True),
+        Step("STAGE 2", "Mega Tools Status", "python3 mega_tools_cli.py --status", "Now I will inspect the larger tool registry and record available modules.", 900, True),
+        Step("STAGE 3", "Neural Tool Mind", f"python3 tool_mind_cli.py --target {tq} --mode crazy --install-needed --yes", "Now I will think about the target and decide which helper tools matter most.", 3600, True),
+        Step("STAGE 3", "Passive Domain Recon", f"python3 domain_recon_cli.py --target {hq}", "Now I will find subdomains, archived URLs, public routes, and interesting exposed paths inside scope.", 1800, True),
+        Step("STAGE 3", "AEGIS Public Search", f"python3 aegis_public_search_cli.py --target {tq}", "Now I will collect public intelligence sources and look for admin/API/staging hints.", 900, True),
+        Step("STAGE 3", "AEGIS Feedback Planner", f"python3 aegis_feedback_cli.py --target {tq}", "Now I will convert observations into prioritized safe review actions.", 900, True),
+        Step("STAGE 3", "ARTEMIS Passive Intelligence", f"python3 artemis_autonomous_cli.py --config {aq} --scope-policy {sq} --once", "Now I will generate passive risk predictions using public evidence and historical patterns.", 2400, True),
+        Step("STAGE 4", "Safe Evidence Loop", f"python3 safe_loop_v2_cli.py --target {tq} --mode comprehensive --scope-policy {sq} --max-cycles {max_cycles} --yes", "Now I will safely review URLs, headers, parameters, and auth-sensitive routes with evidence-first checks.", 3600, True),
+        Step("STAGE 4", "Comprehensive Category Review", f"python3 comprehensive_suite_cli.py --target {tq} --scope-policy {sq} --yes", "Now I will run broad non-destructive category review and create precise manual-review items.", 2400, True),
+        Step("STAGE 4", "Proxy Passive Bridge", f"python3 artemis_proxy_passive_cli.py --target {tq} --limit 100", "Now I will import passive proxy observations if a local proxy API is available.", 900, True),
     ]
     if include_google_pair:
-        steps.append(Step("STAGE 4: REVIEW", "Two Account Precision", f"python3 google_pair_cli.py --target {target_q} --profile default --max-pages 25 --skip-login --skip-if-missing --yes", 3600, True, "I will use saved account states only if they already exist; otherwise I will skip cleanly."))
+        steps.append(Step("STAGE 4", "Two Account Precision", f"python3 google_pair_cli.py --target {tq} --profile default --max-pages 25 --skip-login --skip-if-missing --yes", "Now I will compare saved account states if available to reduce access-control false positives.", 3600, True))
     steps += [
-        Step("STAGE 5: CORRELATION", "Advanced Modes Correlation", f"python3 vulnscope_modes_cli.py --target {target_q} --scope-policy {scope_q}", 2400, True, "I will correlate mode outputs and reduce duplicate weak signals."),
-        Step("STAGE 5: CORRELATION", "Normalize Evidence", f"python3 normalize_cli.py --target {target_q}", 900, True, "I will normalize hosts, URLs, parameters, and candidate evidence."),
-        Step("STAGE 5: CORRELATION", "Asset Graph", f"python3 asset_graph_cli.py --target {target_q}", 900, True, "I will build a graph linking hosts, endpoints, routes, parameters, and findings."),
-        Step("STAGE 5: CORRELATION", "API Intelligence", f"python3 api_intel_cli.py --target {target_q}", 900, True, "I will map API-like endpoints and object/auth review surfaces."),
-        Step("STAGE 5: CORRELATION", "Auth Differential v2", "python3 auth_diff_v2_cli.py", 900, True, "I will compare saved auth observations if available and mark anything missing as not tested."),
-        Step("STAGE 5: CORRELATION", "Target History", f"python3 target_history_cli.py --target {target_q}", 900, True, "I will compare this target against previous run history and changes."),
-        Step("STAGE 6: REPORTING", "Evidence Cards", f"python3 evidence_cards_cli.py --target {target_q}", 900, True, "I will convert evidence into readable review cards."),
-        Step("STAGE 6: REPORTING", "Reportability Ranking", f"python3 reportability_cli.py --target {target_q}", 900, True, "I will rank findings by confidence, severity, and manual validation value."),
-        Step("STAGE 6: REPORTING", "Mission Verdict Report", f"python3 mission_verdicts_cli.py --target {target_q}", 900, True, "I will consolidate all module decisions into the final verdict table."),
-        Step("STAGE 6: REPORTING", "OMEGA Taxonomy Report", f"python3 omega_taxonomy_cli.py --target {target_q}", 900, True, "I will include taxonomy mapping if that optional module exists."),
-        Step("STAGE 6: REPORTING", "Final Report", f"python3 report_v2_cli.py --target {target_q}", 900, True, "I will build the executive report."),
-        Step("STAGE 6: REPORTING", "JARVIS Summary", f"python3 jarvis_summary_cli.py --target {target_q}", 900, True, "I will print the final terminal summary and next actions."),
+        Step("STAGE 5", "Advanced Modes Correlation", f"python3 vulnscope_modes_cli.py --target {tq} --scope-policy {sq}", "Now I will correlate advanced mode output and reduce duplicate or weak signals.", 2400, True),
+        Step("STAGE 5", "Normalize Evidence", f"python3 normalize_cli.py --target {tq}", "Now I will normalize hosts, URLs, endpoints, parameters, and evidence into one corpus.", 900, True),
+        Step("STAGE 5", "Asset Graph", f"python3 asset_graph_cli.py --target {tq}", "Now I will build the target graph and connect hosts, routes, parameters, and findings.", 900, True),
+        Step("STAGE 5", "API Intelligence", f"python3 api_intel_cli.py --target {tq}", "Now I will map API-like endpoints, object routes, and authentication review surfaces.", 900, True),
+        Step("STAGE 5", "Auth Differential v2", "python3 auth_diff_v2_cli.py", "Now I will use stored authentication evidence if available and mark unavailable areas as not tested.", 900, True),
+        Step("STAGE 5", "Target History", f"python3 target_history_cli.py --target {tq}", "Now I will compare this run with previous target history and changes.", 900, True),
+        Step("STAGE 6", "Evidence Cards", f"python3 evidence_cards_cli.py --target {tq}", "Now I will convert raw evidence into readable finding cards.", 900, True),
+        Step("STAGE 6", "Reportability Ranking", f"python3 reportability_cli.py --target {tq}", "Now I will rank findings by severity, confidence, and manual validation value.", 900, True),
+        Step("STAGE 6", "Mission Verdict Report", f"python3 mission_verdicts_cli.py --target {tq}", "Now I will consolidate every module into a final verdict table.", 900, True),
+        Step("STAGE 6", "Final Report", f"python3 report_v2_cli.py --target {tq}", "Now I will build the executive report.", 900, True),
+        Step("STAGE 6", "JARVIS Summary", f"python3 jarvis_summary_cli.py --target {tq}", "Now I will print the terminal summary and next actions.", 900, True),
     ]
     return steps
 
@@ -354,47 +322,64 @@ def plan_only(target: str, include_subdomains: bool, include_google_pair: bool, 
     return 0
 
 
-def print_verdict_table(ui: AgentTerminalUI) -> dict[str, Any]:
-    data = load_json("reports/output/mission-verdicts/mission-verdicts.json") or {}
+def load_json(path: str) -> Any:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return {}
+
+
+def print_verdicts(ui: AgentTerminalUI) -> dict[str, Any]:
+    data = load_json("reports/output/mission-verdicts/mission-verdicts.json")
     rows = data.get("rows", []) if isinstance(data, dict) else []
     summary = data.get("summary", {}) if isinstance(data, dict) else {}
-    print("\n" + ui._border("Module Verdicts"))
-    print(color(f"{'Module':<24} {'Verdict':<18} {'Severity':<10} Item Tested", BOLD + WHITE))
-    print(color("─" * ui.width, CYAN))
-    for row in rows[:24]:
+    print("\n" + ui.border("Module Verdicts"))
+    print(ui.c(f"{'Module':<24} {'Verdict':<18} {'Severity':<10} Item Tested", WHITE + BOLD))
+    print(ui.c("─" * ui.width, CYAN))
+    for row in rows[:26]:
         module = str(row.get("module", "unknown"))[:23]
         verdict = str(row.get("verdict", "REVIEW"))[:17]
         severity = str(row.get("severity", "INFO"))[:9]
-        item = str(row.get("item", "n/a"))[:55]
+        item = str(row.get("item", "n/a"))[:60]
         col = GREEN
         if "HIGH" in verdict.upper() or severity.upper() in {"CRITICAL", "HIGH"}:
-            col = RED if severity.upper() == "CRITICAL" else YELLOW
-        elif "ERROR" in verdict.upper() or "FAILED" in verdict.upper() or "MISSING" in verdict.upper():
+            col = YELLOW if severity.upper() != "CRITICAL" else RED
+        elif any(x in verdict.upper() for x in ["ERROR", "FAILED", "MISSING"]):
             col = RED
-        print(f"{color(f'{module:<24}', CYAN)} {color(f'{verdict:<18}', col + BOLD)} {color(f'{severity:<10}', col)} {item}")
+        print(f"{ui.c(f'{module:<24}', CYAN)} {ui.c(f'{verdict:<18}', col + BOLD)} {ui.c(f'{severity:<10}', col)} {item}")
     if not rows:
-        print(color("No verdict rows generated yet. Check module failures and final report.", YELLOW))
+        print(ui.c("No verdict rows generated yet. Check reports/logs for module failures.", YELLOW))
     return {"rows": rows, "summary": summary}
 
 
-def final_summary(ui: AgentTerminalUI, results: list[dict[str, Any]], target: str) -> dict[str, Any]:
-    verdict = print_verdict_table(ui)
-    ok = len([r for r in results if r.get("ok")])
-    failed = len(results) - ok
-    severity = verdict.get("summary", {}).get("severity", {}) if isinstance(verdict.get("summary"), dict) else {}
-    high_rows = []
-    for row in verdict.get("rows", []):
-        if str(row.get("severity", "")).upper() in {"CRITICAL", "HIGH"} or str(row.get("verdict", "")).upper() in {"REVIEW_HIGH", "VULNERABLE", "HIGH_PRIORITY"}:
-            high_rows.append(row)
-    payload = {"target": target, "tasks": len(results), "ok": ok, "failed": failed, "severity": severity, "high_priority_rows": high_rows[:30], "results": results, "reports": REPORTS, "ui": {"total_i": ui.total_i, "total_o": ui.total_o, "total_r": ui.total_r}}
+def write_final(ui: AgentTerminalUI, results: list[dict[str, Any]], target: str) -> dict[str, Any]:
+    verdicts = print_verdicts(ui)
+    rows = verdicts.get("rows", [])
+    summary = verdicts.get("summary", {})
+    severity = summary.get("severity", {}) if isinstance(summary, dict) else {}
+    high = [r for r in rows if str(r.get("severity", "")).upper() in {"CRITICAL", "HIGH"} or str(r.get("verdict", "")).upper() in {"REVIEW_HIGH", "HIGH_PRIORITY", "VULNERABLE"}]
+    payload = {
+        "target": target,
+        "tasks": len(results),
+        "ok": len([r for r in results if r.get("ok")]),
+        "failed": len([r for r in results if not r.get("ok")]),
+        "severity": severity,
+        "high_priority_rows": high[:30],
+        "results": results,
+        "reports": REPORTS,
+        "ui": {"total_i": ui.total_i, "total_o": ui.total_o, "total_r": ui.total_r},
+    }
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "live-run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = [f"# VulnScope Live Autonomous Run — {target}", "", f"Tasks: `{len(results)}`", f"OK: `{ok}`", f"Failed/review: `{failed}`", f"UI total I/O/R: `{ui.total_i}/{ui.total_o}/{ui.total_r}`", "", "## High Priority Rows"]
-    if high_rows:
-        for row in high_rows[:30]:
+    lines = [f"# VulnScope Live Autonomous Run — {target}", "", f"Tasks: `{payload['tasks']}`", f"OK: `{payload['ok']}`", f"Failed/review: `{payload['failed']}`", f"UI I/O/R: `{ui.total_i}/{ui.total_o}/{ui.total_r}`", "", "## High Priority Rows"]
+    if high:
+        for row in high[:30]:
             lines.append(f"- `{row.get('module')}` `{row.get('item')}` verdict=`{row.get('verdict')}` severity=`{row.get('severity')}` evidence=`{str(row.get('evidence',''))[:300]}`")
     else:
-        lines.append("- No high-priority row generated. Review mission-verdicts.md for manual-review items.")
+        lines.append("- No high-priority row generated. Review manual candidates in mission-verdicts.md.")
     lines += ["", "## Reports"]
     for name, path in REPORTS.items():
         lines.append(f"- {name}: `{path}`")
@@ -411,41 +396,41 @@ def run_live(target: str, include_subdomains: bool, include_google_pair: bool, w
     steps = build_steps(target, include_google_pair, max_cycles)
     ui = AgentTerminalUI(total_steps=len(steps))
     ui.banner(target, include_subdomains, include_google_pair, workers, max_cycles)
-    ui.agent("Consent Verified", "I have authorization confirmation. I will think, choose the next safe module, run it, observe evidence, and update the live target map after every action.", {"target": target, "scope_policy": str(SESSION_SCOPE)})
+    ui.agent("Authorization is confirmed. I will think step-by-step, choose a safe module, run it, observe evidence, and update the live target map after every action.", {"target": target, "scope_policy": str(SESSION_SCOPE)})
     results: list[dict[str, Any]] = []
     current_stage = ""
     start = time.time()
     for step in steps:
         if step.stage != current_stage:
             current_stage = step.stage
-            ui.agent(current_stage, step.thought or "I am preparing the next safe review stage.")
+            ui.agent(step.thought)
         else:
-            ui.agent(step.label, step.thought or "I am selecting the next action based on the current evidence state.")
-        result = run_command(step, ui)
+            ui.agent(step.thought)
+        result = run_step(step, ui)
         results.append(result)
         snap = surface_snapshot(target)
-        ui.snapshot(target, step.label, snap)
+        ui.agent(f"After {step.label}, I am updating the map of subdomains, URLs, routes, and parameters being reviewed.", snap)
         if not result.get("ok") and not result.get("optional"):
-            ui.agent("Critical Stop", f"{step.label} failed and is required. I will stop to avoid misleading output.", {"exit_code": result.get("exit_code"), "error": result.get("error")})
+            ui.agent(f"{step.label} failed and is required. I will stop so the final result is not misleading.", {"exit_code": result.get("exit_code"), "error": result.get("error")})
             break
-    payload = final_summary(ui, results, target)
-    print("\n" + ui._border("Final Output"))
-    print(color(f"TARGET                : {target}", WHITE + BOLD))
-    print(color(f"TOTAL MODULE TASKS    : {payload['tasks']}", WHITE))
-    print(color(f"SUCCESSFUL TASKS      : {payload['ok']}", GREEN + BOLD))
-    print(color(f"FAILED / REVIEW TASKS : {payload['failed']}", YELLOW if payload["failed"] else GREEN))
-    print(color(f"TOTAL TIME            : {round(time.time() - start, 2)}s", WHITE))
-    print(color("SEVERITY SUMMARY      : " + json.dumps(payload.get("severity", {}), ensure_ascii=False), WHITE))
+    payload = write_final(ui, results, target)
+    print("\n" + ui.border("Final Output"))
+    print(ui.c(f"TARGET                : {target}", WHITE + BOLD))
+    print(ui.c(f"TOTAL MODULE TASKS    : {payload['tasks']}", WHITE))
+    print(ui.c(f"SUCCESSFUL TASKS      : {payload['ok']}", GREEN + BOLD))
+    print(ui.c(f"FAILED / REVIEW TASKS : {payload['failed']}", YELLOW if payload["failed"] else GREEN))
+    print(ui.c(f"TOTAL TIME            : {round(time.time() - start, 2)}s", WHITE))
+    print(ui.c("SEVERITY SUMMARY      : " + json.dumps(payload.get("severity", {}), ensure_ascii=False), WHITE))
     if payload["high_priority_rows"]:
-        print(color("\nTOP HIGH-PRIORITY ROWS", RED + BOLD))
+        print(ui.c("\nTOP HIGH-PRIORITY ROWS", RED + BOLD))
         for row in payload["high_priority_rows"][:10]:
-            print(color("  ├─ ", RED) + f"[{row.get('severity')}] {row.get('module')} :: {row.get('item')} :: {row.get('verdict')}")
+            print(ui.c("  ├─ ", RED) + f"[{row.get('severity')}] {row.get('module')} :: {row.get('item')} :: {row.get('verdict')}")
     else:
-        print(color("\nNo high-priority row generated. Review manual candidates in mission-verdicts.md.", YELLOW))
-    print(color("\nREPORTS SAVED", CYAN + BOLD))
+        print(ui.c("\nNo high-priority row generated. Review manual candidates in mission-verdicts.md.", YELLOW))
+    print(ui.c("\nREPORTS SAVED", CYAN + BOLD))
     for path in REPORTS.values():
-        print(color("  ├─ ", CYAN) + path)
-    print(color("\nNEXT ACTION", MAGENTA + BOLD))
+        print(ui.c("  ├─ ", CYAN) + path)
+    print(ui.c("\nNEXT ACTION", MAGENTA + BOLD))
     print("  Open reports/output/mission-verdicts/mission-verdicts.md first, then validate HIGH/REVIEW rows manually under authorization.")
     return 0
 
