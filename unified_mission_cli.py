@@ -15,6 +15,13 @@ from scope.policy import load_scope_policy
 
 OUT = Path("reports/output/unified-mission")
 
+NOISE_MARKERS = [
+    "Message from Kali developers",
+    "This is a minimal installation of Kali Linux",
+    "https://www.kali.org/docs/troubleshooting/common-minimum-setup/",
+    "touch ~/.hushlogin",
+]
+
 
 class MissionStep:
     def __init__(self, label: str, command: str, timeout: int = 2400, critical: bool = False) -> None:
@@ -29,6 +36,22 @@ class MissionStep:
 
 def q(value: str) -> str:
     return shlex.quote(value)
+
+
+def clean_tail(text: str, limit: int = 5000) -> str:
+    lines = []
+    skip_next = 0
+    for line in (text or "").splitlines():
+        if skip_next:
+            skip_next -= 1
+            continue
+        if any(marker in line for marker in NOISE_MARKERS):
+            skip_next = 4
+            continue
+        if line.strip() in {"┃", "┗━", "┏━"}:
+            continue
+        lines.append(line)
+    return "\n".join(lines)[-limit:]
 
 
 def host_from_target(target: str) -> str:
@@ -83,6 +106,7 @@ def build_stages(target: str, scope_policy: str, max_cycles: int, include_google
     ])
     stages.append([MissionStep("Evidence Cards", f"python3 evidence_cards_cli.py --target {target_q}", 900)])
     stages.append([MissionStep("Reportability Ranking", f"python3 reportability_cli.py --target {target_q}", 900)])
+    stages.append([MissionStep("Mission Verdict Report", f"python3 mission_verdicts_cli.py --target {target_q}", 900)])
     stages.append([MissionStep("Final Report", f"python3 report_v2_cli.py --target {target_q}", 900)])
     stages.append([MissionStep("JARVIS Summary", f"python3 jarvis_summary_cli.py --target {target_q}", 900)])
     return stages
@@ -92,7 +116,7 @@ def run_step(step: MissionStep) -> dict[str, Any]:
     started = time.time()
     try:
         proc = subprocess.run(["bash", "-lc", step.command], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=step.timeout)
-        return {**step.as_dict(), "ok": proc.returncode == 0, "exit_code": proc.returncode, "seconds": round(time.time() - started, 2), "output_tail": proc.stdout[-5000:]}
+        return {**step.as_dict(), "ok": proc.returncode == 0, "exit_code": proc.returncode, "seconds": round(time.time() - started, 2), "output_tail": clean_tail(proc.stdout)}
     except Exception as exc:
         return {**step.as_dict(), "ok": False, "error": str(exc), "seconds": round(time.time() - started, 2), "output_tail": ""}
 
@@ -131,6 +155,7 @@ def summarize(results: list[dict[str, Any]], target: str) -> None:
     print("\nPrimary outputs:")
     print("- reports/output/mission-preflight/preflight.md")
     print("- reports/output/unified-mission/unified-mission.md")
+    print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/evidence-cards/evidence-cards.md")
     print("- reports/output/reportability/reportability.md")
     print("- reports/output/report-v2/executive-report-v2.md")
