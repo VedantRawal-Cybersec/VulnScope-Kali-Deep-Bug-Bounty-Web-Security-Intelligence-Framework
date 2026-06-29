@@ -1,155 +1,303 @@
 #!/usr/bin/env python3
-"""
-VulnScope-Kali v0.3.2-alpha
-Authorized Web Security Intelligence Framework for Kali Linux.
-
-v0.3.2-alpha adds configurable HTTP timeout, delay, and retry controls for slow/CDN-heavy targets.
-"""
-
 from __future__ import annotations
 
 import argparse
+import json
+import shlex
+import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
-from ai.key_setup import setup_ai_keys, show_ai_key_status
-from ai.local_env import load_local_ai_env
-from core.authorization_guard import confirm_authorization
-from core.banner import print_banner
-from core.orchestrator import VulnScopeScanner
-from core.validators import validate_target_url
+VERSION = "1.0.0-unified-safe"
+OUT = Path("reports/output/vulnscope-main")
+SESSION_SCOPE = Path("scope_policy.session.yaml")
+SESSION_AUDIT = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
-VERSION = "0.3.2-alpha"
+BANNER = r"""
+██╗   ██╗██╗   ██╗██╗     ███╗   ██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+██║   ██║██║   ██║██║     ████╗  ██║██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+██║   ██║██║   ██║██║     ██╔██╗ ██║███████╗██║     ██║   ██║██████╔╝█████╗  
+╚██╗ ██╔╝██║   ██║██║     ██║╚██╗██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝  
+ ╚████╔╝ ╚██████╔╝███████╗██║ ╚████║███████║╚██████╗╚██████╔╝██║     ███████╗
+  ╚═══╝   ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝     ╚══════╝
+                    UNIFIED AUTONOMOUS SAFE SECURITY REVIEW
+"""
+
+MISSION_RULES = [
+    "Run only on a domain you own or are explicitly authorized to test.",
+    "Scope is locked to the target host and optional subdomains.",
+    "No credential theft, data dumping, destructive fuzzing, stealth, or exploit chaining.",
+    "The mission runs safe evidence collection, passive/authorized review, correlation, verdict tables, and final reports.",
+]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="VulnScope-Kali: Deep Bug Bounty Web Security Intelligence Framework"
-    )
-    parser.add_argument("--version", action="store_true", help="Show VulnScope-Kali version and exit")
-    parser.add_argument("--setup-ai-keys", action="store_true", help="Interactively add AI provider API keys to local .env.local")
-    parser.add_argument("--ai-key-status", action="store_true", help="Show which AI provider keys are configured without revealing values")
-    parser.add_argument("--url", help="Target URL, for example https://example.com")
-    parser.add_argument(
-        "--mode",
-        choices=["passive", "safe-active"],
-        help="Scan mode. Current build supports passive and safe-active.",
-    )
-    parser.add_argument("--max-pages", type=int, default=30, help="Maximum pages to crawl")
-    parser.add_argument("--timeout", type=int, default=30, help="HTTP read timeout in seconds")
-    parser.add_argument("--delay", type=float, default=0.7, help="Delay between HTTP requests in seconds")
-    parser.add_argument("--retries", type=int, default=2, help="Retry count for transient HTTP errors and timeouts")
-    parser.add_argument(
-        "--output-dir",
-        default="reports/output",
-        help="Directory where reports will be written",
-    )
-    parser.add_argument(
-        "--ai-review",
-        action="store_true",
-        help="Enable AI Analyst Engine on redacted evidence. Requires provider API keys in environment variables or .env.local.",
-    )
-    parser.add_argument(
-        "--ai-providers",
-        default="",
-        help="Comma-separated providers: openai,gemini,groq,openrouter. Default: auto-detect from local config/environment.",
-    )
+    parser = argparse.ArgumentParser(description="VulnScope unified autonomous safe mission entrypoint")
+    parser.add_argument("--version", action="store_true", help="Show version and exit")
+    parser.add_argument("--target", "--url", dest="target", help="Authorized target URL, e.g. https://example.com")
+    parser.add_argument("--max-cycles", type=int, default=8, help="Safe evidence-loop thinking cycles")
+    parser.add_argument("--max-workers", type=int, default=6, help="Parallel workers for independent modules")
+    parser.add_argument("--include-subdomains", action="store_true", help="Allow *.target-host in session scope")
+    parser.add_argument("--include-google-pair", action="store_true", help="Run two-account precision if saved states exist")
+    parser.add_argument("--skip-self-check", action="store_true", help="Skip repo health precheck")
+    parser.add_argument("--no-clean", action="store_true", help="Do not clean stale target outputs during preflight")
+    parser.add_argument("--yes", action="store_true", help="Non-interactive: confirm authorization and start")
+    parser.add_argument("--plan-only", action="store_true", help="Print mission plan without running modules")
     return parser.parse_args()
 
 
-def ask_for_url() -> str:
-    print("\n┌──────────────────────────── Target Configuration ────────────────────────────┐")
-    print("│ Enter the authorized target URL                                               │")
-    print("│ Example: https://example.com | http://localhost:3000                          │")
-    print("└──────────────────────────────────────────────────────────────────────────────┘")
-    return input("\n[?] Target URL: ").strip()
+def normalize_target(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        raise ValueError("Target URL cannot be empty")
+    return value if "://" in value else "https://" + value
 
 
-def ask_for_mode() -> str:
-    print("\n[1] Passive Recon Mode")
-    print("[2] Safe Active Mode")
-    choice = input("\n[?] Select scan mode [1/2]: ").strip()
-    if choice == "2":
-        return "safe-active"
-    return "passive"
+def host_from_target(target: str) -> str:
+    parsed = urlparse(target if "://" in target else "https://" + target)
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise ValueError("Invalid target. Use a URL/domain like https://example.com")
+    return host
 
 
-def parse_ai_providers(raw: str) -> list[str] | None:
-    if not raw.strip():
-        return None
-    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+def ask_target() -> str:
+    print("\n┌──────────────────────────── Target URL ────────────────────────────┐")
+    print("│ Enter the authorized website URL. Example: https://example.com      │")
+    print("└─────────────────────────────────────────────────────────────────────┘")
+    return normalize_target(input("Target URL: ").strip())
+
+
+def ask_yes_no(prompt: str, default: bool = False) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    raw = input(f"{prompt} {suffix}: ").strip().lower()
+    if not raw:
+        return default
+    return raw in {"y", "yes"}
+
+
+def write_session_scope(target: str, include_subdomains: bool) -> Path:
+    host = host_from_target(target)
+    allowed = [host]
+    if include_subdomains and not host.replace(".", "").isdigit() and host not in {"localhost"}:
+        allowed.append("*." + host)
+    lines = [
+        "name: vulnscope-unified-session",
+        "allowed_hosts:",
+        *[f"  - '{item}'" for item in allowed],
+        "blocked_hosts: []",
+        "allowed_schemes:",
+        "  - https",
+        "  - http",
+        "max_requests_per_minute: 30",
+        "active_testing_allowed: false",
+        "authenticated_testing_allowed: true",
+        "notes: 'Generated by python3 vulnscope.py after explicit authorization confirmation. Unified safe evidence review only.'",
+        "",
+    ]
+    SESSION_SCOPE.write_text("\n".join(lines), encoding="utf-8")
+    SESSION_AUDIT.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_AUDIT.write_text(json.dumps({
+        "target": target,
+        "host": host,
+        "include_subdomains": include_subdomains,
+        "confirmed_authorization": True,
+        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "scope_policy": str(SESSION_SCOPE),
+        "rules": MISSION_RULES,
+    }, indent=2), encoding="utf-8")
+    return SESSION_SCOPE
+
+
+def command_to_str(command: list[str]) -> str:
+    return " ".join(shlex.quote(x) for x in command)
+
+
+def run_command(label: str, command: list[str], timeout: int = 7200, allow_fail: bool = True) -> dict:
+    print(f"\n╔════════ {label} ════════╗")
+    print("$ " + command_to_str(command))
+    started = time.time()
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        lines: list[str] = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            clean = line.rstrip()
+            lines.append(clean)
+            if clean:
+                print(clean[:220])
+        code = proc.wait(timeout=timeout)
+        result = {"label": label, "command": command, "ok": code == 0, "exit_code": code, "seconds": round(time.time() - started, 2), "output_tail": "\n".join(lines[-80:])}
+    except Exception as exc:
+        result = {"label": label, "command": command, "ok": False, "error": str(exc), "seconds": round(time.time() - started, 2), "output_tail": ""}
+    status = "OK" if result.get("ok") else "REVIEW/FAILED"
+    print(f"\n[{status}] {label} completed in {result.get('seconds')}s")
+    if not result.get("ok") and not allow_fail:
+        raise RuntimeError(f"{label} failed: {result.get('error') or result.get('exit_code')}")
+    return result
+
+
+def load_json(path: str | Path) -> dict:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def summarize(target: str, history: list[dict]) -> dict:
+    verdicts = load_json("reports/output/mission-verdicts/mission-verdicts.json")
+    unified = load_json("reports/output/unified-mission/unified-mission.json")
+    preflight = load_json("reports/output/mission-preflight/preflight.json")
+    severity = verdicts.get("summary", {}).get("severity", {}) if isinstance(verdicts, dict) else {}
+    modules = verdicts.get("summary", {}).get("modules", {}) if isinstance(verdicts, dict) else {}
+    rows = verdicts.get("rows", []) if isinstance(verdicts, dict) else []
+    high_rows = [r for r in rows if str(r.get("severity", "")).upper() in {"CRITICAL", "HIGH"} or str(r.get("verdict", "")).upper() in {"REVIEW_HIGH", "VULNERABLE"}]
+    failed_steps = []
+    for block in history:
+        if not block.get("ok"):
+            failed_steps.append({"label": block.get("label"), "exit_code": block.get("exit_code"), "error": block.get("error"), "tail": block.get("output_tail", "")[-1200:]})
+    for r in unified.get("results", []) if isinstance(unified.get("results"), list) else []:
+        if not r.get("ok"):
+            failed_steps.append({"label": r.get("label"), "exit_code": r.get("exit_code"), "error": r.get("error"), "tail": str(r.get("output_tail", ""))[-1200:]})
+    payload = {
+        "target": target,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "preflight": {"ok": preflight.get("ok"), "reason": preflight.get("reason"), "dns_ips": preflight.get("dns_ips")},
+        "mission_summary": unified.get("summary", {}),
+        "severity_summary": severity,
+        "module_summary": modules,
+        "high_priority_rows": high_rows[:20],
+        "failed_or_review_steps": failed_steps[:30],
+        "reports": {
+            "preflight": "reports/output/mission-preflight/preflight.md",
+            "unified_mission": "reports/output/unified-mission/unified-mission.md",
+            "mission_verdicts": "reports/output/mission-verdicts/mission-verdicts.md",
+            "evidence_cards": "reports/output/evidence-cards/evidence-cards.md",
+            "reportability": "reports/output/reportability/reportability.md",
+            "final_report": "reports/output/report-v2/executive-report-v2.md",
+            "jarvis": "terminal output + reports/output/tool-mind/tool-mind.md",
+        },
+    }
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    lines = [
+        f"# VulnScope Final Mission Summary — {target}",
+        "",
+        "**FOR AUTHORIZED SECURITY TESTING ONLY – UNLAWFUL USE IS STRICTLY PROHIBITED.**",
+        "",
+        "## Preflight",
+        f"- OK: `{payload['preflight'].get('ok')}`",
+        f"- Reason: `{payload['preflight'].get('reason')}`",
+        f"- DNS IPs: `{payload['preflight'].get('dns_ips')}`",
+        "",
+        "## Mission Summary",
+        f"- Tasks: `{payload['mission_summary'].get('tasks', 0)}`",
+        f"- OK: `{payload['mission_summary'].get('ok', 0)}`",
+        f"- Failed / Review: `{payload['mission_summary'].get('failed', 0)}`",
+        "",
+        "## Severity Summary",
+        "| Severity | Count |",
+        "|---|---:|",
+    ]
+    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
+        lines.append(f"| {sev} | {severity.get(sev, 0)} |")
+    lines += ["", "## High Priority Rows"]
+    if high_rows:
+        for r in high_rows[:20]:
+            lines.append(f"- `{r.get('module')}` `{r.get('item')}` verdict=`{r.get('verdict')}` severity=`{r.get('severity')}` evidence=`{str(r.get('evidence', ''))[:300]}`")
+    else:
+        lines.append("- No high-priority verified row was generated. Review candidate rows in mission-verdicts.md.")
+    lines += ["", "## Failed / Review Steps"]
+    if failed_steps:
+        for step in failed_steps[:20]:
+            lines.append(f"- `{step.get('label')}` exit=`{step.get('exit_code')}` error=`{step.get('error')}`")
+    else:
+        lines.append("- No failed steps detected in the final aggregator.")
+    lines += ["", "## Reports"]
+    for name, path in payload["reports"].items():
+        lines.append(f"- {name}: `{path}`")
+    (OUT / "final-summary.md").write_text("\n".join(lines), encoding="utf-8")
+    return payload
+
+
+def print_final(payload: dict) -> None:
+    print("\n╔════════════════════════════════════════════════════════════════════╗")
+    print("║                    VULNSCOPE FINAL OUTPUT                        ║")
+    print("╚════════════════════════════════════════════════════════════════════╝")
+    print(f"Target           : {payload.get('target')}")
+    print(f"Preflight        : {payload.get('preflight', {}).get('reason')}")
+    ms = payload.get("mission_summary", {})
+    print(f"Tasks            : {ms.get('tasks', 0)} total | {ms.get('ok', 0)} OK | {ms.get('failed', 0)} failed/review")
+    print("Severity Summary : " + json.dumps(payload.get("severity_summary", {}), ensure_ascii=False))
+    high = payload.get("high_priority_rows", [])
+    if high:
+        print("\nHigh-priority rows:")
+        for r in high[:10]:
+            print(f"- [{r.get('severity')}] {r.get('module')} | {r.get('verdict')} | {r.get('item')}")
+    else:
+        print("\nNo high-priority verified rows generated. Check mission-verdicts.md for candidates and NOT_TESTED rows.")
+    print("\nOpen these files:")
+    for path in payload.get("reports", {}).values():
+        print(f"- {path}")
+    print("- reports/output/vulnscope-main/final-summary.md")
 
 
 def main() -> int:
-    load_local_ai_env()
     args = parse_args()
-
     if args.version:
-        print(f"VulnScope-Kali {VERSION}")
+        print(f"VulnScope {VERSION}")
         return 0
-
-    if args.setup_ai_keys:
-        setup_ai_keys()
-        return 0
-
-    if args.ai_key_status:
-        show_ai_key_status()
-        return 0
-
-    print_banner(VERSION)
-
-    raw_url = args.url or ask_for_url()
-    target = validate_target_url(raw_url)
-
-    print(f"\n[+] Target received : {target.normalized_url}")
-    print(f"[+] Scheme          : {target.scheme.upper()}")
-    print(f"[+] Host            : {target.host}")
-    print("[+] Scope           : Same-domain only")
-    print(f"[+] HTTP Timeout    : {args.timeout}s")
-    print(f"[+] HTTP Delay      : {args.delay}s")
-    print(f"[+] HTTP Retries    : {args.retries}")
-
-    if args.ai_review:
-        print("[+] AI Review       : Enabled, redacted evidence only")
+    print(BANNER)
+    target = normalize_target(args.target) if args.target else ask_target()
+    host = host_from_target(target)
+    include_subdomains = args.include_subdomains
+    include_google_pair = args.include_google_pair
+    if not args.yes:
+        print("\nMission permissions requested:")
+        for item in MISSION_RULES:
+            print(f"- {item}")
+        print(f"\nTarget host: {host}")
+        include_subdomains = ask_yes_no("Include subdomains in scope?", default=False)
+        include_google_pair = ask_yes_no("Run two-account Google precision if saved sessions exist?", default=False)
+        confirm = input("\nType YES to confirm authorization and start the unified mission: ").strip()
+        if confirm != "YES":
+            print("\n[!] Authorization not confirmed. Mission cancelled.")
+            return 1
+    scope = write_session_scope(target, include_subdomains)
+    print(f"\n[+] Session scope created: {scope}")
+    print(f"[+] Authorization audit: {SESSION_AUDIT}")
+    history: list[dict] = []
+    if not args.skip_self_check and not args.plan_only:
+        history.append(run_command("System Self-Check", ["python3", "repo_health_cli.py", "--install-python-deps", "--tool-update"], timeout=3600, allow_fail=True))
+    mission_cmd = [
+        "python3", "unified_mission_cli.py",
+        "--target", target,
+        "--scope-policy", str(scope),
+        "--max-cycles", str(args.max_cycles),
+        "--max-workers", str(args.max_workers),
+    ]
+    if args.plan_only:
+        mission_cmd.append("--plan-only")
     else:
-        print("[+] AI Review       : Disabled")
-
-    if not confirm_authorization(target.normalized_url):
-        print("\n[!] Authorization not confirmed.")
-        print("[!] Scan cancelled for safety.")
-        return 1
-
-    mode = args.mode or ask_for_mode()
-    ai_providers = parse_ai_providers(args.ai_providers)
-
-    print("\n┌────────────────────────────── Scan Configuration ────────────────────────────┐")
-    print(f"│ Target URL       : {target.normalized_url[:56]:<56} │")
-    print(f"│ Scan Mode        : {mode:<56} │")
-    print(f"│ Crawl Scope      : {'Same domain only':<56} │")
-    print(f"│ Max Pages        : {str(args.max_pages):<56} │")
-    print(f"│ HTTP Timeout     : {(str(args.timeout) + 's'):<56} │")
-    print(f"│ HTTP Delay       : {(str(args.delay) + 's'):<56} │")
-    print(f"│ HTTP Retries     : {str(args.retries):<56} │")
-    print(f"│ AI Review        : {str(args.ai_review):<56} │")
-    print(f"│ Output Directory : {args.output_dir[:56]:<56} │")
-    print("└──────────────────────────────────────────────────────────────────────────────┘")
-
-    start = input("\n[?] Start scan now? yes/no: ").strip().lower()
-    if start not in {"yes", "y"}:
-        print("\n[!] Scan cancelled by user.")
-        return 1
-
-    scanner = VulnScopeScanner(
-        target=target,
-        mode=mode,
-        max_pages=args.max_pages,
-        output_dir=Path(args.output_dir),
-        ai_review=args.ai_review,
-        ai_providers=ai_providers,
-        timeout=args.timeout,
-        delay=args.delay,
-        retries=args.retries,
-    )
-    scanner.run()
+        mission_cmd.append("--yes")
+    if include_google_pair:
+        mission_cmd.append("--include-google-pair")
+    if args.no_clean:
+        mission_cmd.append("--no-clean")
+    history.append(run_command("Unified Autonomous Mission", mission_cmd, timeout=7200, allow_fail=True))
+    if not args.plan_only:
+        # Always run final consolidators so the user receives a written result even if some modules failed.
+        history.append(run_command("Mission Verdict Consolidation", ["python3", "mission_verdicts_cli.py", "--target", target], timeout=900, allow_fail=True))
+        history.append(run_command("Final Report Builder", ["python3", "report_v2_cli.py", "--target", target], timeout=900, allow_fail=True))
+        history.append(run_command("JARVIS Terminal Summary", ["python3", "jarvis_summary_cli.py", "--target", target], timeout=900, allow_fail=True))
+    payload = summarize(target, history)
+    print_final(payload)
     return 0
 
 
