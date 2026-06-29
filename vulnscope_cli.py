@@ -54,6 +54,8 @@ MENU = """
 [28] ARTEMIS Web Dashboard              Local passive intelligence dashboard on port 8080
 [29] ARTEMIS Init Config                Create artemis_config.yaml example
 [30] ARTEMIS Proxy Passive Bridge       Scope seeds + passive finding import, no active tests
+[31] Control Center UI                  High-end autonomous mission interface on port 8090
+[32] Control Center Daemon              Full safe autonomous loop once/forever
 [0] Exit
 """
 
@@ -67,7 +69,8 @@ SAFE_COMMAND_PREFIXES = (
     "python3 api_intel_cli.py", "python3 auth_diff_v2_cli.py", "python3 reportability_cli.py",
     "python3 target_history_cli.py", "python3 vulnscope_modes_cli.py", "python3 google_pair_cli.py",
     "python3 safe_aegis_cli.py", "python3 aegis_public_search_cli.py", "python3 aegis_feedback_cli.py",
-    "python3 artemis_autonomous_cli.py", "python3 artemis_dashboard.py", "python3 artemis_proxy_passive_cli.py", "cat reports/output/",
+    "python3 artemis_autonomous_cli.py", "python3 artemis_dashboard.py", "python3 artemis_proxy_passive_cli.py",
+    "python3 autonomous_control_daemon.py", "python3 control_center_ui.py", "cat reports/output/",
 )
 
 
@@ -250,6 +253,12 @@ def menu_loop() -> None:
             elif choice == "28": run_step("ARTEMIS Web Dashboard", "python3 artemis_dashboard.py", "runs until Ctrl+C")
             elif choice == "29": run_step("ARTEMIS Init Config", "python3 artemis_autonomous_cli.py --init-config --config artemis_config.yaml", "instant")
             elif choice == "30": target = optional_target_label(); run_step("ARTEMIS Proxy Passive Bridge", "python3 artemis_proxy_passive_cli.py" + (f" --target {target}" if target else ""), "5-30s")
+            elif choice == "31": run_step("Control Center UI", "python3 control_center_ui.py", "runs until Ctrl+C; open http://127.0.0.1:8090")
+            elif choice == "32":
+                init = input("Create/update autonomous_control_config.yaml first? yes/no: ").strip().lower() in {"y", "yes"}
+                forever = input("Run forever on interval? yes/no: ").strip().lower() in {"y", "yes"}
+                cmd = "python3 autonomous_control_daemon.py " + ("--init-config " if init else "") + ("--forever" if forever else "--once")
+                run_step("Control Center Daemon", cmd.strip(), "30s-45 min")
             elif choice == "0": print("Goodbye."); return
             else: print("Invalid option.")
         except Exception as exc:
