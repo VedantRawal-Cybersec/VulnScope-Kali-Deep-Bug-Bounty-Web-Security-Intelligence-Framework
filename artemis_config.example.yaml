@@ -1,0 +1,11 @@
+targets:
+  - https://example.com
+passive_only: true
+require_scope_policy: true
+interval_minutes: 360
+report_every_cycles: 1
+google_search_limit: 5
+max_public_records: 500
+respect_rate_limits: true
+no_secret_values_in_reports: true
+notes: "ARTEMIS passive autonomous intelligence. Authorized targets only."
