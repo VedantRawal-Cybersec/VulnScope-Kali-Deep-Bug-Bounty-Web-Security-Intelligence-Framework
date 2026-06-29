@@ -18,6 +18,7 @@ CHECKS = [
     ['python3', 'auto_mode.py', '--version'],
     ['python3', 'coverage_matrix.py'],
     ['python3', 'mega_tools_cli.py', '--status'],
+    ['python3', 'tool_mind_cli.py', '--mode', 'deep'],
     ['python3', 'normalize_cli.py', '--target', 'https://example.com'],
     ['python3', 'asset_graph_cli.py', '--target', 'https://example.com'],
     ['python3', 'tool_brain_cli.py', '--target', 'https://example.com'],
