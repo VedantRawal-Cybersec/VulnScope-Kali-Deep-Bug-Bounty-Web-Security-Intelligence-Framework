@@ -11,8 +11,9 @@ from arsenal.catalog import load_profiles, tools_for_profile
 from arsenal.healthcheck import print_healthcheck, run_healthcheck
 from arsenal.installer import ensure_profile_tools
 from arsenal.runner import run_tool
+from maintenance.daily_update import run_daily_update, update_if_due
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +22,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--url", help="Authorized target URL")
     parser.add_argument("--profile", default="bug-bounty-safe")
     parser.add_argument("--auto-install", action="store_true", help="Install missing curated tools after approval")
+    parser.add_argument("--auto-repair", action="store_true", default=True, help="Repair missing or failing tools during execution")
+    parser.add_argument("--daily-update", action="store_true", help="Refresh curated tools and latest intelligence if last update is older than 24h")
+    parser.add_argument("--force-update", action="store_true", help="Force tool and intelligence update now")
     parser.add_argument("--with-tools", action="store_true", help="Use installed profile tools with safety gates")
     parser.add_argument("--full", action="store_true", help="Run complete guided workflow")
     parser.add_argument("--providers", default="")
@@ -47,6 +51,10 @@ def main() -> int:
     if args.healthcheck:
         print_healthcheck(run_healthcheck(args.profile))
         return 0
+    if args.force_update:
+        print(json.dumps(run_daily_update(profile=args.profile, yes=args.yes), indent=2, ensure_ascii=False))
+        if not args.url:
+            return 0
     if not args.url:
         print("[!] Provide authorized target with --url")
         return 1
@@ -54,16 +62,22 @@ def main() -> int:
     if args.full:
         args.auto_install = True
         args.with_tools = True
+        args.daily_update = True
 
     tools = tools_for_profile(args.profile)
     print("┌──────────────────────── VulnScope Auto Mode ────────────────────────┐")
-    print("│ Curated setup, safe templates, approval gates, and AI post-analysis. │")
+    print("│ Curated setup, daily updates, safe templates, and repair gates.      │")
     print("└─────────────────────────────────────────────────────────────────────┘")
     print(f"Target  : {args.url}")
     print(f"Profile : {args.profile}")
     print("Tools   : " + ", ".join(tool.name for tool in tools))
 
-    install_state = ensure_profile_tools(tools, auto_install=args.auto_install, yes=args.yes)
+    maintenance_result = None
+    if args.daily_update:
+        maintenance_result = update_if_due(profile=args.profile, yes=args.yes)
+        print("[+] Daily update state: reports/output/maintenance/daily-update-state.json")
+
+    install_state = ensure_profile_tools(tools, auto_install=args.auto_install, yes=args.yes, allow_system=True)
     health = run_healthcheck(args.profile)
     print_healthcheck(health)
 
@@ -73,11 +87,9 @@ def main() -> int:
     tool_results = []
     if args.with_tools:
         for tool in tools:
-            installed = install_state.get(tool.name) or any(item.get("name") == tool.name and item.get("installed") for item in health.get("tools", []))
-            if installed:
-                tool_results.append(run_tool(tool, args.url, yes=args.yes, dry_run=args.dry_run))
+            tool_results.append(run_tool(tool, args.url, yes=args.yes, dry_run=args.dry_run, auto_repair=args.auto_repair))
 
-    write_summary(args, tool_results)
+    write_summary(args, tool_results, maintenance_result)
 
     if args.full and not args.dry_run:
         run_post_analysis(args)
@@ -111,13 +123,16 @@ def run_post_analysis(args: argparse.Namespace) -> None:
         subprocess.call(command)
 
 
-def write_summary(args: argparse.Namespace, tool_results: list[dict]) -> None:
+def write_summary(args: argparse.Namespace, tool_results: list[dict], maintenance_result: dict | None = None) -> None:
     out = Path("reports/output")
     out.mkdir(parents=True, exist_ok=True)
     summary = {
         "target": args.url,
         "profile": args.profile,
         "auto_install": args.auto_install,
+        "auto_repair": args.auto_repair,
+        "daily_update": args.daily_update,
+        "maintenance": maintenance_result,
         "with_tools": args.with_tools,
         "tool_results": tool_results,
         "reports": [
@@ -126,6 +141,7 @@ def write_summary(args: argparse.Namespace, tool_results: list[dict]) -> None:
             "reports/output/ai-discovery/ai-discovery-report.md",
             "reports/output/mythic/mythic-report.md",
             "reports/output/uplift/uplift-report.md",
+            "reports/output/maintenance/latest-intel.json",
         ],
     }
     (out / "auto-mode-summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
