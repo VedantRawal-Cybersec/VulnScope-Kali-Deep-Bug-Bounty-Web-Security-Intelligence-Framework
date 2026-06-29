@@ -9,12 +9,15 @@ from typing import Any
 REPORTS = {
     "tool_mind": "reports/output/tool-mind/tool-mind.json",
     "tool_path_repair": "reports/output/tool-path-repair/tool-path-repair.json",
+    "tool_doctor": "reports/output/tool-doctor/tool-doctor.json",
     "normalized": "reports/output/normalized/normalized-evidence.json",
     "api_intel": "reports/output/api-intel/api-intel.json",
     "evidence_cards": "reports/output/evidence-cards/evidence-cards.json",
     "reportability": "reports/output/reportability/reportability.json",
     "google_pair": "reports/output/google-pair/google-pair-run.json",
 }
+
+OPTIONAL_TOOL_NAMES = {"gitleaks", "graphw00f", "linkfinder", "mantra", "trufflehog", "xnLinkFinder"}
 
 
 def load(path: str) -> Any:
@@ -49,19 +52,32 @@ def main() -> int:
     print(f"Target: {args.target}\n")
 
     tm = loaded.get("tool_mind") or {}
+    missing_required = []
+    missing_optional = []
     if tm:
         s = tm.get("summary", {})
-        print(f"[TOOLS] Desired={s.get('desired', 0)} Installed={s.get('installed', 0)} Missing={s.get('missing', 0)}")
-        missing = [t for t in tm.get("tools", []) if not t.get("installed_after")][:8]
-        if missing:
-            print("[TOOLS] Still missing:")
-            for item in missing:
+        all_missing = [t for t in tm.get("tools", []) if not t.get("installed_after")]
+        missing_required = [t for t in all_missing if t.get("name") not in OPTIONAL_TOOL_NAMES and t.get("decision") != "tracked_manual_or_unsupported"]
+        missing_optional = [t for t in all_missing if t.get("name") in OPTIONAL_TOOL_NAMES or t.get("decision") == "tracked_manual_or_unsupported"]
+        print(f"[TOOLS] Desired={s.get('desired', 0)} Installed={s.get('installed', 0)} MissingRequired={len(missing_required)} OptionalMissing={len(missing_optional)}")
+        if missing_required:
+            print("[TOOLS] Required/important tools still missing:")
+            for item in missing_required[:8]:
                 print(f"  - {item.get('name')} | decision={item.get('decision')}")
+        if missing_optional:
+            print("[TOOLS] Optional helpers not available yet:")
+            for item in missing_optional[:8]:
+                print(f"  - {item.get('name')} | decision={item.get('decision')}")
+
+    doctor = loaded.get("tool_doctor") or {}
+    if doctor:
+        ds = doctor.get("summary", {})
+        print(f"[TOOL DOCTOR] Requested={ds.get('requested', 0)} Installed/found={ds.get('installed', 0)} OptionalMissing={ds.get('missing_optional', 0)}")
 
     pr = loaded.get("tool_path_repair") or {}
     if pr:
         s = pr.get("summary", {})
-        print(f"[PATH] Repaired/found={s.get('repaired_or_found', 0)} Missing={s.get('missing', 0)}")
+        print(f"[PATH] Repaired/found={s.get('repaired_or_found', 0)} MissingRequired={s.get('missing_required', 0)} OptionalMissing={s.get('missing_optional', s.get('missing', 0))}")
 
     norm = loaded.get("normalized") or {}
     if norm:
@@ -90,11 +106,14 @@ def main() -> int:
         print(f"     Next  : {safe_check}")
 
     print("\n[NEXT ACTION]")
-    if tm and tm.get("summary", {}).get("missing", 0):
-        print("  Run: python3 tool_path_repair_cli.py")
-        print("  Then: source ~/.zshrc")
+    if missing_required:
+        print("  Run: python3 tool_mind_cli.py --mode crazy --install-needed --yes")
+        print("  Then: python3 tool_path_repair_cli.py && source ~/.zshrc")
+    elif missing_optional:
+        print("  Optional helpers can be repaired with: python3 tool_doctor_cli.py --install --yes")
+        print("  Optional helpers do not block the mission.")
     elif not cards:
-        print("  Run: python3 vulnscope_cli.py -> option 1 or 14")
+        print("  Run: python3 kai_safe_interface.py")
     else:
         print("  Open: reports/output/evidence-cards/evidence-cards.md")
         print("  Then validate only the high-confidence cards manually.")
