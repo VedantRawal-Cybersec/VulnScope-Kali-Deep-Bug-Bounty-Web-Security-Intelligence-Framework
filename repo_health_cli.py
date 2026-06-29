@@ -27,6 +27,7 @@ CHECKS = [
     ['python3', 'aegis_public_search_cli.py', '--target', 'https://example.com'],
     ['python3', 'aegis_feedback_cli.py', '--target', 'https://example.com'],
     ['python3', 'artemis_autonomous_cli.py', '--init-config', '--config', 'reports/output/repo-health/artemis_config.test.yaml'],
+    ['python3', 'artemis_proxy_passive_cli.py', '--target', 'https://example.com'],
     ['python3', 'auth_diff_v2_cli.py'],
     ['python3', 'evidence_cards_cli.py', '--target', 'https://example.com'],
     ['python3', 'reportability_cli.py', '--target', 'https://example.com'],
