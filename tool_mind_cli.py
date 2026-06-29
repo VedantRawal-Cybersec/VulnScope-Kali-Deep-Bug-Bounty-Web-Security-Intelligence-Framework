@@ -12,6 +12,7 @@ from arsenal.catalog import load_tools
 from arsenal.installer import install_tool, is_installed
 from mega_tools_cli import MEGA_TOOLS, as_tool
 from normalizers.evidence import normalize_all
+from tool_path_repair_cli import repair as repair_tool_paths
 
 OUT = Path("reports/output/tool-mind")
 
@@ -58,7 +59,6 @@ def decide_tools(target: str | None = None, mode: str = "deep") -> dict[str, Any
     params = set(evidence.get("parameters", []))
     desired = set(BASE_TOOL_NAMES)
     reasoning = []
-
     reasoning.append({"thought": "Start with core bug-bounty evidence tools.", "tools": sorted(BASE_TOOL_NAMES)})
     if not endpoints:
         reasoning.append({"thought": "No endpoint evidence yet, so prioritize asset/URL discovery tools.", "tools": sorted(CATEGORY_TOOL_MAP["asset_discovery"] | CATEGORY_TOOL_MAP["url_discovery"])})
@@ -97,6 +97,7 @@ def run_tool_mind(target: str | None = None, mode: str = "deep", install_needed:
     OUT.mkdir(parents=True, exist_ok=True)
     plan = decide_tools(target, mode)
     repair_result = None
+    path_repair_result = None
     if install_needed:
         repair_result = run(["python3", "daily_update_cli.py", "--profile", "bug-bounty-safe", "--force", "--yes"], timeout=1800)
 
@@ -108,12 +109,21 @@ def run_tool_mind(target: str | None = None, mode: str = "deep", install_needed:
         install_note = "already_installed" if installed_before else "not_installed"
         if install_needed and not installed_before and status.get("supported") and status.get("tool") is not None:
             installed_after = install_tool(status["tool"], yes=yes, allow_system=True)
-            install_note = "installed" if installed_after else "install_failed_or_manual_needed"
+            install_note = "installed" if installed_after else "install_attempted_needs_path_or_manual_repair"
         elif not status.get("supported"):
             install_note = "tracked_manual_or_unsupported"
         rows.append({"name": name, "source": status["source"], "category": status.get("meta", {}).get("category"), "risk": status.get("meta", {}).get("risk"), "supported": status.get("supported"), "installed_before": installed_before, "installed_after": installed_after, "decision": install_note})
 
-    payload = {**plan, "repair_result": repair_result, "tools": rows, "summary": {"desired": len(rows), "installed": len([r for r in rows if r["installed_after"]]), "missing": len([r for r in rows if not r["installed_after"]]), "manual": len([r for r in rows if r["decision"] == "tracked_manual_or_unsupported"])}}
+    if install_needed:
+        path_repair_result = repair_tool_paths(plan["desired_tools"])
+        fixed = {item["binary"]: item["ok"] for item in path_repair_result.get("tools", [])}
+        for row in rows:
+            if fixed.get(row["name"]):
+                row["installed_after"] = True
+                if row["decision"].startswith("install_attempted"):
+                    row["decision"] = "installed_after_path_repair"
+
+    payload = {**plan, "repair_result": repair_result, "path_repair_result": path_repair_result, "tools": rows, "summary": {"desired": len(rows), "installed": len([r for r in rows if r["installed_after"]]), "missing": len([r for r in rows if not r["installed_after"]]), "manual": len([r for r in rows if r["decision"] == "tracked_manual_or_unsupported"])}}
     (OUT / "tool-mind.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     lines = ["# VulnScope Tool Mind", "", f"Target: `{target or 'not supplied'}`", f"Mode: `{mode}`", f"Desired tools: `{payload['summary']['desired']}`", f"Installed: `{payload['summary']['installed']}`", f"Missing: `{payload['summary']['missing']}`", "", "## Reasoning"]
     for item in plan["reasoning"]:
@@ -121,6 +131,8 @@ def run_tool_mind(target: str | None = None, mode: str = "deep", install_needed:
     lines += ["", "## Tool Decisions"]
     for row in rows:
         lines.append(f"- `{row['name']}` installed=`{row['installed_after']}` decision=`{row['decision']}` source=`{row['source']}`")
+    if path_repair_result:
+        lines += ["", "## Path Repair", f"- Repaired/found: `{path_repair_result['summary']['repaired_or_found']}`", f"- Missing: `{path_repair_result['summary']['missing']}`", "- PATH report: `reports/output/tool-path-repair/tool-path-repair.md`"]
     (OUT / "tool-mind.md").write_text("\n".join(lines), encoding="utf-8")
     return payload
 
