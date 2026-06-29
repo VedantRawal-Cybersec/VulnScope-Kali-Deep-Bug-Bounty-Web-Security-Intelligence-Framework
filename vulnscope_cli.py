@@ -45,6 +45,7 @@ MENU = """
 [17] Account A/B Differential v2        Deeper owned-account comparison review
 [18] Reportability Ranking              Rank candidates by evidence strength
 [19] Target History / Diff              Track new endpoints, params, findings over time
+[20] Two Google Account Precision       Google A/B login, crawl, compare, diff, evidence cards
 [0] Exit
 """
 
@@ -69,6 +70,7 @@ SAFE_COMMAND_PREFIXES = (
     "python3 reportability_cli.py",
     "python3 target_history_cli.py",
     "python3 vulnscope_modes_cli.py",
+    "python3 google_pair_cli.py",
     "cat reports/output/",
 )
 
@@ -186,6 +188,7 @@ def ai_full_review() -> None:
     target, scope = ask_target_and_scope()
     provider = input("AI provider (blank to skip, e.g. anthropic/openai): ").strip() or None
     max_cycles = input("Max thinking cycles [8]: ").strip() or "8"
+    use_google_pair = input("Run two-Google-account precision workflow if saved/login available? yes/no: ").strip().lower() in {"y", "yes"}
     commands = [
         ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
         ("Mega tools status", "python3 mega_tools_cli.py --status", "10-30s"),
@@ -193,6 +196,10 @@ def ai_full_review() -> None:
         ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
         ("Comprehensive category review", f"python3 comprehensive_suite_cli.py --target {target} --scope-policy {scope} --yes", "30s-3 min"),
         ("Google/OAuth context review", "python3 google_context_cli.py", "5-30s"),
+    ]
+    if use_google_pair:
+        commands.append(("Two Google Account Precision", f"python3 google_pair_cli.py --target {target} --profile default --max-pages 25 --yes", "5-30 min"))
+    commands += [
         ("Advanced modes correlation", f"python3 vulnscope_modes_cli.py --target {target} --scope-policy {scope}", "30s-5 min"),
         ("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s"),
         ("Final report", f"python3 report_v2_cli.py --target {target}", "5-30s"),
@@ -204,6 +211,7 @@ def ai_full_review() -> None:
     (OUT / "interactive-full-review.json").write_text(json.dumps({"target": target, "scope": scope, "history": history}, indent=2), encoding="utf-8")
     print("\n[+] Full review complete.")
     print("[+] Run history: reports/output/cli/interactive-full-review.json")
+    print("[+] Google pair: reports/output/google-pair/google-pair-run.json")
     print("[+] Evidence cards: reports/output/evidence-cards/evidence-cards.md")
     print("[+] Asset graph: reports/output/asset-graph/asset-graph.md")
     print("[+] Tool brain: reports/output/tool-brain/tool-brain-plan.md")
@@ -267,6 +275,14 @@ def menu_loop() -> None:
             elif choice == "19":
                 target = normalize_target(input("Target label: ").strip())
                 run_step("Target history", f"python3 target_history_cli.py --target {target}", "5-30s")
+            elif choice == "20":
+                target, _ = ask_target_and_scope()
+                skip = input("Use existing saved Google login states and skip login? yes/no: ").strip().lower() in {"y", "yes"}
+                max_pages = input("Max pages per account [25]: ").strip() or "25"
+                cmd = f"python3 google_pair_cli.py --target {target} --profile default --max-pages {max_pages} --yes"
+                if skip:
+                    cmd += " --skip-login"
+                run_step("Two Google Account Precision", cmd, "5-30 min")
             elif choice == "0":
                 print("Goodbye.")
                 return
