@@ -18,7 +18,14 @@ CHECKS = [
     ['python3', 'auto_mode.py', '--version'],
     ['python3', 'coverage_matrix.py'],
     ['python3', 'mega_tools_cli.py', '--status'],
+    ['python3', 'normalize_cli.py', '--target', 'https://example.com'],
+    ['python3', 'asset_graph_cli.py', '--target', 'https://example.com'],
+    ['python3', 'tool_brain_cli.py', '--target', 'https://example.com'],
+    ['python3', 'api_intel_cli.py', '--target', 'https://example.com'],
+    ['python3', 'auth_diff_v2_cli.py'],
     ['python3', 'evidence_cards_cli.py', '--target', 'https://example.com'],
+    ['python3', 'reportability_cli.py', '--target', 'https://example.com'],
+    ['python3', 'target_history_cli.py', '--target', 'https://example.com'],
     ['python3', 'report_v2_cli.py', '--target', 'https://example.com'],
 ]
 
