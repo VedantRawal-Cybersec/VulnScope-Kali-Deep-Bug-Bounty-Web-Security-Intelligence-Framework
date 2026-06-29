@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from agent.approval_gate import assess_command_safety
 from arsenal.catalog import ArsenalTool
-from arsenal.installer import GO_BIN, is_installed
+from arsenal.installer import GO_BIN, install_tool, is_installed
 
 
 def render_command(tool: ArsenalTool, url: str) -> list[str]:
@@ -18,12 +18,17 @@ def render_command(tool: ArsenalTool, url: str) -> list[str]:
     return ["bash", "-lc", rendered]
 
 
-def run_tool(tool: ArsenalTool, url: str, yes: bool = False, dry_run: bool = False) -> dict:
+def run_tool(tool: ArsenalTool, url: str, yes: bool = False, dry_run: bool = False, auto_repair: bool = True) -> dict:
     output_file = Path(tool.output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     if not is_installed(tool):
-        return {"tool": tool.name, "ok": False, "reason": "not installed", "output_file": str(output_file)}
+        if auto_repair:
+            repaired = install_tool(tool, yes=yes, allow_system=True)
+            if not repaired:
+                return {"tool": tool.name, "ok": False, "reason": "auto repair failed", "output_file": str(output_file)}
+        else:
+            return {"tool": tool.name, "ok": False, "reason": "not installed", "output_file": str(output_file)}
 
     command = render_command(tool, url)
     safety = assess_command_safety(command)
@@ -47,6 +52,12 @@ def run_tool(tool: ArsenalTool, url: str, yes: bool = False, dry_run: bool = Fal
     print(f"[+] Running {tool.name}")
     with output_file.open("w", encoding="utf-8", errors="ignore") as handle:
         code = subprocess.call(command, stdout=handle, stderr=subprocess.STDOUT)
+    if code != 0 and auto_repair:
+        print(f"[!] {tool.name} failed with exit code {code}. Attempting one repair/update and retry.")
+        install_tool(tool, yes=True, allow_system=True)
+        with output_file.open("a", encoding="utf-8", errors="ignore") as handle:
+            handle.write("\n\n[VulnScope] Retrying after auto repair...\n")
+            code = subprocess.call(render_command(tool, url), stdout=handle, stderr=subprocess.STDOUT)
     return {"tool": tool.name, "ok": code == 0, "exit_code": code, "output_file": str(output_file), "command": command}
 
 
@@ -59,4 +70,7 @@ def _resolve_binary(tool: ArsenalTool) -> str:
     go_path = GO_BIN / tool.binary
     if go_path.exists():
         return str(go_path)
+    local_path = Path.home() / ".local" / "bin" / tool.binary
+    if local_path.exists():
+        return str(local_path)
     return tool.binary
