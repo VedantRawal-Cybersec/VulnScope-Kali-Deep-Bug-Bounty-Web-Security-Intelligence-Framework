@@ -48,6 +48,7 @@ MENU = """
 [20] Two Google Account Precision       Google A/B login, crawl, compare, diff, evidence cards
 [21] Neural Tool Mind / Auto Installer  Human-like tool reasoning + install/repair plan
 [22] Tool PATH Repair                   Fix installed-but-not-found binaries and shell PATH
+[23] JARVIS Run Summary                 Show findings, why flagged, and next actions inline
 [0] Exit
 """
 
@@ -69,6 +70,7 @@ SAFE_COMMAND_PREFIXES = (
     "python3 tool_brain_cli.py",
     "python3 tool_mind_cli.py",
     "python3 tool_path_repair_cli.py",
+    "python3 jarvis_summary_cli.py",
     "python3 api_intel_cli.py",
     "python3 auth_diff_v2_cli.py",
     "python3 reportability_cli.py",
@@ -214,6 +216,7 @@ def ai_full_review() -> None:
         ("Advanced modes correlation", f"python3 vulnscope_modes_cli.py --target {target} --scope-policy {scope}", "30s-5 min"),
         ("Evidence cards", f"python3 evidence_cards_cli.py --target {target}", "5-30s"),
         ("Final report", f"python3 report_v2_cli.py --target {target}", "5-30s"),
+        ("JARVIS summary", f"python3 jarvis_summary_cli.py --target {target}", "instant"),
     ]
     history = []
     for label, cmd, est in commands:
@@ -310,6 +313,9 @@ def menu_loop() -> None:
                 run_step("Neural Tool Mind", cmd, "10s-30 min")
             elif choice == "22":
                 run_step("Tool PATH Repair", "python3 tool_path_repair_cli.py", "5-20s")
+            elif choice == "23":
+                target = input("Target label for summary (blank = authorized target): ").strip() or "authorized target"
+                run_step("JARVIS Run Summary", f"python3 jarvis_summary_cli.py --target {target}", "instant")
             elif choice == "0":
                 print("Goodbye.")
                 return
