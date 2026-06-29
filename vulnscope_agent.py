@@ -21,12 +21,17 @@ try:
 except Exception:
     yaml = None
 
+from consent import collect_session_details
+
 ROOT = Path(__file__).resolve().parent
 OUT = Path("reports/output/neural-agent")
 MEMORY_DB = OUT / "agent-memory.sqlite3"
 THINKING_LOG = OUT / "thinking-log.md"
 STATE_JSON = OUT / "agent-state.json"
 DEFAULT_CONFIG = Path("agent_config.yaml")
+RUNTIME_CONFIG = Path("agent_config.runtime.yaml")
+SESSION_SCOPE = Path("scope_policy.session.yaml")
+SESSION_AUDIT = Path("reports/output/authorization/neural-agent-consent.json")
 
 ACTIONS: dict[str, str] = {
     "preflight": "python3 mission_preflight_cli.py --target {target} --scope-policy {scope_policy}",
@@ -38,6 +43,7 @@ ACTIONS: dict[str, str] = {
     "artemis": "python3 artemis_autonomous_cli.py --config {artemis_config} --scope-policy {scope_policy} --once",
     "loop": "python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope_policy} --max-cycles 4 --yes",
     "suite": "python3 comprehensive_suite_cli.py --target {target} --scope-policy {scope_policy} --yes",
+    "google_pair": "python3 google_pair_cli.py --target {target} --profile default --max-pages 25 --skip-login --skip-if-missing --yes",
     "normalize": "python3 normalize_cli.py --target {target}",
     "graph": "python3 asset_graph_cli.py --target {target}",
     "api": "python3 api_intel_cli.py --target {target}",
@@ -48,7 +54,7 @@ ACTIONS: dict[str, str] = {
     "summary": "python3 jarvis_summary_cli.py --target {target}",
 }
 
-ORDER = ["preflight", "repair", "coverage", "recon", "public", "feedback", "artemis", "loop", "suite", "normalize", "graph", "api", "cards", "rank", "verdicts", "report", "summary"]
+BASE_ORDER = ["preflight", "repair", "coverage", "recon", "public", "feedback", "artemis", "loop", "suite", "normalize", "graph", "api", "cards", "rank", "verdicts", "report", "summary"]
 
 
 @dataclass
@@ -61,6 +67,9 @@ class AgentConfig:
     cycles: int = 12
     verbosity: str = "normal"
     dry_run: bool = False
+    include_subdomains: bool = False
+    two_accounts: bool = False
+    monitoring_frequency: str = "none"
 
 
 def normalize_target(raw: str) -> str:
@@ -86,10 +95,92 @@ def setup_logging(verbosity: str) -> None:
 
 def load_config(path: str | Path) -> AgentConfig:
     p = Path(path)
+    if not p.exists():
+        target = "https://example.com"
+        return AgentConfig(target=target, hosts=[host_from_target(target)])
     data = yaml.safe_load(p.read_text(encoding="utf-8")) if yaml and p.suffix.lower() in {".yaml", ".yml"} else json.loads(p.read_text(encoding="utf-8"))
-    target = normalize_target(str(data.get("target") or ""))
-    hosts = list(data.get("hosts") or [host_from_target(target)])
-    return AgentConfig(target=target, hosts=hosts, scope_policy=str(data.get("scope_policy", "scope_policy.session.yaml")), model_provider=str(data.get("model_provider", "none")), model_name=str(data.get("model_name", "llama3")), cycles=int(data.get("cycles", 12)), verbosity=str(data.get("verbosity", "normal")), dry_run=bool(data.get("dry_run", False)))
+    target = normalize_target(str(data.get("target") or "https://example.com"))
+    hosts = list(data.get("hosts") or data.get("allowed_hosts") or [host_from_target(target)])
+    return AgentConfig(
+        target=target,
+        hosts=hosts,
+        scope_policy=str(data.get("scope_policy", "scope_policy.session.yaml")),
+        model_provider=str(data.get("model_provider") or data.get("llm_provider") or "none"),
+        model_name=str(data.get("model_name") or data.get("llm_model") or "llama3"),
+        cycles=int(data.get("cycles") or data.get("max_cycles") or 12),
+        verbosity=str(data.get("verbosity", "normal")),
+        dry_run=bool(data.get("dry_run", False)),
+        include_subdomains=bool(data.get("include_subdomains", False)),
+        two_accounts=bool(data.get("two_accounts", False)),
+        monitoring_frequency=str(data.get("monitoring_frequency", "none")),
+    )
+
+
+def apply_interactive_details(config: AgentConfig, details: dict[str, Any]) -> AgentConfig:
+    target = normalize_target(details["target"])
+    host = host_from_target(target)
+    hosts = [host]
+    if details.get("include_subdomains"):
+        hosts.append("*." + host)
+    config.target = target
+    config.hosts = hosts
+    config.include_subdomains = bool(details.get("include_subdomains"))
+    config.model_provider = str(details.get("model_provider", "none"))
+    config.model_name = str(details.get("model_name", "llama3"))
+    config.two_accounts = bool(details.get("two_accounts"))
+    config.monitoring_frequency = str(details.get("monitoring_frequency", "none"))
+    config.scope_policy = str(SESSION_SCOPE)
+    return config
+
+
+def write_runtime_files(config: AgentConfig) -> None:
+    host = host_from_target(config.target)
+    allowed = [host]
+    if config.include_subdomains:
+        allowed.append("*." + host)
+    SESSION_SCOPE.write_text("\n".join([
+        "name: vulnscope-neural-agent-session",
+        "allowed_hosts:",
+        *["  - '" + h + "'" for h in allowed],
+        "blocked_hosts: []",
+        "allowed_schemes:",
+        "  - https",
+        "  - http",
+        "max_requests_per_minute: 30",
+        "active_testing_allowed: false",
+        "authenticated_testing_allowed: true",
+        "notes: 'Generated by vulnscope_agent.py after explicit user consent.'",
+        "",
+    ]), encoding="utf-8")
+    SESSION_AUDIT.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_AUDIT.write_text(json.dumps({
+        "target": config.target,
+        "hosts": allowed,
+        "confirmed_authorization": True,
+        "model_provider": config.model_provider,
+        "model_name": config.model_name,
+        "two_accounts": config.two_accounts,
+        "monitoring_frequency": config.monitoring_frequency,
+        "scope_policy": str(SESSION_SCOPE),
+        "created_at": time.time(),
+    }, indent=2), encoding="utf-8")
+    data = {
+        "target": config.target,
+        "hosts": config.hosts,
+        "scope_policy": config.scope_policy,
+        "model_provider": config.model_provider,
+        "model_name": config.model_name,
+        "cycles": config.cycles,
+        "verbosity": config.verbosity,
+        "dry_run": config.dry_run,
+        "include_subdomains": config.include_subdomains,
+        "two_accounts": config.two_accounts,
+        "monitoring_frequency": config.monitoring_frequency,
+    }
+    if yaml:
+        RUNTIME_CONFIG.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    else:
+        RUNTIME_CONFIG.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def host_ok(host: str, hosts: list[str]) -> bool:
@@ -159,8 +250,15 @@ def observed_state() -> dict[str, Any]:
     return state
 
 
-def choose_next(done: set[str]) -> str | None:
-    for action in ORDER:
+def action_order(config: AgentConfig) -> list[str]:
+    order = list(BASE_ORDER)
+    if config.two_accounts and "google_pair" not in order:
+        order.insert(9, "google_pair")
+    return order
+
+
+def choose_next(done: set[str], config: AgentConfig) -> str | None:
+    for action in action_order(config):
         if action not in done:
             return action
     return None
@@ -169,12 +267,13 @@ def choose_next(done: set[str]) -> str | None:
 def model_hint(config: AgentConfig, state: dict[str, Any], done: list[str]) -> str | None:
     if config.model_provider != "ollama":
         return None
-    prompt = json.dumps({"allowed_actions": ORDER, "target": config.target, "state": state, "done": done})
+    allowed = action_order(config)
+    prompt = json.dumps({"allowed_actions": allowed, "target": config.target, "state": state, "done": done, "instruction": "choose exactly one next safe review action"})
     try:
         req = Request("http://127.0.0.1:11434/api/generate", data=json.dumps({"model": config.model_name, "prompt": prompt, "stream": False}).encode(), headers={"Content-Type": "application/json"})
         with urlopen(req, timeout=30) as response:
             text = json.loads(response.read().decode("utf-8", errors="ignore")).get("response", "")
-        for action in ORDER:
+        for action in allowed:
             if re.search(rf"\b{re.escape(action)}\b", text):
                 return action
     except Exception as exc:
@@ -216,7 +315,7 @@ def reflect(action: str, result: dict[str, Any], state: dict[str, Any]) -> tuple
 
 
 def save_state(config: AgentConfig, cycle: int, done: list[str], last: dict[str, Any] | None, state: dict[str, Any]) -> None:
-    STATE_JSON.write_text(json.dumps({"target": config.target, "cycle": cycle, "done": done, "last": last, "state": state, "thinking_log": str(THINKING_LOG), "memory": str(MEMORY_DB)}, indent=2, ensure_ascii=False), encoding="utf-8")
+    STATE_JSON.write_text(json.dumps({"target": config.target, "cycle": cycle, "done": done, "last": last, "state": state, "thinking_log": str(THINKING_LOG), "memory": str(MEMORY_DB), "runtime_config": str(RUNTIME_CONFIG), "monitoring_frequency": config.monitoring_frequency}, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def run(config: AgentConfig) -> int:
@@ -224,9 +323,10 @@ def run(config: AgentConfig) -> int:
     print("FOR AUTHORIZED REVIEW ONLY - DO NOT RUN ON SYSTEMS WITHOUT PERMISSION.")
     host = host_from_target(config.target)
     if not host_ok(host, config.hosts):
-        raise SystemExit(f"Host {host} is not listed in agent_config.yaml")
+        raise SystemExit(f"Host {host} is not listed in agent configuration")
+    write_runtime_files(config)
     rules = guard_web_rules(config.target)
-    think("Perceive", f"Target `{config.target}` host `{host}`. Web rules: {rules}")
+    think("Perceive", f"Target `{config.target}` host `{host}`. Web rules: {rules}. Options: model={config.model_provider}/{config.model_name}, two_accounts={config.two_accounts}, monitoring={config.monitoring_frequency}.")
     if rules.get("robots_ok") is False:
         raise SystemExit("robots.txt disallows this path for the agent user-agent")
     con = memory()
@@ -237,7 +337,7 @@ def run(config: AgentConfig) -> int:
         state = observed_state()
         think("Observe", f"Cycle {cycle}. Observed state keys: {list(state.keys())}. Done: {sorted(done)}")
         hinted = model_hint(config, state, sorted(done))
-        action = hinted if hinted and hinted not in done else choose_next(done)
+        action = hinted if hinted and hinted not in done else choose_next(done, config)
         if not action:
             think("Plan", "No remaining action. Moving to final report actions.")
             break
@@ -257,6 +357,9 @@ def run(config: AgentConfig) -> int:
         if final_action not in done:
             act(final_action, config, art)
     save_state(config, config.cycles, sorted(done), last, observed_state())
+    if config.monitoring_frequency != "none":
+        interval = 1440 if config.monitoring_frequency == "daily" else 10080
+        think("Monitor", f"To continue monitoring, run: `python3 monitor.py --config {RUNTIME_CONFIG} --interval-minutes {interval}`")
     print(f"Thinking log: {THINKING_LOG}")
     print(f"Memory DB: {MEMORY_DB}")
     print("Final report: reports/output/report-v2/executive-report-v2.md")
@@ -268,10 +371,18 @@ def main() -> int:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--target")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--yes", action="store_true", help="Use config/non-interactive values without asking questions")
     args = parser.parse_args()
     cfg = load_config(args.config)
     if args.target:
         cfg.target = normalize_target(args.target)
+        cfg.hosts = [host_from_target(cfg.target)]
+    if not args.yes:
+        details = collect_session_details(args.target)
+        cfg = apply_interactive_details(cfg, details)
+    elif args.target:
+        cfg.scope_policy = str(SESSION_SCOPE)
+        cfg.hosts = [host_from_target(cfg.target)]
     if args.dry_run:
         cfg.dry_run = True
     return run(cfg)
