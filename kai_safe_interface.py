@@ -13,7 +13,7 @@ BANNER = r'''
 ╔════════════════════════════════════════════════════════════════════╗
 ║                                                                    ║
 ║        VULNSCOPE — DIRECT AUTONOMOUS SCAN INTERFACE                ║
-║        Target → Consent → Autonomous Scan → Final Report            ║
+║        Target → Consent → Crazy Live Autonomous Engine              ║
 ║                                                                    ║
 ╚════════════════════════════════════════════════════════════════════╝
 '''
@@ -45,7 +45,7 @@ def ask_yes_no(prompt: str, default: bool = False) -> bool:
 def ask_target_and_consent() -> dict:
     print(BANNER)
     print("This mode does not ask for any config YAML file.")
-    print("It asks for the target URL, asks for your authorization confirmation, then starts the autonomous scan.\n")
+    print("It asks for the target URL, asks for your authorization confirmation, then starts the crazy live autonomous scan.\n")
 
     target = normalize_target(input("Enter target URL/domain: ").strip())
     host = host_from_target(target)
@@ -80,14 +80,13 @@ def ask_target_and_consent() -> dict:
 def build_command(session: dict) -> list[str]:
     cmd = [
         "python3",
-        "vulnscope.py",
+        "autonomous_live_cli.py",
         "--target",
         session["target"],
-        "--yes",
         "--max-cycles",
         "8",
         "--max-workers",
-        "6",
+        "8",
     ]
     if session.get("include_subdomains"):
         cmd.append("--include-subdomains")
@@ -99,10 +98,11 @@ def build_command(session: dict) -> list[str]:
 def main() -> int:
     session = ask_target_and_consent()
     cmd = build_command(session)
-    print("\n[+] Starting autonomous scan now")
+    print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
     code = subprocess.call(cmd)
     print("\n[+] Scan finished. Open these reports:")
+    print("- reports/output/autonomous-live/live-run.md")
     print("- reports/output/vulnscope-main/final-summary.md")
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
