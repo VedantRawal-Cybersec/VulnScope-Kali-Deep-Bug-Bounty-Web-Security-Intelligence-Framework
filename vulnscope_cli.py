@@ -36,6 +36,7 @@ MENU = """
 [8] Show Last AI Decision Plan          See what the engine decided and why
 [9] Show Last Final Report              Open final Markdown report
 [10] Coverage Matrix                   Prove category/module coverage counts
+[11] Repo Health / Error Check          Compile check, dependency check, CLI smoke tests
 [0] Exit
 """
 
@@ -48,7 +49,8 @@ SAFE_COMMAND_PREFIXES = (
     "python3 comprehensive_suite_cli.py",
     "python3 google_context_cli.py",
     "python3 report_v2_cli.py",
-    "python3 safe_loop_cli.py",
+    "python3 safe_loop_v2_cli.py",
+    "python3 repo_health_cli.py",
     "cat reports/output/",
 )
 
@@ -169,7 +171,7 @@ def ai_full_review() -> None:
     commands = [
         ("Neural coverage map", "python3 coverage_matrix.py", "5-15s"),
         ("Daily repair/update", "python3 daily_update_cli.py --profile bug-bounty-safe --yes", "1-5 min"),
-        ("Autonomous evidence loop", f"python3 safe_loop_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
+        ("Autonomous evidence loop", f"python3 safe_loop_v2_cli.py --target {target} --mode comprehensive --scope-policy {scope} --max-cycles {max_cycles} --yes" + (f" --provider {provider}" if provider else ""), "5-30 min"),
         ("Comprehensive category review", f"python3 comprehensive_suite_cli.py --target {target} --scope-policy {scope} --yes", "30s-3 min"),
         ("Google/OAuth context review", "python3 google_context_cli.py", "5-30s"),
         ("Final report", f"python3 report_v2_cli.py --target {target}", "5-30s"),
@@ -214,6 +216,8 @@ def menu_loop() -> None:
                 run_step("Show final report", "cat reports/output/report-v2/executive-report-v2.md", "instant")
             elif choice == "10":
                 run_step("Coverage matrix", "python3 coverage_matrix.py", "5-15s")
+            elif choice == "11":
+                run_step("Repo health", "python3 repo_health_cli.py --install-python-deps --tool-update", "1-10 min")
             elif choice == "0":
                 print("Goodbye.")
                 return
@@ -225,9 +229,6 @@ def menu_loop() -> None:
 
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] in {"--menu", "menu"}:
-        menu_loop()
-        return 0
     menu_loop()
     return 0
 
