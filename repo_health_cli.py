@@ -20,6 +20,7 @@ CHECKS = [
     ['python3', 'mega_tools_cli.py', '--status'],
     ['python3', 'tool_mind_cli.py', '--mode', 'deep'],
     ['python3', 'tool_path_repair_cli.py'],
+    ['python3', 'unified_mission_cli.py', '--target', 'https://example.com', '--scope-policy', 'scope_policy.example.yaml', '--plan-only'],
     ['python3', 'normalize_cli.py', '--target', 'https://example.com'],
     ['python3', 'asset_graph_cli.py', '--target', 'https://example.com'],
     ['python3', 'tool_brain_cli.py', '--target', 'https://example.com'],
