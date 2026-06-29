@@ -1,0 +1,8 @@
+target: example.com
+hosts:
+  - example.com
+model_provider: none
+model_name: llama3
+cycles: 12
+verbosity: normal
+dry_run: false
