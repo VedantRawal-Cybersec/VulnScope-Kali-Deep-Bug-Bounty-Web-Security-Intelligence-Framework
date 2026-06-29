@@ -13,7 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 OUT = Path('reports/output/repo-health')
-NEEDED = ['requests', 'bs4', 'rich', 'yaml', 'jinja2', 'tldextract']
+NEEDED = ['requests', 'bs4', 'rich', 'yaml', 'jinja2', 'tldextract', 'flask']
 CHECKS = [
     ['python3', 'auto_mode.py', '--version'],
     ['python3', 'coverage_matrix.py'],
@@ -26,6 +26,7 @@ CHECKS = [
     ['python3', 'api_intel_cli.py', '--target', 'https://example.com'],
     ['python3', 'aegis_public_search_cli.py', '--target', 'https://example.com'],
     ['python3', 'aegis_feedback_cli.py', '--target', 'https://example.com'],
+    ['python3', 'artemis_autonomous_cli.py', '--init-config', '--config', 'reports/output/repo-health/artemis_config.test.yaml'],
     ['python3', 'auth_diff_v2_cli.py'],
     ['python3', 'evidence_cards_cli.py', '--target', 'https://example.com'],
     ['python3', 'reportability_cli.py', '--target', 'https://example.com'],
