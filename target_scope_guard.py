@@ -93,7 +93,7 @@ def object_in_target_scope(value: Any, target: str | None, include_subdomains: b
 
 def reset_target_report_state(session: dict[str, Any], preserve: set[str] | None = None) -> dict[str, Any]:
     """Remove stale target-dependent reports so a new scan cannot reuse old domains."""
-    preserve = preserve or {"kai-interface", "domain-reports"}
+    preserve = preserve or {"kai-interface", "domain-reports", "download-bundles"}
     target = normalize_target(str(session.get("target") or ""))
     host = host_from_target(target)
     REPORT_ROOT.mkdir(parents=True, exist_ok=True)
