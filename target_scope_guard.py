@@ -93,7 +93,7 @@ def object_in_target_scope(value: Any, target: str | None, include_subdomains: b
 
 def reset_target_report_state(session: dict[str, Any], preserve: set[str] | None = None) -> dict[str, Any]:
     """Remove stale target-dependent reports so a new scan cannot reuse old domains."""
-    preserve = preserve or {"kai-interface"}
+    preserve = preserve or {"kai-interface", "domain-reports"}
     target = normalize_target(str(session.get("target") or ""))
     host = host_from_target(target)
     REPORT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -120,10 +120,11 @@ def reset_target_report_state(session: dict[str, Any], preserve: set[str] | None
                 "confirmed_authorization": bool(session.get("confirmed_authorization")),
                 "started_at": time.time(),
                 "removed_previous_outputs": removed,
+                "preserved_outputs": sorted(preserve),
                 "scope_lock": "Only the user-entered target host is valid for this run.",
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    return {"target": target, "host": host, "removed_previous_outputs": removed}
+    return {"target": target, "host": host, "removed_previous_outputs": removed, "preserved_outputs": sorted(preserve)}
