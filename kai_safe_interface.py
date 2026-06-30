@@ -7,16 +7,18 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from dependency_manager import run_preflight_repair
+
 OUT = Path("reports/output/kai-interface")
 
-BANNER = r'''
+BANNER = r"""
 ╔════════════════════════════════════════════════════════════════════╗
 ║                                                                    ║
 ║        VULNSCOPE — DIRECT AUTONOMOUS SCAN INTERFACE                ║
 ║        Target → Consent → Crazy Live Autonomous Engine              ║
 ║                                                                    ║
 ╚════════════════════════════════════════════════════════════════════╝
-'''
+"""
 
 
 def normalize_target(raw: str) -> str:
@@ -97,10 +99,12 @@ def build_command(session: dict) -> list[str]:
 
 def main() -> int:
     session = ask_target_and_consent()
-    print("\n[+] Repairing optional helper tools before autonomous scan")
-    doctor_code = subprocess.call(["python3", "tool_doctor_cli.py", "--install", "--yes"])
+
+    print("\n[+] Running visible preflight helper-tool check")
+    doctor_code = run_preflight_repair(repair=True)
     if doctor_code != 0:
-        print("[!] Tool Doctor returned a non-zero exit code. Continuing because these helpers are optional.")
+        print("[!] Preflight returned a non-zero exit code. Continuing because helper tools are optional.")
+
     cmd = build_command(session)
     print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
@@ -116,6 +120,7 @@ def main() -> int:
     print("- reports/output/report-v2/executive-report-v2.md")
     print("- reports/output/kai-interface/direct-session.json")
     print("- reports/output/tool-doctor/tool-doctor.md")
+    print("- reports/output/tool-doctor/tool-doctor-install.log")
     return code
 
 
