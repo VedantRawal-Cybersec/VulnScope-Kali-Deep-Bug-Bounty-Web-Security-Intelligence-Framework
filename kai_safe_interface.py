@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from dependency_manager import run_preflight_repair
+from live_process_runner import run_visible_command
+from scan_dashboard import choose_dashboard
 from target_scope_guard import reset_target_report_state
 
 OUT = Path("reports/output/kai-interface")
@@ -18,7 +19,7 @@ BANNER = r"""
 ╔════════════════════════════════════════════════════════════════════╗
 ║                                                                    ║
 ║        VULNSCOPE — DIRECT AUTONOMOUS SCAN INTERFACE                ║
-║        Target → Consent → Crazy Live Autonomous Engine              ║
+║        Target → Consent → Dashboard → Live Engine → Data Bundle     ║
 ║                                                                    ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
@@ -54,8 +55,7 @@ def ask_yes_no(prompt: str, default: bool = False) -> bool:
 
 def ask_target_and_consent() -> dict:
     print(BANNER)
-    print("This mode does not ask for any config YAML file.")
-    print("It asks for the target URL, asks for your authorization confirmation, then starts the crazy live autonomous scan.\n")
+    print("This mode asks for a target, locks scope to that target, lets you choose a dashboard, then runs the selected flow.\n")
 
     target = normalize_target(input("Enter target URL/domain: ").strip())
     host = host_from_target(target)
@@ -87,16 +87,18 @@ def ask_target_and_consent() -> dict:
     return session
 
 
-def build_command(session: dict) -> list[str]:
+def build_command(session: dict, dashboard: dict) -> list[str]:
     cmd = [
         "python3",
         "autonomous_live_cli.py",
         "--target",
         session["target"],
         "--max-cycles",
-        "8",
+        str(dashboard.get("max_cycles", 8)),
         "--max-workers",
-        "8",
+        str(dashboard.get("max_workers", 8)),
+        "--heartbeat",
+        os.getenv("VULNSCOPE_HEARTBEAT", "5"),
     ]
     if session.get("include_subdomains"):
         cmd.append("--include-subdomains")
@@ -115,28 +117,69 @@ def build_scan_env(session: dict) -> dict[str, str]:
 
 
 def run_top100_status(session: dict) -> None:
-    print("\n[+] Checking integrated Top 100 tool matrix")
     cmd = ["python3", "top100_integrator_cli.py", "--target", session["target"], "--status"]
-    print("$ " + " ".join(cmd))
-    subprocess.call(cmd, env=build_scan_env(session))
+    run_visible_command(
+        "Top100 Tool Dashboard",
+        cmd,
+        env=build_scan_env(session),
+        timeout=240,
+        estimated_seconds=90,
+        log_path="reports/output/runtime-logs/top100-status.log",
+    )
 
 
-def run_top100_safe(session: dict) -> None:
-    print("\n[+] Running installed Top 100 safe runners for this target")
-    cmd = ["python3", "top100_integrator_cli.py", "--target", session["target"], "--run-safe", "--include-controlled"]
-    print("$ " + " ".join(cmd))
-    subprocess.call(cmd, env=build_scan_env(session))
+def run_top100_safe(session: dict, dashboard: dict) -> None:
+    cmd = ["python3", "top100_integrator_cli.py", "--target", session["target"], "--run-safe"]
+    if dashboard.get("include_controlled_top100"):
+        cmd.append("--include-controlled")
+    run_visible_command(
+        "Top100 Installed Safe Runners",
+        cmd,
+        env=build_scan_env(session),
+        timeout=900,
+        estimated_seconds=dashboard.get("estimated_seconds", 600),
+        log_path="reports/output/runtime-logs/top100-safe-runners.log",
+    )
 
 
 def run_domain_finding_brief(session: dict) -> None:
-    print("\n[+] Generating short per-domain finding brief")
     brief_cmd = ["python3", "domain_finding_brief_cli.py", "--target", session["target"]]
-    print("$ " + " ".join(brief_cmd))
-    brief_code = subprocess.call(brief_cmd, env=build_scan_env(session))
+    code = run_visible_command(
+        "Domain Finding Brief",
+        brief_cmd,
+        env=build_scan_env(session),
+        timeout=240,
+        estimated_seconds=60,
+        log_path="reports/output/runtime-logs/domain-finding-brief.log",
+    )
     slug = domain_slug(session["target"])
-    print(f"[+] Finding brief exit code: {brief_code}")
+    print(f"[+] Finding brief exit code: {code}")
     print(f"[+] Markdown: reports/output/domain-reports/{slug}-finding-brief.md")
     print(f"[+] JSON: reports/output/domain-reports/{slug}-finding-brief.json")
+
+
+def run_data_bundle(session: dict) -> None:
+    cmd = ["python3", "download_data_bundle_cli.py", "--target", session["target"]]
+    run_visible_command(
+        "Data Bundle Export",
+        cmd,
+        env=build_scan_env(session),
+        timeout=240,
+        estimated_seconds=45,
+        log_path="reports/output/runtime-logs/data-bundle-export.log",
+    )
+
+
+def run_main_autonomous_scan(session: dict, dashboard: dict) -> int:
+    cmd = build_command(session, dashboard)
+    return run_visible_command(
+        f"Autonomous Website Scan — {dashboard.get('name', 'Selected Dashboard')}",
+        cmd,
+        env=build_scan_env(session),
+        timeout=max(1200, int(dashboard.get("estimated_seconds", 1800)) + 600),
+        estimated_seconds=int(dashboard.get("estimated_seconds", 1800)),
+        log_path="reports/output/runtime-logs/autonomous-website-scan.log",
+    )
 
 
 def main() -> int:
@@ -150,6 +193,10 @@ def main() -> int:
     print(f"[+] Scope locked to: {session['target']} ({session['host']})")
     print(f"[+] Removed stale previous outputs: {len(isolation.get('removed_previous_outputs', []))}")
 
+    dashboard = choose_dashboard(session)
+    session["dashboard"] = dashboard
+    (OUT / "direct-session.json").write_text(json.dumps(session, indent=2), encoding="utf-8")
+
     print("\n[+] Running visible preflight helper-tool check")
     doctor_code = run_preflight_repair(repair=True)
     if doctor_code != 0:
@@ -157,31 +204,39 @@ def main() -> int:
 
     run_top100_status(session)
 
-    cmd = build_command(session)
-    print("\n[+] Starting crazy live autonomous scan now")
-    print("$ " + " ".join(cmd))
-    code = subprocess.call(cmd, env=build_scan_env(session))
-
-    run_top100_safe(session)
-    run_domain_finding_brief(session)
-
-    if code == 0:
-        print("\n[+] Scan finished successfully. Open these reports:")
+    code = 0
+    if dashboard.get("run_main_scan", True):
+        code = run_main_autonomous_scan(session, dashboard)
     else:
-        print(f"\n[!] Scan exited with code {code}. Open the reports/logs below to see the exact failing module:")
+        print(f"\n[+] Main autonomous scan skipped by dashboard profile: {dashboard.get('profile')}")
+
+    if dashboard.get("run_top100_safe", False):
+        run_top100_safe(session, dashboard)
+
+    run_domain_finding_brief(session)
+    run_data_bundle(session)
+
+    slug = domain_slug(session["target"])
+    if code == 0:
+        print("\n[+] Selected flow finished successfully. Open these reports:")
+    else:
+        print(f"\n[!] Selected flow exited with code {code}. Open the logs below to see the exact failing module:")
+    print("- reports/output/kai-interface/scan-dashboard-selection.md")
     print("- reports/output/autonomous-live/live-run.md")
     print("- reports/output/autonomous-live/live-run.json")
     print("- reports/output/vulnscope-main/final-summary.md")
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
-    print(f"- reports/output/domain-reports/{domain_slug(session['target'])}-finding-brief.md")
+    print(f"- reports/output/domain-reports/{slug}-finding-brief.md")
     print("- reports/output/top100-tools/top100-status.md")
-    print(f"- reports/output/top100-tools/{domain_slug(session['target'])}/top100-integration.md")
+    print(f"- reports/output/top100-tools/{slug}/top100-integration.md")
+    print(f"- reports/output/download-bundles/{slug}-latest-data-bundle.zip")
+    print("- reports/output/runtime-logs/")
     print("- reports/output/kai-interface/direct-session.json")
     print("- reports/output/current-target-session.json")
     print("- reports/output/tool-doctor/tool-doctor.md")
     print("- reports/output/tool-doctor/tool-doctor-install.log")
-    return code
+    return int(code)
 
 
 if __name__ == "__main__":
