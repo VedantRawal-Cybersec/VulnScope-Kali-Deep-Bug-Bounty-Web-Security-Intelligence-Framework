@@ -20,9 +20,11 @@ SOURCES = {
     "reportability": Path("reports/output/reportability/reportability.json"),
     "normalized": Path("reports/output/normalized/normalized-evidence.json"),
     "artemis": Path("reports/output/artemis/run/artemis-run.json"),
+    "safe_canary": Path("reports/output/safe-canary/safe-canary.json"),
 }
 
 CONFIRM_GUIDE = {
+    "canary": "Repeat the same GET request with CANARY_123, confirm the marker location, inspect the response context, and escalate only if real impact is proven safely.",
     "xss": "Confirm with harmless canaries first, inspect DOM context, verify output encoding, and only escalate if safe execution evidence is proven under program rules.",
     "rendering": "Confirm whether the reflected value stays as text, attribute, URL, script, or style context. Report only if real impact is proven.",
     "redirect": "Confirm redirects are restricted to an allowlist and that external navigation cannot be forced with safe test values.",
@@ -74,7 +76,7 @@ def first_value(item: dict[str, Any], keys: list[str], fallback: str = "n/a") ->
 
 def classify(text: str) -> str:
     low = text.lower()
-    for key in ["top100", "xss", "rendering", "redirect", "cors", "auth", "idor", "api", "file", "header", "cookie"]:
+    for key in ["canary", "top100", "xss", "rendering", "redirect", "cors", "auth", "idor", "api", "file", "header", "cookie"]:
         if key in low:
             return key
     return "default"
@@ -90,7 +92,7 @@ def add_finding(out: list[dict[str, Any]], target: str, item: dict[str, Any]) ->
         return
     title = first_value(item, ["title", "name", "category", "detector", "module", "verdict"], "Security review lead")
     category = first_value(item, ["category", "detector", "type", "module"], classify(title))
-    where = first_value(item, ["where_found", "url", "endpoint", "target", "item"], target)
+    where = first_value(item, ["where_found", "url", "endpoint", "target", "item", "tested_url"], target)
     evidence = first_value(item, ["why_flagged", "evidence", "reason", "safe_check", "verdict", "decision"], "Observed by scanner output")
     how = first_value(item, ["evidence_source", "source_file", "module", "_source_file"], "VulnScope correlation")
     status = first_value(item, ["reportability_bucket", "status", "verdict"], "manual_validation_needed")
@@ -132,6 +134,23 @@ def add_top100_findings(findings: list[dict[str, Any]], target: str) -> None:
         })
 
 
+def add_safe_canary_findings(findings: list[dict[str, Any]], target: str, data: Any) -> None:
+    if not isinstance(data, dict):
+        return
+    for item in data.get("findings", [])[:100]:
+        if not isinstance(item, dict):
+            continue
+        add_finding(findings, target, {
+            "title": "CANARY_123 harmless marker observed in response",
+            "category": item.get("category", "safe_canary_review"),
+            "where_found": item.get("tested_url") or item.get("where_found") or target,
+            "evidence": item.get("why_flagged") or item.get("evidence") or "Harmless canary marker was observed in the response.",
+            "module": "Safe Canary Parameter Review",
+            "status": "review_needed",
+            "confidence": item.get("confidence", 0.65),
+        })
+
+
 def collect_from_sources(target: str) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     data = {name: load_json(path) for name, path in SOURCES.items()}
@@ -163,6 +182,7 @@ def collect_from_sources(target: str) -> list[dict[str, Any]]:
             if isinstance(item, dict) and item.get("risk_tags"):
                 add_finding(findings, target, {**item, "title": "Endpoint review lead", "category": ",".join(item.get("risk_tags", [])), "module": "Normalized Evidence"})
 
+    add_safe_canary_findings(findings, target, data.get("safe_canary"))
     add_top100_findings(findings, target)
 
     unique: list[dict[str, Any]] = []
@@ -201,63 +221,23 @@ def write_reports(target: str, findings: list[dict[str, Any]]) -> dict[str, Any]
     history_json_path = HISTORY / f"{slug}-{stamp}-finding-brief.json"
     history_md_path = HISTORY / f"{slug}-{stamp}-finding-brief.md"
 
-    payload = {
-        "target": target,
-        "host": host_from_target(target),
-        "generated_at": time.time(),
-        "summary": {"findings": len(findings), "shown": min(len(findings), 12)},
-        "findings": findings,
-        "note": "These are evidence-based review leads, not confirmed vulnerabilities unless impact is proven by safe authorized validation.",
-    }
+    payload = {"target": target, "host": host_from_target(target), "generated_at": time.time(), "summary": {"findings": len(findings), "shown": min(len(findings), 12)}, "findings": findings, "note": "These are evidence-based review leads, not confirmed vulnerabilities unless impact is proven by safe authorized validation."}
     json_text = json.dumps(payload, indent=2, ensure_ascii=False)
     json_path.write_text(json_text, encoding="utf-8")
     history_json_path.write_text(json_text, encoding="utf-8")
 
-    lines = [
-        f"# Final Finding Brief — {payload['host']}",
-        "",
-        f"Target: `{target}`",
-        f"Findings / leads: `{len(findings)}`",
-        "",
-        "This brief explains what was found, where it was found, how VulnScope found it, and how to confirm it safely.",
-        "",
-    ]
+    lines = [f"# Final Finding Brief — {payload['host']}", "", f"Target: `{target}`", f"Findings / leads: `{len(findings)}`", "", "This brief explains what was found, where it was found, how VulnScope found it, and how to confirm it safely.", ""]
     if not findings:
-        lines += [
-            "## Result",
-            "No confirmed vulnerability or strong review lead was generated from the available evidence.",
-            "",
-            "Next step: review the full reports for hardening observations and rerun with a deeper authorized scope if needed.",
-        ]
+        lines += ["## Result", "No confirmed vulnerability or strong review lead was generated from the available evidence.", "", "Next step: review the full reports for hardening observations and rerun with a deeper authorized scope if needed."]
     else:
         lines.append("## Top Findings")
         for index, item in enumerate(findings[:12], 1):
-            lines += [
-                f"### {index}. {item['title']}",
-                f"- Type: `{item['type']}`",
-                f"- Where found: `{item['where_found']}`",
-                f"- How found: {item['how_found']}",
-                f"- Evidence: {item['evidence']}",
-                f"- How to confirm: {item['how_to_confirm']}",
-                f"- Status: `{item['status']}`",
-                "",
-            ]
-    lines += [
-        "## Files",
-        f"- Latest Markdown: `{md_path}`",
-        f"- Latest JSON: `{json_path}`",
-        f"- Run Markdown: `{history_md_path}`",
-        f"- Run JSON: `{history_json_path}`",
-    ]
+            lines += [f"### {index}. {item['title']}", f"- Type: `{item['type']}`", f"- Where found: `{item['where_found']}`", f"- How found: {item['how_found']}", f"- Evidence: {item['evidence']}", f"- How to confirm: {item['how_to_confirm']}", f"- Status: `{item['status']}`", ""]
+    lines += ["## Files", f"- Latest Markdown: `{md_path}`", f"- Latest JSON: `{json_path}`", f"- Run Markdown: `{history_md_path}`", f"- Run JSON: `{history_json_path}`"]
     md_text = "\n".join(lines)
     md_path.write_text(md_text, encoding="utf-8")
     history_md_path.write_text(md_text, encoding="utf-8")
-    payload["reports"] = {
-        "markdown": str(md_path),
-        "json": str(json_path),
-        "history_markdown": str(history_md_path),
-        "history_json": str(history_json_path),
-    }
+    payload["reports"] = {"markdown": str(md_path), "json": str(json_path), "history_markdown": str(history_md_path), "history_json": str(history_json_path)}
     return payload
 
 
