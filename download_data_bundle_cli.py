@@ -30,6 +30,8 @@ REPORT_PATHS = [
     "reports/output/normalized/normalized-evidence.json",
     "reports/output/report-v2/executive-report-v2.md",
     "reports/output/vulnscope-main/final-summary.md",
+    "reports/output/safe-canary/safe-canary.md",
+    "reports/output/safe-canary/safe-canary.json",
     "reports/output/top100-tools/top100-status.md",
     "reports/output/top100-tools/top100-status.json",
     "reports/output/top100-tools/top100-install.json",
