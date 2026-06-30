@@ -7,30 +7,40 @@ import os
 import queue
 import re
 import shlex
-import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from target_scope_guard import host_from_target, normalize_target
 from tool_doctor_cli import TOP_TOOLS
 
 try:
-    from mega_tools_cli import MEGA_TOOLS, as_tool
-    from arsenal.installer import install_tool, is_installed
-except Exception:  # pragma: no cover - integration fallback
+    from mega_tools_cli import MEGA_TOOLS
+except Exception:  # pragma: no cover
     MEGA_TOOLS = []
-    as_tool = None
-    install_tool = None
-    is_installed = None
+
+try:
+    from universal_tool_installer import (
+        find_binary,
+        has_recipe,
+        install_missing_from_inventory,
+        install_one,
+        install_env,
+        method_for,
+        recipe_for,
+    )
+except Exception:  # pragma: no cover
+    find_binary = None
+    has_recipe = None
+    install_missing_from_inventory = None
+    install_one = None
+    install_env = None
+    method_for = None
+    recipe_for = None
 
 OUT = Path("reports/output/top100-tools")
-LOCAL_BIN = Path.home() / ".vulnscope" / "tools" / "bin"
-GO_BIN = Path.home() / "go" / "bin"
-USER_LOCAL_BIN = Path.home() / ".local" / "bin"
 
 SAFE_RUNNERS = {
     "subfinder": "subfinder -d {host} -silent -o {out}",
@@ -46,13 +56,14 @@ SAFE_RUNNERS = {
     "whatweb": "whatweb --no-errors --color=never {target} > {out}",
     "nuclei": "nuclei -u {target} -tags exposure,misconfig,headers,ssl -severity info,low,medium -rate-limit 3 -retries 0 -silent -o {out}",
 }
-
 CONTROLLED_SAFE = {"httpx", "katana", "dnsx", "tlsx", "wafw00f", "whatweb", "nuclei"}
 
 
 def env() -> dict[str, str]:
-    e = dict(os.environ)
-    e["PATH"] = os.pathsep.join([str(LOCAL_BIN), str(GO_BIN), str(USER_LOCAL_BIN), e.get("PATH", "")])
+    if install_env:
+        e = install_env()
+    else:
+        e = dict(os.environ)
     e["PYTHONUNBUFFERED"] = "1"
     return e
 
@@ -61,8 +72,10 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "-", text).strip("-.").lower() or "target"
 
 
-def tool_path(binary: str) -> str | None:
-    return shutil.which(binary, path=env().get("PATH"))
+def tool_path(name: str, binary: str | None = None) -> str | None:
+    if find_binary:
+        return find_binary(name, binary or name)
+    return None
 
 
 def mega_map() -> dict[str, dict[str, Any]]:
@@ -77,13 +90,13 @@ def infer_category(name: str) -> str:
         return "url_and_crawl"
     if any(x in low for x in ["dns", "host", "dig", "nslookup"]):
         return "dns_review"
-    if any(x in low for x in ["tls", "ssl", "openssl"]):
+    if any(x in low for x in ["tls", "ssl", "openssl", "testssl"]):
         return "tls_review"
-    if any(x in low for x in ["js", "link", "secret", "gitleaks", "truffle"]):
+    if any(x in low for x in ["js", "link", "secret", "gitleaks", "truffle", "mantra"]):
         return "client_side_review"
     if any(x in low for x in ["cors", "waf", "whatweb", "builtwith"]):
         return "web_fingerprint"
-    if any(x in low for x in ["audit", "trivy", "grype", "syft", "safety", "checkov", "semgrep"]):
+    if any(x in low for x in ["audit", "trivy", "grype", "syft", "safety", "checkov", "semgrep", "snyk"]):
         return "local_dependency_review"
     return "support_tool"
 
@@ -102,20 +115,24 @@ def infer_profile(name: str) -> str:
 
 def build_inventory() -> list[dict[str, Any]]:
     mega = mega_map()
-    rows = []
+    rows: list[dict[str, Any]] = []
     for index, name in enumerate(TOP_TOOLS[:100], 1):
         meta = mega.get(name, {})
         binary = str(meta.get("binary") or name)
-        installed = tool_path(binary) is not None
+        path = tool_path(name, binary)
+        recipe = recipe_for(name, binary) if recipe_for else None
+        auto_supported = bool(recipe or (meta and meta.get("type") in {"go", "pipx_or_pip"}))
+        method = method_for(name, binary) if method_for else str(meta.get("type") or "manual")
         rows.append({
             "index": index,
             "name": name,
             "binary": binary,
             "category": str(meta.get("category") or infer_category(name)),
             "profile": infer_profile(name),
-            "installed": installed,
-            "path": tool_path(binary),
-            "auto_install_supported": bool(meta and meta.get("type") in {"go", "pipx_or_pip"}),
+            "installed": path is not None,
+            "path": path,
+            "auto_install_supported": auto_supported,
+            "install_method": method,
             "safe_runner_available": name in SAFE_RUNNERS,
             "note": "manual-disabled in autonomous mode" if infer_profile(name) == "manual_disabled" else "integrated",
         })
@@ -125,8 +142,6 @@ def build_inventory() -> list[dict[str, Any]]:
 def write_status(target: str | None = None) -> dict[str, Any]:
     OUT.mkdir(parents=True, exist_ok=True)
     rows = build_inventory()
-    status_path = OUT / "top100-status.json"
-    md_path = OUT / "top100-status.md"
     payload = {
         "target": target,
         "generated_at": time.time(),
@@ -136,10 +151,11 @@ def write_status(target: str | None = None) -> dict[str, Any]:
             "missing": len([r for r in rows if not r["installed"]]),
             "safe_runners": len([r for r in rows if r["safe_runner_available"]]),
             "auto_install_supported": len([r for r in rows if r["auto_install_supported"]]),
+            "auto_installable_missing": len([r for r in rows if not r["installed"] and r["auto_install_supported"]]),
         },
         "tools": rows,
     }
-    status_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    (OUT / "top100-status.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     lines = [
         "# VulnScope Top 100 Tool Integration",
         "",
@@ -148,12 +164,17 @@ def write_status(target: str | None = None) -> dict[str, Any]:
         f"Missing now: `{payload['summary']['missing']}`",
         f"Safe runners wired: `{payload['summary']['safe_runners']}`",
         f"Auto-install supported: `{payload['summary']['auto_install_supported']}`",
+        f"Auto-installable missing: `{payload['summary']['auto_installable_missing']}`",
         "",
         "## Tool Matrix",
     ]
     for row in rows:
-        lines.append(f"- `{row['index']:03d}` `{row['name']}` category=`{row['category']}` profile=`{row['profile']}` installed=`{row['installed']}` runner=`{row['safe_runner_available']}`")
-    md_path.write_text("\n".join(lines), encoding="utf-8")
+        lines.append(
+            f"- `{row['index']:03d}` `{row['name']}` binary=`{row['binary']}` method=`{row['install_method']}` "
+            f"category=`{row['category']}` profile=`{row['profile']}` installed=`{row['installed']}` "
+            f"runner=`{row['safe_runner_available']}` path=`{row.get('path') or '-'}`"
+        )
+    (OUT / "top100-status.md").write_text("\n".join(lines), encoding="utf-8")
     return payload
 
 
@@ -226,7 +247,7 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
         if name in CONTROLLED_SAFE and not include_controlled:
             results.append({"tool": name, "status": "skipped_controlled", "reason": "run again with --include-controlled"})
             continue
-        if not tool_path(binary):
+        if not tool_path(name, binary):
             results.append({"tool": name, "status": "missing", "reason": "binary not installed"})
             continue
         output_file = out_dir / f"{slug(name)}.txt"
@@ -258,38 +279,28 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
     return payload
 
 
-def install_supported(max_install: int = 25, yes: bool = False) -> dict[str, Any]:
+def install_supported(max_install: int = 100, yes: bool = False) -> dict[str, Any]:
     rows = build_inventory()
-    installed = []
-    skipped = []
-    mega = mega_map()
-    count = 0
-    for row in rows:
-        if row["installed"]:
-            skipped.append({"tool": row["name"], "status": "already_installed"})
-            continue
-        meta = mega.get(row["name"])
-        if not meta or not row["auto_install_supported"] or not install_tool or not as_tool:
-            skipped.append({"tool": row["name"], "status": "not_auto_install_supported"})
-            continue
-        if count >= max_install:
-            skipped.append({"tool": row["name"], "status": "max_install_limit_reached"})
-            continue
-        ok = install_tool(as_tool(meta), yes=yes, allow_system=False)
-        count += 1
-        installed.append({"tool": row["name"], "ok": bool(ok)})
-    payload = {"summary": {"attempted": count, "installed_or_repaired": len([x for x in installed if x["ok"]]), "skipped": len(skipped)}, "installed": installed, "skipped": skipped}
+    if install_missing_from_inventory:
+        payload = install_missing_from_inventory(rows, max_install=max_install, yes=yes)
+    else:
+        payload = {"summary": {"attempted": 0, "installed_or_repaired": 0, "failed": 0}, "results": []}
+    refreshed = build_inventory()
+    payload["summary"]["installed_after"] = len([r for r in refreshed if r["installed"]])
+    payload["summary"]["missing_after"] = len([r for r in refreshed if not r["installed"]])
+    payload["final_status"] = refreshed
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "top100-install.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_status()
     return payload
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Top 100 VulnScope tool integrator: status, safe setup, safe execution wiring")
+    parser = argparse.ArgumentParser(description="Top 100 VulnScope tool integrator: status, universal setup, safe execution wiring")
     parser.add_argument("--target")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--install-supported", action="store_true")
-    parser.add_argument("--max-install", type=int, default=25)
+    parser.add_argument("--max-install", type=int, default=100)
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--run-safe", action="store_true")
     parser.add_argument("--include-controlled", action="store_true")
