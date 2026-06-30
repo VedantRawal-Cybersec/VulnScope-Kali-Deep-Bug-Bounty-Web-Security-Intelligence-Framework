@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,7 @@ CONFIRM_GUIDE = {
     "file": "Confirm the file is intentionally public and does not expose private data, source maps, secrets, backups, or internal metadata.",
     "header": "Confirm the header is absent on affected pages, then treat it as a hardening gap unless paired with exploitable impact.",
     "cookie": "Confirm cookie flags on live responses and assess whether session cookies are protected with Secure, HttpOnly, and SameSite.",
+    "top100": "Open the referenced Top 100 output file, verify that every URL or host belongs to the authorized target, then use the extracted leads for manual validation only.",
     "default": "Confirm the finding manually using safe, authorized validation. Do not report as a vulnerability until impact is proven.",
 }
 
@@ -74,7 +74,7 @@ def first_value(item: dict[str, Any], keys: list[str], fallback: str = "n/a") ->
 
 def classify(text: str) -> str:
     low = text.lower()
-    for key in ["xss", "rendering", "redirect", "cors", "auth", "idor", "api", "file", "header", "cookie"]:
+    for key in ["top100", "xss", "rendering", "redirect", "cors", "auth", "idor", "api", "file", "header", "cookie"]:
         if key in low:
             return key
     return "default"
@@ -108,6 +108,30 @@ def add_finding(out: list[dict[str, Any]], target: str, item: dict[str, Any]) ->
     })
 
 
+def add_top100_findings(findings: list[dict[str, Any]], target: str) -> None:
+    path = Path("reports/output/top100-tools") / domain_slug(target) / "top100-integration.json"
+    data = load_json(path)
+    if not isinstance(data, dict):
+        return
+    for item in data.get("results", [])[:100]:
+        if not isinstance(item, dict) or item.get("status") != "ran":
+            continue
+        output_file = str(item.get("output_file") or "")
+        output_path = Path(output_file)
+        size = output_path.stat().st_size if output_path.exists() else 0
+        if size <= 0:
+            continue
+        add_finding(findings, target, {
+            "title": f"Top100 tool output collected: {item.get('tool')}",
+            "category": "top100_integration",
+            "where_found": target,
+            "evidence": f"{item.get('tool')} produced target-scoped output file {output_file} ({size} bytes).",
+            "module": "Top100 Integrator",
+            "status": "review_needed",
+            "score": 0.55,
+        })
+
+
 def collect_from_sources(target: str) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     data = {name: load_json(path) for name, path in SOURCES.items()}
@@ -138,6 +162,8 @@ def collect_from_sources(target: str) -> list[dict[str, Any]]:
         for item in normalized.get("endpoints", [])[:300]:
             if isinstance(item, dict) and item.get("risk_tags"):
                 add_finding(findings, target, {**item, "title": "Endpoint review lead", "category": ",".join(item.get("risk_tags", [])), "module": "Normalized Evidence"})
+
+    add_top100_findings(findings, target)
 
     unique: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
