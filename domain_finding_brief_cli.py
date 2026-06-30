@@ -241,10 +241,21 @@ def write_reports(target: str, findings: list[dict[str, Any]]) -> dict[str, Any]
     return payload
 
 
+def generate_review_dashboard(target: str) -> None:
+    try:
+        from review_dashboard_cli import build as build_review_dashboard
+        build_review_dashboard(target)
+    except Exception as exc:
+        OUT.mkdir(parents=True, exist_ok=True)
+        (OUT / "dashboard-generation-error.json").write_text(json.dumps({"target": target, "error": str(exc)}, indent=2), encoding="utf-8")
+
+
 def build_domain_finding_brief(target: str | None = None) -> dict[str, Any]:
     active_target = session_target(target) or normalize_target(target or "authorized-target")
     findings = collect_from_sources(active_target)
-    return write_reports(active_target, findings)
+    payload = write_reports(active_target, findings)
+    generate_review_dashboard(active_target)
+    return payload
 
 
 def main() -> int:
