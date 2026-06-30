@@ -71,7 +71,7 @@ def build(target: str) -> dict[str, Any]:
     s = slug(target)
     rows: list[dict[str, Any]] = []
     source_specs = [
-        ("Safe CANARY_123 Review", "reports/output/safe-canary/safe-canary.json", "findings"),
+        ("Adaptive Safe Parameter Review", "reports/output/safe-canary/safe-canary.json", "findings"),
         ("Final Brief", Path("reports/output/domain-reports") / f"{s}-finding-brief.json", "findings"),
         ("Mission Verdicts", "reports/output/mission-verdicts/mission-verdicts.json", "rows"),
     ]
@@ -99,11 +99,11 @@ def build(target: str) -> dict[str, Any]:
     md_path = OUT / f"{s}-dashboard.md"
     html_path = OUT / f"{s}-dashboard.html"
     latest_html = OUT / f"{s}-latest-dashboard.html"
-    canary_count = len([r for r in unique if "canary" in r["source"].lower() or "canary" in r["type"].lower()])
-    payload = {"target": target, "host": host_from_target(target), "generated_at": time.time(), "summary": {"review_leads": len(unique), "canary_observations": canary_count, "auto_confirmed": 0}, "rows": unique}
+    safe_count = len([r for r in unique if "safe" in r["source"].lower() or "safe" in r["type"].lower()])
+    payload = {"target": target, "host": host_from_target(target), "generated_at": time.time(), "summary": {"review_leads": len(unique), "safe_parameter_observations": safe_count, "auto_confirmed": 0}, "rows": unique}
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    lines = [f"# VulnScope Output Dashboard — {payload['host']}", "", f"Target: `{target}`", f"Review leads: `{len(unique)}`", f"CANARY_123 observations: `{canary_count}`", "Auto-confirmed: `0`", "", "## Leads"]
+    lines = [f"# VulnScope Output Dashboard — {payload['host']}", "", f"Target: `{target}`", f"Review leads: `{len(unique)}`", f"Safe parameter observations: `{safe_count}`", "Auto-confirmed: `0`", "", "## Leads"]
     if not unique:
         lines.append("No review lead was generated from the available evidence.")
     for i, row in enumerate(unique[:80], 1):
@@ -122,7 +122,7 @@ def build(target: str) -> dict[str, Any]:
   <p><b>Where:</b> <code>{esc(row['where'])}</code></p>
   <p><b>Evidence:</b> {esc(row['evidence'])}</p>
 </section>""")
-    html_text = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VulnScope Dashboard</title><style>body{{margin:0;background:#0b1020;color:#edf3ff;font-family:Arial,sans-serif}}header{{padding:30px;background:#121933;border-bottom:1px solid #2b3765}}main{{padding:26px}}.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}}.metric,.card{{background:#121933;border:1px solid #2b3765;border-radius:18px;padding:18px}}.metric b{{font-size:34px;color:#7aa2ff}}.card{{margin:16px 0}}.chips{{display:flex;gap:8px;flex-wrap:wrap}}.chips span{{border:1px solid #2b3765;border-radius:999px;padding:6px 10px;color:#aab6d3;font-size:12px}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.grid div{{background:#172044;border-radius:12px;padding:12px}}p{{color:#aab6d3}}code{{color:#d8e4ff;word-break:break-word}}@media(max-width:800px){{.stats,.grid{{grid-template-columns:1fr}}}}</style></head><body><header><h1>VulnScope Autonomous Output Dashboard</h1><p>Target: <code>{esc(target)}</code></p></header><main><section class="stats"><div class="metric"><b>{len(unique)}</b><p>Review leads</p></div><div class="metric"><b>{canary_count}</b><p>CANARY_123 observations</p></div><div class="metric"><b>0</b><p>Auto-confirmed</p></div></section>{''.join(cards)}</main></body></html>"""
+    html_text = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VulnScope Dashboard</title><style>body{{margin:0;background:#0b1020;color:#edf3ff;font-family:Arial,sans-serif}}header{{padding:30px;background:#121933;border-bottom:1px solid #2b3765}}main{{padding:26px}}.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}}.metric,.card{{background:#121933;border:1px solid #2b3765;border-radius:18px;padding:18px}}.metric b{{font-size:34px;color:#7aa2ff}}.card{{margin:16px 0}}.chips{{display:flex;gap:8px;flex-wrap:wrap}}.chips span{{border:1px solid #2b3765;border-radius:999px;padding:6px 10px;color:#aab6d3;font-size:12px}}.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.grid div{{background:#172044;border-radius:12px;padding:12px}}p{{color:#aab6d3}}code{{color:#d8e4ff;word-break:break-word}}@media(max-width:800px){{.stats,.grid{{grid-template-columns:1fr}}}}</style></head><body><header><h1>VulnScope Autonomous Output Dashboard</h1><p>Target: <code>{esc(target)}</code></p></header><main><section class="stats"><div class="metric"><b>{len(unique)}</b><p>Review leads</p></div><div class="metric"><b>{safe_count}</b><p>Safe parameter observations</p></div><div class="metric"><b>0</b><p>Auto-confirmed</p></div></section>{''.join(cards)}</main></body></html>"""
     html_path.write_text(html_text, encoding="utf-8")
     latest_html.write_text(html_text, encoding="utf-8")
     print(json.dumps({"summary": payload["summary"], "html": str(html_path), "markdown": str(md_path), "json": str(json_path)}, indent=2), flush=True)
