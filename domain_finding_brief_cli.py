@@ -4,14 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from target_scope_guard import object_in_target_scope, session_target, url_in_target_scope
+from target_scope_guard import object_in_target_scope, session_target
 
 OUT = Path("reports/output/domain-reports")
+HISTORY = OUT / "history"
 
 SOURCES = {
     "mission_verdicts": Path("reports/output/mission-verdicts/mission-verdicts.json"),
@@ -137,7 +139,6 @@ def collect_from_sources(target: str) -> list[dict[str, Any]]:
             if isinstance(item, dict) and item.get("risk_tags"):
                 add_finding(findings, target, {**item, "title": "Endpoint review lead", "category": ",".join(item.get("risk_tags", [])), "module": "Normalized Evidence"})
 
-    # Deduplicate by type + location + evidence.
     unique: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for item in findings:
@@ -166,9 +167,14 @@ def collect_from_sources(target: str) -> list[dict[str, Any]]:
 
 def write_reports(target: str, findings: list[dict[str, Any]]) -> dict[str, Any]:
     OUT.mkdir(parents=True, exist_ok=True)
+    HISTORY.mkdir(parents=True, exist_ok=True)
     slug = domain_slug(target)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     json_path = OUT / f"{slug}-finding-brief.json"
     md_path = OUT / f"{slug}-finding-brief.md"
+    history_json_path = HISTORY / f"{slug}-{stamp}-finding-brief.json"
+    history_md_path = HISTORY / f"{slug}-{stamp}-finding-brief.md"
+
     payload = {
         "target": target,
         "host": host_from_target(target),
@@ -177,7 +183,9 @@ def write_reports(target: str, findings: list[dict[str, Any]]) -> dict[str, Any]
         "findings": findings,
         "note": "These are evidence-based review leads, not confirmed vulnerabilities unless impact is proven by safe authorized validation.",
     }
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    json_text = json.dumps(payload, indent=2, ensure_ascii=False)
+    json_path.write_text(json_text, encoding="utf-8")
+    history_json_path.write_text(json_text, encoding="utf-8")
 
     lines = [
         f"# Final Finding Brief — {payload['host']}",
@@ -210,11 +218,20 @@ def write_reports(target: str, findings: list[dict[str, Any]]) -> dict[str, Any]
             ]
     lines += [
         "## Files",
-        f"- Markdown: `{md_path}`",
-        f"- JSON: `{json_path}`",
+        f"- Latest Markdown: `{md_path}`",
+        f"- Latest JSON: `{json_path}`",
+        f"- Run Markdown: `{history_md_path}`",
+        f"- Run JSON: `{history_json_path}`",
     ]
-    md_path.write_text("\n".join(lines), encoding="utf-8")
-    payload["reports"] = {"markdown": str(md_path), "json": str(json_path)}
+    md_text = "\n".join(lines)
+    md_path.write_text(md_text, encoding="utf-8")
+    history_md_path.write_text(md_text, encoding="utf-8")
+    payload["reports"] = {
+        "markdown": str(md_path),
+        "json": str(json_path),
+        "history_markdown": str(history_md_path),
+        "history_json": str(history_json_path),
+    }
     return payload
 
 
@@ -229,7 +246,7 @@ def main() -> int:
     parser.add_argument("--target", required=True)
     args = parser.parse_args()
     result = build_domain_finding_brief(args.target)
-    print(json.dumps({"summary": result["summary"], "report": result["reports"]["markdown"], "json": result["reports"]["json"]}, indent=2))
+    print(json.dumps({"summary": result["summary"], "report": result["reports"]["markdown"], "json": result["reports"]["json"], "history": result["reports"]["history_markdown"]}, indent=2))
     return 0
 
 
