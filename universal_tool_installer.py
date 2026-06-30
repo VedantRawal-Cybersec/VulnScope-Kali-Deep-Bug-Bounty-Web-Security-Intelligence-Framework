@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import re
 import shutil
 import stat
@@ -43,7 +42,6 @@ ALIASES: dict[str, list[str]] = {
 }
 
 RECIPES: dict[str, dict[str, Any]] = {
-    # Go tools / local binaries
     "gitleaks": {"method": "go", "package": "github.com/gitleaks/gitleaks/v8@latest"},
     "trufflehog": {"method": "go", "package": "github.com/trufflesecurity/trufflehog/v3@latest"},
     "mantra": {"method": "go", "package": "github.com/MrEmpy/mantra@latest"},
@@ -54,42 +52,32 @@ RECIPES: dict[str, dict[str, Any]] = {
     "trivy": {"method": "go", "package": "github.com/aquasecurity/trivy/cmd/trivy@latest"},
     "grype": {"method": "go", "package": "github.com/anchore/grype/cmd/grype@latest"},
     "syft": {"method": "go", "package": "github.com/anchore/syft/cmd/syft@latest"},
-
-    # Python tools
     "semgrep": {"method": "pip", "package": "semgrep"},
     "safety": {"method": "pip", "package": "safety"},
     "pip-audit": {"method": "pip", "package": "pip-audit"},
     "sublist3r": {"method": "pip", "package": "git+https://github.com/aboul3la/Sublist3r.git"},
-    "SecretFinder": {"method": "git_wrapper", "repo": "https://github.com/m4ll0k/SecretFinder.git", "script": "SecretFinder.py", "python": True},
+    "SecretFinder": {"method": "git_wrapper", "repo": "https://github.com/m4ll0k/SecretFinder.git", "script": "SecretFinder.py"},
     "detect-secrets": {"method": "pip", "package": "detect-secrets"},
     "checkov": {"method": "pip", "package": "checkov"},
     "cyclonedx-py": {"method": "pip", "package": "cyclonedx-bom"},
     "httpie": {"method": "pip", "package": "httpie"},
     "crtsh": {"method": "wrapper", "wrapper": "crtsh"},
     "wappalyzer": {"method": "npm", "package": "wappalyzer"},
-
-    # Node / npm tools
     "retire": {"method": "npm", "package": "retire"},
     "retire-js": {"method": "npm_alias", "package": "retire", "alias_to": "retire"},
     "yarn": {"method": "npm", "package": "yarn"},
     "pnpm": {"method": "npm", "package": "pnpm"},
     "snyk": {"method": "npm", "package": "snyk"},
     "npm-audit": {"method": "wrapper", "wrapper": "npm-audit"},
-
-    # Cargo / gem
     "xh": {"method": "cargo", "package": "xh"},
     "cargo-audit": {"method": "cargo", "package": "cargo-audit"},
     "bundler-audit": {"method": "gem", "package": "bundler-audit"},
-
-    # System packages or git script installs
     "cargo": {"method": "apt", "package": "cargo"},
     "massdns": {"method": "apt", "package": "massdns"},
     "lynis": {"method": "apt", "package": "lynis"},
     "zap-baseline.py": {"method": "apt", "package": "zaproxy", "post": "zap-wrapper"},
     "testssl.sh": {"method": "git_script", "repo": "https://github.com/drwetter/testssl.sh.git", "script": "testssl.sh"},
 }
-
-APT_RECIPE_NAMES = {name for name, recipe in RECIPES.items() if recipe.get("method") == "apt"}
 
 
 def ensure_dirs() -> None:
@@ -101,7 +89,6 @@ def install_env() -> dict[str, str]:
     ensure_dirs()
     env = dict(os.environ)
     extra = [str(LOCAL_BIN), str(NPM_BIN), str(GO_BIN), str(USER_LOCAL_BIN), str(VENV_BIN)]
-    # Include gem user bins without knowing the Ruby version in advance.
     gem_root = Path.home() / ".gem"
     if gem_root.exists():
         for bin_dir in gem_root.glob("ruby/*/bin"):
@@ -138,11 +125,6 @@ def find_binary(name: str, binary: str | None = None) -> str | None:
     for root in roots:
         if not root.exists():
             continue
-        for candidate in names_for(name, binary):
-            direct = root / candidate
-            if direct.exists() and direct.is_file():
-                chmod_exec(direct)
-                return str(direct)
         try:
             for item in root.rglob("*"):
                 if item.is_file() and item.name.lower() in wanted:
@@ -187,15 +169,11 @@ def symlink_or_copy(found: str, name: str, binary: str | None = None) -> None:
     ensure_dirs()
     src = Path(found)
     chmod_exec(src)
-    primary = names_for(name, binary)[0]
-    target = LOCAL_BIN / primary
-    if target.resolve() == src.resolve():
-        chmod_exec(target)
-        return
-    if target.exists() or target.is_symlink():
-        chmod_exec(target)
-        return
+    target = LOCAL_BIN / names_for(name, binary)[0]
     try:
+        if target.exists() or target.is_symlink():
+            chmod_exec(target)
+            return
         target.symlink_to(src)
     except Exception:
         try:
@@ -217,10 +195,10 @@ def create_builtin_wrapper(wrapper: str, name: str, binary: str) -> bool:
     if wrapper == "npm-audit":
         if not find_binary("npm", "npm"):
             return False
-        create_wrapper("npm-audit", "#!/usr/bin/env bash\nexec npm audit \"$@\"\n")
+        create_wrapper("npm-audit", '#!/usr/bin/env bash\nexec npm audit "$@"\n')
         return True
     if wrapper == "crtsh":
-        create_wrapper("crtsh", """#!/usr/bin/env python3
+        create_wrapper("crtsh", '''#!/usr/bin/env python3
 import json, sys, urllib.parse, urllib.request
 q = sys.argv[1] if len(sys.argv) > 1 else ''
 if not q:
@@ -241,10 +219,10 @@ try:
 except Exception as exc:
     print(f'crtsh error: {exc}', file=sys.stderr)
     raise SystemExit(1)
-""")
+''')
         return True
     if wrapper == "getjs":
-        create_wrapper("getJS", """#!/usr/bin/env python3
+        create_wrapper("getJS", '''#!/usr/bin/env python3
 import re, sys, urllib.parse, urllib.request
 url = sys.argv[1] if len(sys.argv) > 1 else ''
 if not url:
@@ -252,12 +230,12 @@ if not url:
     raise SystemExit(2)
 try:
     html = urllib.request.urlopen(url, timeout=20).read().decode('utf-8', 'ignore')
-    for src in sorted(set(re.findall(r'<script[^>]+src=[\"\\\']([^\"\\\']+)', html, re.I))):
+    for src in sorted(set(re.findall(r'<script[^>]+src=["\\\']([^"\\\']+)', html, re.I))):
         print(urllib.parse.urljoin(url, src))
 except Exception as exc:
     print(f'getJS error: {exc}', file=sys.stderr)
     raise SystemExit(1)
-""")
+''')
         return True
     return False
 
@@ -265,11 +243,10 @@ except Exception as exc:
 def install_apt(package: str, log_path: Path) -> tuple[bool, str]:
     if os.geteuid() == 0:
         ok, code = run_command(["apt-get", "install", "-y", package], log_path, timeout=1800)
-        return ok, f"apt exit={code}"
+        return ok, f"apt_exit={code}"
     sudo = shutil.which("sudo")
     if not sudo:
         return False, "sudo_missing"
-    # Ask once in the terminal when needed; after this, sudo -n should work without hanging.
     subprocess.call([sudo, "-v"])
     ok_update, _ = run_command([sudo, "-n", "apt-get", "update"], log_path, timeout=1800)
     ok_install, code = run_command([sudo, "-n", "apt-get", "install", "-y", package], log_path, timeout=1800)
@@ -296,7 +273,7 @@ def install_one(name: str, binary: str | None = None, *, yes: bool = True) -> di
     if method == "go":
         go = find_binary("go", "go") or shutil.which("go")
         if not go:
-            ok, code = install_apt("golang-go", log_path)
+            ok, _ = install_apt("golang-go", log_path)
             go = find_binary("go", "go") or shutil.which("go")
             details += f"bootstrap_go={ok}; "
         if go:
@@ -321,9 +298,9 @@ def install_one(name: str, binary: str | None = None, *, yes: bool = True) -> di
     elif method == "npm_alias":
         alias_to = str(recipe.get("alias_to") or package)
         ok = install_one(alias_to, alias_to, yes=yes).get("ok", False)
-        found = find_binary(alias_to, alias_to)
-        if found:
-            create_wrapper(name, f"#!/usr/bin/env bash\nexec {found} \"$@\"\n")
+        found_alias = find_binary(alias_to, alias_to)
+        if found_alias:
+            create_wrapper(name, f'#!/usr/bin/env bash\nexec "{found_alias}" "$@"\n')
             ok = True
         details = f"alias_to={alias_to}"
     elif method == "cargo":
@@ -380,7 +357,7 @@ def install_one(name: str, binary: str | None = None, *, yes: bool = True) -> di
             run_command(["git", "clone", "--depth", "1", repo, str(dest)], log_path, timeout=1800)
         script_path = dest / script
         if script_path.exists():
-            create_wrapper(binary, f"#!/usr/bin/env bash\nexec {sys.executable} {script_path} \"$@\"\n")
+            create_wrapper(binary, f'#!/usr/bin/env bash\nexec "{sys.executable}" "{script_path}" "$@"\n')
             ok = True
         else:
             details += "script_missing"
@@ -390,17 +367,15 @@ def install_one(name: str, binary: str | None = None, *, yes: bool = True) -> di
     else:
         details = f"unsupported_method={method}"
 
-    post = str(recipe.get("post") or "")
-    if post == "zap-wrapper":
+    if str(recipe.get("post") or "") == "zap-wrapper":
         for candidate in [Path("/usr/share/zaproxy/zap-baseline.py"), Path("/usr/bin/zap-baseline.py")]:
             if candidate.exists():
-                create_wrapper("zap-baseline.py", f"#!/usr/bin/env bash\nexec python3 {candidate} \"$@\"\n")
+                create_wrapper("zap-baseline.py", f'#!/usr/bin/env bash\nexec python3 "{candidate}" "$@"\n')
                 break
 
     found = find_binary(name, binary)
     if found:
         symlink_or_copy(found, name, binary)
-    # Final fallback for go tools: search the two most common Go output roots and repair link.
     if not found and method == "go":
         for root in [LOCAL_BIN, GO_BIN, Path.home() / "go" / "bin"]:
             if not root.exists():
@@ -412,6 +387,10 @@ def install_one(name: str, binary: str | None = None, *, yes: bool = True) -> di
                     break
             if found:
                 break
+
+    fallback = recipe.get("fallback_wrapper")
+    if not found and fallback and create_builtin_wrapper(str(fallback), name, binary):
+        found = find_binary(name, binary)
 
     status = "installed_or_repaired" if found else "install_attempted_binary_not_found" if ok else "install_failed"
     return {
