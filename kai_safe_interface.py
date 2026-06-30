@@ -114,6 +114,20 @@ def build_scan_env(session: dict) -> dict[str, str]:
     return env
 
 
+def run_top100_status(session: dict) -> None:
+    print("\n[+] Checking integrated Top 100 tool matrix")
+    cmd = ["python3", "top100_integrator_cli.py", "--target", session["target"], "--status"]
+    print("$ " + " ".join(cmd))
+    subprocess.call(cmd, env=build_scan_env(session))
+
+
+def run_top100_safe(session: dict) -> None:
+    print("\n[+] Running installed Top 100 safe runners for this target")
+    cmd = ["python3", "top100_integrator_cli.py", "--target", session["target"], "--run-safe", "--include-controlled"]
+    print("$ " + " ".join(cmd))
+    subprocess.call(cmd, env=build_scan_env(session))
+
+
 def run_domain_finding_brief(session: dict) -> None:
     print("\n[+] Generating short per-domain finding brief")
     brief_cmd = ["python3", "domain_finding_brief_cli.py", "--target", session["target"]]
@@ -141,11 +155,14 @@ def main() -> int:
     if doctor_code != 0:
         print("[!] Preflight returned a non-zero exit code. Continuing because helper tools are optional.")
 
+    run_top100_status(session)
+
     cmd = build_command(session)
     print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
     code = subprocess.call(cmd, env=build_scan_env(session))
 
+    run_top100_safe(session)
     run_domain_finding_brief(session)
 
     if code == 0:
@@ -158,6 +175,8 @@ def main() -> int:
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
     print(f"- reports/output/domain-reports/{domain_slug(session['target'])}-finding-brief.md")
+    print("- reports/output/top100-tools/top100-status.md")
+    print(f"- reports/output/top100-tools/{domain_slug(session['target'])}/top100-integration.md")
     print("- reports/output/kai-interface/direct-session.json")
     print("- reports/output/current-target-session.json")
     print("- reports/output/tool-doctor/tool-doctor.md")
