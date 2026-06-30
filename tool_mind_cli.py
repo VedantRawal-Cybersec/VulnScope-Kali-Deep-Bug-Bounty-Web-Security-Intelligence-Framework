@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from arsenal.catalog import load_tools
-from arsenal.installer import install_tool, is_installed
+from arsenal.installer import is_installed
 from mega_tools_cli import MEGA_TOOLS, as_tool
 from normalizers.evidence import normalize_all
 from tool_path_repair_cli import repair as repair_tool_paths
@@ -39,15 +38,6 @@ CATEGORY_TOOL_MAP = {
 }
 
 
-def run(cmd: list[str], timeout: int = 1200) -> dict[str, Any]:
-    started = time.time()
-    try:
-        p = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-        return {"command": cmd, "ok": p.returncode == 0, "exit_code": p.returncode, "seconds": round(time.time() - started, 2), "output_tail": p.stdout[-2500:]}
-    except Exception as exc:
-        return {"command": cmd, "ok": False, "error": str(exc), "seconds": round(time.time() - started, 2)}
-
-
 def mega_by_name() -> dict[str, dict[str, Any]]:
     return {str(item["name"]): item for item in MEGA_TOOLS}
 
@@ -59,19 +49,19 @@ def decide_tools(target: str | None = None, mode: str = "deep") -> dict[str, Any
     params = set(evidence.get("parameters", []))
     desired = set(BASE_TOOL_NAMES)
     reasoning = []
-    reasoning.append({"thought": "Start with core bug-bounty evidence tools.", "tools": sorted(BASE_TOOL_NAMES)})
+    reasoning.append({"thought": "Start with core safe evidence support tools.", "tools": sorted(BASE_TOOL_NAMES)})
     if not endpoints:
-        reasoning.append({"thought": "No endpoint evidence yet, so prioritize asset/URL discovery tools.", "tools": sorted(CATEGORY_TOOL_MAP["asset_discovery"] | CATEGORY_TOOL_MAP["url_discovery"])})
+        reasoning.append({"thought": "No endpoint evidence yet, so prioritize asset and URL discovery support tools.", "tools": sorted(CATEGORY_TOOL_MAP["asset_discovery"] | CATEGORY_TOOL_MAP["url_discovery"])})
         desired |= CATEGORY_TOOL_MAP["asset_discovery"] | CATEGORY_TOOL_MAP["url_discovery"]
     if len(endpoints) < 30:
-        reasoning.append({"thought": "Endpoint corpus is small, add crawlers and archive collectors.", "tools": sorted(CATEGORY_TOOL_MAP["url_discovery"])})
+        reasoning.append({"thought": "Endpoint corpus is small, add crawler/archive support tools as optional helpers.", "tools": sorted(CATEGORY_TOOL_MAP["url_discovery"])})
         desired |= CATEGORY_TOOL_MAP["url_discovery"]
     if params or any(tag in tags for tag in ["object_reference", "redirect_surface", "rendering_surface"]):
-        reasoning.append({"thought": "Parameters or parameter-like risk tags exist, add parameter mining and normalization tools.", "tools": sorted(CATEGORY_TOOL_MAP["parameters"])})
+        reasoning.append({"thought": "Parameters or parameter-like risk tags exist, add parameter-mining support tools.", "tools": sorted(CATEGORY_TOOL_MAP["parameters"])})
         desired |= CATEGORY_TOOL_MAP["parameters"]
     for tag, tools in SIGNAL_TOOL_MAP.items():
         if tag in tags:
-            reasoning.append({"thought": f"Observed `{tag}`, add specialist support tools.", "tools": sorted(tools)})
+            reasoning.append({"thought": f"Observed `{tag}`, add specialist support tools as optional helpers.", "tools": sorted(tools)})
             desired |= tools
     if mode in {"deep", "full", "crazy"}:
         for category in ["javascript", "api", "content", "secrets", "xss_review"]:
@@ -95,50 +85,51 @@ def tool_status(name: str) -> dict[str, Any]:
 
 def run_tool_mind(target: str | None = None, mode: str = "deep", install_needed: bool = False, yes: bool = False) -> dict[str, Any]:
     OUT.mkdir(parents=True, exist_ok=True)
+    started = time.time()
     plan = decide_tools(target, mode)
     repair_result = None
-    path_repair_result = None
     if install_needed:
-        repair_result = run(["python3", "daily_update_cli.py", "--profile", "bug-bounty-safe", "--force", "--yes"], timeout=1800)
+        repair_result = {
+            "skipped": True,
+            "reason": "autonomous_no_blocking_install_mode",
+            "detail": "Tool Mind now inventories desired tools and repairs PATH only. It does not install external tools during a live target scan.",
+        }
 
     rows = []
     for name in plan["desired_tools"]:
         status = tool_status(name)
-        installed_before = bool(status["installed"])
-        installed_after = installed_before
-        install_note = "already_installed" if installed_before else "not_installed"
-        if install_needed and not installed_before and status.get("supported") and status.get("tool") is not None:
-            installed_after = install_tool(status["tool"], yes=yes, allow_system=True)
-            install_note = "installed" if installed_after else "install_attempted_needs_path_or_manual_repair"
+        installed = bool(status["installed"])
+        if installed:
+            decision = "already_installed"
         elif not status.get("supported"):
-            install_note = "tracked_manual_or_unsupported"
-        rows.append({"name": name, "source": status["source"], "category": status.get("meta", {}).get("category"), "risk": status.get("meta", {}).get("risk"), "supported": status.get("supported"), "installed_before": installed_before, "installed_after": installed_after, "decision": install_note})
+            decision = "tracked_manual_or_unsupported"
+        else:
+            decision = "optional_missing_not_installed_during_live_scan"
+        rows.append({"name": name, "source": status["source"], "category": status.get("meta", {}).get("category"), "risk": status.get("meta", {}).get("risk"), "supported": status.get("supported"), "installed_before": installed, "installed_after": installed, "decision": decision})
 
-    if install_needed:
-        path_repair_result = repair_tool_paths(plan["desired_tools"])
-        fixed = {item["binary"]: item["ok"] for item in path_repair_result.get("tools", [])}
-        for row in rows:
-            if fixed.get(row["name"]):
-                row["installed_after"] = True
-                if row["decision"].startswith("install_attempted"):
-                    row["decision"] = "installed_after_path_repair"
+    path_repair_result = repair_tool_paths(plan["desired_tools"])
+    fixed = {item["binary"]: item["ok"] for item in path_repair_result.get("tools", [])}
+    for row in rows:
+        if fixed.get(row["name"]):
+            row["installed_after"] = True
+            if row["decision"].startswith("optional_missing"):
+                row["decision"] = "found_after_path_repair"
 
-    payload = {**plan, "repair_result": repair_result, "path_repair_result": path_repair_result, "tools": rows, "summary": {"desired": len(rows), "installed": len([r for r in rows if r["installed_after"]]), "missing": len([r for r in rows if not r["installed_after"]]), "manual": len([r for r in rows if r["decision"] == "tracked_manual_or_unsupported"])}}
+    payload = {**plan, "repair_result": repair_result, "path_repair_result": path_repair_result, "tools": rows, "summary": {"desired": len(rows), "installed": len([r for r in rows if r["installed_after"]]), "missing": len([r for r in rows if not r["installed_after"]]), "manual": len([r for r in rows if r["decision"] == "tracked_manual_or_unsupported"]), "seconds": round(time.time() - started, 2)}}
     (OUT / "tool-mind.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Tool Mind", "", f"Target: `{target or 'not supplied'}`", f"Mode: `{mode}`", f"Desired tools: `{payload['summary']['desired']}`", f"Installed: `{payload['summary']['installed']}`", f"Missing: `{payload['summary']['missing']}`", "", "## Reasoning"]
+    lines = ["# VulnScope Tool Mind", "", f"Target: `{target or 'not supplied'}`", f"Mode: `{mode}`", "Live install mode: `disabled to prevent scan blocking`", f"Desired tools: `{payload['summary']['desired']}`", f"Installed: `{payload['summary']['installed']}`", f"Missing optional: `{payload['summary']['missing']}`", "", "## Reasoning"]
     for item in plan["reasoning"]:
         lines.append(f"- {item['thought']} tools=`{', '.join(item['tools'])}`")
     lines += ["", "## Tool Decisions"]
     for row in rows:
         lines.append(f"- `{row['name']}` installed=`{row['installed_after']}` decision=`{row['decision']}` source=`{row['source']}`")
-    if path_repair_result:
-        lines += ["", "## Path Repair", f"- Repaired/found: `{path_repair_result['summary']['repaired_or_found']}`", f"- Missing: `{path_repair_result['summary']['missing']}`", "- PATH report: `reports/output/tool-path-repair/tool-path-repair.md`"]
+    lines += ["", "## Path Repair", f"- Repaired/found: `{path_repair_result['summary']['repaired_or_found']}`", f"- Missing: `{path_repair_result['summary']['missing']}`", "- PATH report: `reports/output/tool-path-repair/tool-path-repair.md`"]
     (OUT / "tool-mind.md").write_text("\n".join(lines), encoding="utf-8")
     return payload
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VulnScope autonomous tool mind: decide, install, and repair needed tools")
+    parser = argparse.ArgumentParser(description="VulnScope autonomous tool mind: decide and inventory support tools without blocking live scans")
     parser.add_argument("--target")
     parser.add_argument("--mode", default="deep", choices=["base", "deep", "full", "crazy"])
     parser.add_argument("--install-needed", action="store_true")
