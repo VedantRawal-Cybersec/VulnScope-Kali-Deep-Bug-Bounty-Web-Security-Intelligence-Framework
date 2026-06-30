@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from dependency_manager import run_preflight_repair
+from target_scope_guard import reset_target_report_state
 
 OUT = Path("reports/output/kai-interface")
 
@@ -97,8 +99,25 @@ def build_command(session: dict) -> list[str]:
     return cmd
 
 
+def build_scan_env(session: dict) -> dict[str, str]:
+    env = dict(os.environ)
+    env["VULNSCOPE_TARGET"] = str(session["target"])
+    env["VULNSCOPE_TARGET_HOST"] = str(session["host"])
+    env["VULNSCOPE_INCLUDE_SUBDOMAINS"] = "1" if session.get("include_subdomains") else "0"
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
 def main() -> int:
     session = ask_target_and_consent()
+
+    print("\n[+] Enforcing target isolation for this run")
+    isolation = reset_target_report_state(session)
+    session["target_isolation"] = isolation
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "direct-session.json").write_text(json.dumps(session, indent=2), encoding="utf-8")
+    print(f"[+] Scope locked to: {session['target']} ({session['host']})")
+    print(f"[+] Removed stale previous outputs: {len(isolation.get('removed_previous_outputs', []))}")
 
     print("\n[+] Running visible preflight helper-tool check")
     doctor_code = run_preflight_repair(repair=True)
@@ -108,7 +127,7 @@ def main() -> int:
     cmd = build_command(session)
     print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
-    code = subprocess.call(cmd)
+    code = subprocess.call(cmd, env=build_scan_env(session))
     if code == 0:
         print("\n[+] Scan finished successfully. Open these reports:")
     else:
@@ -119,6 +138,7 @@ def main() -> int:
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
     print("- reports/output/kai-interface/direct-session.json")
+    print("- reports/output/current-target-session.json")
     print("- reports/output/tool-doctor/tool-doctor.md")
     print("- reports/output/tool-doctor/tool-doctor-install.log")
     return code
