@@ -235,10 +235,10 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
         result.update({"tool": name, "output_file": str(output_file), "status": "ran" if result.get("ok") else "review"})
         results.append(result)
 
-    canary_command = "python3 safe_canary_cli.py --target {target} --canary CANARY_123 --max-urls 120 --per-url-limit 3 --delay 0.35".format(target=shlex.quote(target))
-    canary_result = run_live("safe-canary", canary_command, log_dir / "safe-canary.log", timeout=1200)
-    canary_result.update({"tool": "safe-canary", "output_file": "reports/output/safe-canary/safe-canary.json", "status": "ran" if canary_result.get("ok") else "review"})
-    results.append(canary_result)
+    probe_command = "python3 safe_param_orchestrator_cli.py --target {target} --max-urls 120 --per-url-limit 4 --families 9 --delay 0.35".format(target=shlex.quote(target))
+    probe_result = run_live("adaptive-safe-parameters", probe_command, log_dir / "adaptive-safe-parameters.log", timeout=1800)
+    probe_result.update({"tool": "adaptive-safe-parameters", "output_file": "reports/output/safe-canary/safe-probes.json", "status": "ran" if probe_result.get("ok") else "review"})
+    results.append(probe_result)
 
     summary = {
         "target": target,
@@ -248,12 +248,12 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
         "missing": len([r for r in results if r.get("status") == "missing"]),
         "skipped_controlled": len([r for r in results if r.get("status") == "skipped_controlled"]),
     }
-    payload = {"summary": summary, "results": results, "inventory_report": "reports/output/top100-tools/top100-status.md", "safe_canary_report": "reports/output/safe-canary/safe-canary.md"}
+    payload = {"summary": summary, "results": results, "inventory_report": "reports/output/top100-tools/top100-status.md", "safe_parameter_report": "reports/output/safe-canary/safe-probes.md"}
     (run_dir / "top100-integration.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     lines = [f"# Top 100 Tool Run — {host}", "", f"Target: `{target}`", f"Ran: `{summary['ran']}`", f"Missing: `{summary['missing']}`", f"Skipped controlled: `{summary['skipped_controlled']}`", "", "## Results"]
     for r in results:
         lines.append(f"- `{r.get('tool')}` status=`{r.get('status')}` output=`{r.get('output_file', 'n/a')}` log=`{r.get('log', 'n/a')}`")
-    lines += ["", "## Safe Canary", "- Report: `reports/output/safe-canary/safe-canary.md`"]
+    lines += ["", "## Adaptive Safe Parameters", "- Report: `reports/output/safe-canary/safe-probes.md`"]
     (run_dir / "top100-integration.md").write_text("\n".join(lines), encoding="utf-8")
     return payload
 
@@ -306,7 +306,7 @@ def main() -> int:
             "status": "reports/output/top100-tools/top100-status.md",
             "install": "reports/output/top100-tools/top100-install.json",
             "run_dir": f"reports/output/top100-tools/{slug(host_from_target(args.target))}" if args.target else "n/a",
-            "safe_canary": "reports/output/safe-canary/safe-canary.md",
+            "safe_parameters": "reports/output/safe-canary/safe-probes.md",
         },
     }, indent=2))
     return 0
