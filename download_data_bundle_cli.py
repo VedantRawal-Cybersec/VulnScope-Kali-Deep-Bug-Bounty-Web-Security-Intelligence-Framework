@@ -32,6 +32,9 @@ REPORT_PATHS = [
     "reports/output/vulnscope-main/final-summary.md",
     "reports/output/top100-tools/top100-status.md",
     "reports/output/top100-tools/top100-status.json",
+    "reports/output/top100-tools/top100-install.json",
+    "reports/output/top100-tools/top100-methodology.md",
+    "reports/output/top100-tools/top100-methodology.json",
 ]
 
 
