@@ -13,7 +13,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
     "1": {
         "name": "Website Snapshot",
         "profile": "snapshot",
-        "purpose": "Fast website overview, scope check, headers, harmless CANARY_123 parameter review, basic evidence, final brief.",
+        "purpose": "Fast website overview, scope check, headers, adaptive safe parameter review, basic evidence, final brief.",
         "max_cycles": 2,
         "max_workers": 4,
         "run_main_scan": True,
@@ -24,7 +24,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
     "2": {
         "name": "Website Intelligence",
         "profile": "standard",
-        "purpose": "Balanced scan with evidence correlation, reportability, Top100 status, safe canary review, and data bundle.",
+        "purpose": "Balanced scan with evidence correlation, reportability, Top100 status, adaptive safe parameter families, and data bundle.",
         "max_cycles": 5,
         "max_workers": 6,
         "run_main_scan": True,
@@ -35,7 +35,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
     "3": {
         "name": "Deep Website Evidence",
         "profile": "deep",
-        "purpose": "Full authorized website review with autonomous modules, installed Top100 safe runners, and CANARY_123 parameter review.",
+        "purpose": "Full authorized website review with autonomous modules, installed Top100 safe runners, and adaptive safe parameter family review.",
         "max_cycles": 8,
         "max_workers": 8,
         "run_main_scan": True,
@@ -57,7 +57,7 @@ DASHBOARDS: dict[str, dict[str, Any]] = {
     "5": {
         "name": "Top100 Tool Dashboard",
         "profile": "top100_only",
-        "purpose": "Check integrated Top100 tools and run installed safe runners plus harmless CANARY_123 parameter review only for the target.",
+        "purpose": "Check integrated Top100 tools and run installed safe runners plus adaptive safe parameter families only for the target.",
         "max_cycles": 0,
         "max_workers": 2,
         "run_main_scan": False,
@@ -118,7 +118,7 @@ def choose_dashboard(session: dict[str, Any]) -> dict[str, Any]:
         "",
         "## What will run",
         f"- Main autonomous scan: `{selected['run_main_scan']}`",
-        f"- Top100 safe runners and CANARY_123 review: `{selected['run_top100_safe']}`",
+        f"- Top100 safe runners and adaptive safe parameter review: `{selected['run_top100_safe']}`",
         f"- Controlled safe Top100 tools: `{selected['include_controlled_top100']}`",
         f"- Max cycles: `{selected['max_cycles']}`",
         f"- Max workers: `{selected['max_workers']}`",
