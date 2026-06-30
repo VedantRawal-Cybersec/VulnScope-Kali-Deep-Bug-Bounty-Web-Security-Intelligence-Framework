@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -36,6 +37,11 @@ def host_from_target(target: str) -> str:
     if not host:
         raise ValueError("Invalid target")
     return host.lower()
+
+
+def domain_slug(target: str) -> str:
+    host = host_from_target(target)
+    return re.sub(r"[^a-z0-9.-]+", "-", host.lower()).strip("-.") or "target"
 
 
 def ask_yes_no(prompt: str, default: bool = False) -> bool:
@@ -108,6 +114,17 @@ def build_scan_env(session: dict) -> dict[str, str]:
     return env
 
 
+def run_domain_finding_brief(session: dict) -> None:
+    print("\n[+] Generating short per-domain finding brief")
+    brief_cmd = ["python3", "domain_finding_brief_cli.py", "--target", session["target"]]
+    print("$ " + " ".join(brief_cmd))
+    brief_code = subprocess.call(brief_cmd, env=build_scan_env(session))
+    slug = domain_slug(session["target"])
+    print(f"[+] Finding brief exit code: {brief_code}")
+    print(f"[+] Markdown: reports/output/domain-reports/{slug}-finding-brief.md")
+    print(f"[+] JSON: reports/output/domain-reports/{slug}-finding-brief.json")
+
+
 def main() -> int:
     session = ask_target_and_consent()
 
@@ -128,6 +145,9 @@ def main() -> int:
     print("\n[+] Starting crazy live autonomous scan now")
     print("$ " + " ".join(cmd))
     code = subprocess.call(cmd, env=build_scan_env(session))
+
+    run_domain_finding_brief(session)
+
     if code == 0:
         print("\n[+] Scan finished successfully. Open these reports:")
     else:
@@ -137,6 +157,7 @@ def main() -> int:
     print("- reports/output/vulnscope-main/final-summary.md")
     print("- reports/output/mission-verdicts/mission-verdicts.md")
     print("- reports/output/report-v2/executive-report-v2.md")
+    print(f"- reports/output/domain-reports/{domain_slug(session['target'])}-finding-brief.md")
     print("- reports/output/kai-interface/direct-session.json")
     print("- reports/output/current-target-session.json")
     print("- reports/output/tool-doctor/tool-doctor.md")
