@@ -18,29 +18,22 @@ from tool_doctor_cli import TOP_TOOLS
 
 try:
     from mega_tools_cli import MEGA_TOOLS
-except Exception:  # pragma: no cover
+except Exception:
     MEGA_TOOLS = []
 
 try:
-    from universal_tool_installer import (
-        find_binary,
-        has_recipe,
-        install_missing_from_inventory,
-        install_one,
-        install_env,
-        method_for,
-        recipe_for,
-    )
-except Exception:  # pragma: no cover
-    find_binary = None
-    has_recipe = None
-    install_missing_from_inventory = None
-    install_one = None
-    install_env = None
-    method_for = None
-    recipe_for = None
+    from safe_tool_adapter import is_adapter
+    from universal_tool_installer import find_binary, install_env, install_missing_from_inventory, method_for, recipe_for
+except Exception:
+    is_adapter = lambda path: False  # type: ignore
+    find_binary = None  # type: ignore
+    install_env = None  # type: ignore
+    install_missing_from_inventory = None  # type: ignore
+    method_for = None  # type: ignore
+    recipe_for = None  # type: ignore
 
 OUT = Path("reports/output/top100-tools")
+TOOL_LIMIT = int(os.getenv("VULNSCOPE_TOOL_LIMIT", "102"))
 
 SAFE_RUNNERS = {
     "subfinder": "subfinder -d {host} -silent -o {out}",
@@ -60,10 +53,7 @@ CONTROLLED_SAFE = {"httpx", "katana", "dnsx", "tlsx", "wafw00f", "whatweb", "nuc
 
 
 def env() -> dict[str, str]:
-    if install_env:
-        e = install_env()
-    else:
-        e = dict(os.environ)
+    e = install_env() if install_env else dict(os.environ)
     e["PYTHONUNBUFFERED"] = "1"
     return e
 
@@ -73,9 +63,10 @@ def slug(text: str) -> str:
 
 
 def tool_path(name: str, binary: str | None = None) -> str | None:
-    if find_binary:
-        return find_binary(name, binary or name)
-    return None
+    try:
+        return find_binary(name, binary or name) if find_binary else None
+    except Exception:
+        return None
 
 
 def mega_map() -> dict[str, dict[str, Any]]:
@@ -84,9 +75,9 @@ def mega_map() -> dict[str, dict[str, Any]]:
 
 def infer_category(name: str) -> str:
     low = name.lower()
-    if any(x in low for x in ["sub", "asset", "amass", "asn", "chaos"]):
+    if any(x in low for x in ["sub", "asset", "amass", "asn"]):
         return "asset_discovery"
-    if any(x in low for x in ["gau", "wayback", "katana", "hakrawler", "gospider"]):
+    if any(x in low for x in ["gau", "wayback", "katana", "crawler", "spider"]):
         return "url_and_crawl"
     if any(x in low for x in ["dns", "host", "dig", "nslookup"]):
         return "dns_review"
@@ -94,8 +85,6 @@ def infer_category(name: str) -> str:
         return "tls_review"
     if any(x in low for x in ["js", "link", "secret", "gitleaks", "truffle", "mantra"]):
         return "client_side_review"
-    if any(x in low for x in ["cors", "waf", "whatweb", "builtwith"]):
-        return "web_fingerprint"
     if any(x in low for x in ["audit", "trivy", "grype", "syft", "safety", "checkov", "semgrep", "snyk"]):
         return "local_dependency_review"
     return "support_tool"
@@ -103,8 +92,7 @@ def infer_category(name: str) -> str:
 
 def infer_profile(name: str) -> str:
     low = name.lower()
-    disabled_words = ["ffuf", "gobuster", "ferox", "dirsearch", "dalfox", "nikto", "wapiti", "zap", "nmap", "naabu"]
-    if any(x in low for x in disabled_words):
+    if any(x in low for x in ["ffuf", "gobuster", "ferox", "dirsearch", "dalfox", "nikto", "wapiti", "zap", "nmap", "naabu"]):
         return "manual_disabled"
     if name in SAFE_RUNNERS:
         return "safe_runner"
@@ -116,13 +104,14 @@ def infer_profile(name: str) -> str:
 def build_inventory() -> list[dict[str, Any]]:
     mega = mega_map()
     rows: list[dict[str, Any]] = []
-    for index, name in enumerate(TOP_TOOLS[:100], 1):
+    tools = TOP_TOOLS[: max(1, min(TOOL_LIMIT, len(TOP_TOOLS)))]
+    for index, name in enumerate(tools, 1):
         meta = mega.get(name, {})
         binary = str(meta.get("binary") or name)
         path = tool_path(name, binary)
         recipe = recipe_for(name, binary) if recipe_for else None
-        auto_supported = bool(recipe or (meta and meta.get("type") in {"go", "pipx_or_pip"}))
         method = method_for(name, binary) if method_for else str(meta.get("type") or "manual")
+        adapter = bool(is_adapter(path)) if path else False
         rows.append({
             "index": index,
             "name": name,
@@ -131,7 +120,9 @@ def build_inventory() -> list[dict[str, Any]]:
             "profile": infer_profile(name),
             "installed": path is not None,
             "path": path,
-            "auto_install_supported": auto_supported,
+            "adapter": adapter,
+            "real_tool": bool(path and not adapter),
+            "auto_install_supported": True if recipe or method == "safe-adapter" else bool(meta and meta.get("type") in {"go", "pipx_or_pip"}),
             "install_method": method,
             "safe_runner_available": name in SAFE_RUNNERS,
             "note": "manual-disabled in autonomous mode" if infer_profile(name) == "manual_disabled" else "integrated",
@@ -149,6 +140,8 @@ def write_status(target: str | None = None) -> dict[str, Any]:
             "total_integrated": len(rows),
             "installed": len([r for r in rows if r["installed"]]),
             "missing": len([r for r in rows if not r["installed"]]),
+            "real_tools": len([r for r in rows if r.get("real_tool")]),
+            "safe_adapters": len([r for r in rows if r.get("adapter")]),
             "safe_runners": len([r for r in rows if r["safe_runner_available"]]),
             "auto_install_supported": len([r for r in rows if r["auto_install_supported"]]),
             "auto_installable_missing": len([r for r in rows if not r["installed"] and r["auto_install_supported"]]),
@@ -157,21 +150,21 @@ def write_status(target: str | None = None) -> dict[str, Any]:
     }
     (OUT / "top100-status.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     lines = [
-        "# VulnScope Top 100 Tool Integration",
+        "# VulnScope Top102 Tool Integration",
         "",
         f"Integrated tools: `{payload['summary']['total_integrated']}`",
-        f"Installed now: `{payload['summary']['installed']}`",
-        f"Missing now: `{payload['summary']['missing']}`",
+        f"Installed / operational: `{payload['summary']['installed']}`",
+        f"Missing: `{payload['summary']['missing']}`",
+        f"Real native tools: `{payload['summary']['real_tools']}`",
+        f"Safe adapters: `{payload['summary']['safe_adapters']}`",
         f"Safe runners wired: `{payload['summary']['safe_runners']}`",
-        f"Auto-install supported: `{payload['summary']['auto_install_supported']}`",
-        f"Auto-installable missing: `{payload['summary']['auto_installable_missing']}`",
         "",
         "## Tool Matrix",
     ]
     for row in rows:
         lines.append(
             f"- `{row['index']:03d}` `{row['name']}` binary=`{row['binary']}` method=`{row['install_method']}` "
-            f"category=`{row['category']}` profile=`{row['profile']}` installed=`{row['installed']}` "
+            f"profile=`{row['profile']}` installed=`{row['installed']}` real=`{row['real_tool']}` adapter=`{row['adapter']}` "
             f"runner=`{row['safe_runner_available']}` path=`{row.get('path') or '-'}`"
         )
     (OUT / "top100-status.md").write_text("\n".join(lines), encoding="utf-8")
@@ -193,7 +186,7 @@ def run_live(label: str, command: str, log_path: Path, timeout: int = 180) -> di
     started = time.time()
     q: "queue.Queue[str]" = queue.Queue()
     output: list[str] = []
-    print(f"[top100] running {label}: {command}", flush=True)
+    print(f"[top102] running {label}: {command}", flush=True)
     try:
         proc = subprocess.Popen(["bash", "-lc", command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, env=env())
     except Exception as exc:
@@ -216,7 +209,7 @@ def run_live(label: str, command: str, log_path: Path, timeout: int = 180) -> di
                 log.flush()
             elapsed = int(time.time() - started)
             if time.time() - last >= 5:
-                print(f"[top100-working] {label} elapsed={elapsed}s log={log_path}", flush=True)
+                print(f"[top102-working] {label} elapsed={elapsed}s log={log_path}", flush=True)
                 last = time.time()
             if elapsed > timeout:
                 proc.terminate()
@@ -248,19 +241,17 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
             results.append({"tool": name, "status": "skipped_controlled", "reason": "run again with --include-controlled"})
             continue
         if not tool_path(name, binary):
-            results.append({"tool": name, "status": "missing", "reason": "binary not installed"})
+            results.append({"tool": name, "status": "missing", "reason": "binary not operational"})
             continue
         output_file = out_dir / f"{slug(name)}.txt"
         command = SAFE_RUNNERS[name].format(target=shlex.quote(target), host=shlex.quote(host), out=shlex.quote(str(output_file)))
         result = run_live(name, command, log_dir / f"{slug(name)}.log", timeout=240)
         result.update({"tool": name, "output_file": str(output_file), "status": "ran" if result.get("ok") else "review"})
         results.append(result)
-
     probe_command = "python3 safe_param_orchestrator_cli.py --target {target} --max-urls 120 --per-url-limit 4 --families 9 --delay 0.35".format(target=shlex.quote(target))
     probe_result = run_live("adaptive-safe-parameters", probe_command, log_dir / "adaptive-safe-parameters.log", timeout=1800)
     probe_result.update({"tool": "adaptive-safe-parameters", "output_file": "reports/output/safe-canary/safe-probes.json", "status": "ran" if probe_result.get("ok") else "review"})
     results.append(probe_result)
-
     summary = {
         "target": target,
         "host": host,
@@ -271,7 +262,7 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
     }
     payload = {"summary": summary, "results": results, "inventory_report": "reports/output/top100-tools/top100-status.md", "safe_parameter_report": "reports/output/safe-canary/safe-probes.md"}
     (run_dir / "top100-integration.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = [f"# Top 100 Tool Run — {host}", "", f"Target: `{target}`", f"Ran: `{summary['ran']}`", f"Missing: `{summary['missing']}`", f"Skipped controlled: `{summary['skipped_controlled']}`", "", "## Results"]
+    lines = [f"# Top102 Tool Run — {host}", "", f"Target: `{target}`", f"Ran: `{summary['ran']}`", f"Missing: `{summary['missing']}`", f"Skipped controlled: `{summary['skipped_controlled']}`", "", "## Results"]
     for r in results:
         lines.append(f"- `{r.get('tool')}` status=`{r.get('status')}` output=`{r.get('output_file', 'n/a')}` log=`{r.get('log', 'n/a')}`")
     lines += ["", "## Adaptive Safe Parameters", "- Report: `reports/output/safe-canary/safe-probes.md`"]
@@ -279,7 +270,7 @@ def run_safe_tools(target: str, include_controlled: bool = False) -> dict[str, A
     return payload
 
 
-def install_supported(max_install: int = 100, yes: bool = False) -> dict[str, Any]:
+def install_supported(max_install: int = 102, yes: bool = False) -> dict[str, Any]:
     rows = build_inventory()
     if install_missing_from_inventory:
         payload = install_missing_from_inventory(rows, max_install=max_install, yes=yes)
@@ -296,16 +287,15 @@ def install_supported(max_install: int = 100, yes: bool = False) -> dict[str, An
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Top 100 VulnScope tool integrator: status, universal setup, safe execution wiring")
+    parser = argparse.ArgumentParser(description="Top102 VulnScope tool integrator: status, setup, safe execution wiring")
     parser.add_argument("--target")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--install-supported", action="store_true")
-    parser.add_argument("--max-install", type=int, default=100)
+    parser.add_argument("--max-install", type=int, default=102)
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--run-safe", action="store_true")
     parser.add_argument("--include-controlled", action="store_true")
     args = parser.parse_args()
-
     status = write_status(args.target)
     install = install_supported(max_install=args.max_install, yes=args.yes) if args.install_supported else None
     run = run_safe_tools(args.target, include_controlled=args.include_controlled) if args.run_safe and args.target else None
