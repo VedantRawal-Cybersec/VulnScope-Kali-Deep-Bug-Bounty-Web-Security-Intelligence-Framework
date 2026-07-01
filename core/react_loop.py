@@ -95,7 +95,7 @@ def _confirmation_status(observation: dict[str, Any]) -> str:
     blob = json.dumps(observation, ensure_ascii=False, default=str).lower()
     if "unconfirmed" in blob or "not_confirmed" in blob:
         return "review_lead"
-    if '"confirmed"' in blob or "confirmed": true" in blob or "status=confirmed" in blob:
+    if '"confirmed"' in blob or 'confirmed": true' in blob or "status=confirmed" in blob:
         return "confirmed"
     return "review_lead"
 
