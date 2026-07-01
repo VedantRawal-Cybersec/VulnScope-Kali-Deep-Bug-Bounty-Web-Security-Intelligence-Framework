@@ -15,19 +15,16 @@ from urllib.parse import urlparse
 
 
 RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
 CYAN = "\033[36m"
 BLUE = "\033[34m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 MAGENTA = "\033[35m"
 RED = "\033[31m"
-GRAY = "\033[90m"
+WHITE = "\033[37m"
 
-SECRET_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|authorization|cookie)=([^\s&]+)"),
-    re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]{12,}"),
+SENSITIVE_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|token|secret)=([^\s&]+)"),
 ]
 
 
@@ -62,14 +59,17 @@ def _clean(value: Any, limit: int = 120) -> str:
     text = str(value if value is not None else "—")
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     text = re.sub(r"\s+", " ", text).strip() or "—"
-    for pattern in SECRET_PATTERNS:
-        def repl(match: re.Match[str]) -> str:
-            if match.lastindex and match.lastindex >= 2:
-                return f"{match.group(1)}=<redacted>"
-            if match.lastindex and match.lastindex >= 1:
-                return f"{match.group(1)}<redacted>"
-            return "<redacted>"
-        text = pattern.sub(repl, text)
+    for pattern in SENSITIVE_PATTERNS:
+        text = pattern.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    if len(text) > limit:
+        return text[: max(0, limit - 1)] + "…"
+    return text
+
+
+def _clean_multiline(value: Any, limit: int = 1200) -> str:
+    text = str(value if value is not None else "—").replace("\r", "")
+    lines = [_clean(line, 220) for line in text.splitlines()]
+    text = "\n".join(lines).strip() or "—"
     if len(text) > limit:
         return text[: max(0, limit - 1)] + "…"
     return text
@@ -114,6 +114,7 @@ class LiveDashboard:
         self.refresh_interval = max(float(refresh_interval), 0.2)
         self.lock = threading.Lock()
         self.events: list[str] = []
+        self.finding_details: list[dict[str, Any]] = []
         self.max_events = 10
         self.running = False
         self.thread: threading.Thread | None = None
@@ -140,7 +141,7 @@ class LiveDashboard:
         if self.thread:
             self.thread.join(timeout=1)
         if final:
-            self.draw(final=True)
+            self.show_final()
 
     def update(self, **kwargs: Any) -> None:
         with self.lock:
@@ -164,6 +165,56 @@ class LiveDashboard:
             self.snapshot.latest_status = level.lower()
         if self.enabled and not self.interactive:
             print(_strip_ansi(rendered), flush=True)
+
+    def add_finding(
+        self,
+        finding_type: str,
+        description: str,
+        severity: str = "INFO",
+        *,
+        url: str = "",
+        parameter: str = "",
+        test_string: str = "",
+        evidence: str = "",
+        cvss: str = "N/A",
+        confidence: str = "N/A",
+        reproduction: str = "",
+        confirmation: str = "review_lead",
+    ) -> dict[str, Any]:
+        """Store a detailed final-dashboard result.
+
+        Use confirmation='confirmed' only when the evidence engine has enough
+        zero-impact evidence. Otherwise keep the default review_lead status.
+        """
+        severity = _clean(severity or "INFO", 30).upper()
+        confirmation = _clean(confirmation or "review_lead", 40).lower()
+        with self.lock:
+            snap = LiveSnapshot(**asdict(self.snapshot))
+            finding = {
+                "type": _clean(finding_type or "Security Review Lead", 120),
+                "severity": severity,
+                "description": _clean(description or "Evidence requires analyst review.", 400),
+                "url": _clean(url or snap.endpoint, 240),
+                "domain": _clean(snap.domain, 120),
+                "path": _clean(snap.path, 180),
+                "parameter": _clean(parameter or snap.parameters, 220),
+                "test_string": _clean(test_string or snap.probe_string, 220),
+                "evidence": _clean(evidence or snap.evidence, 800),
+                "cvss": _clean(cvss, 80),
+                "confidence": _clean(confidence, 80),
+                "reproduction": _clean_multiline(reproduction or "Review the generated evidence artifacts and validate only inside the authorized scope."),
+                "confirmation": confirmation,
+                "recorded_at": time.time(),
+            }
+            self.finding_details.append(finding)
+            self.snapshot.findings = len(self.finding_details)
+            self.events.append(f"🔥 [{severity}] {finding['type']}: {finding['description']}")
+            self.events = self.events[-self.max_events :]
+        return finding
+
+    def finding_count(self) -> int:
+        with self.lock:
+            return len(self.finding_details)
 
     def set_target_detail(self, target: str, *, probe_string: str = "—") -> None:
         parts = target_components(target)
@@ -234,19 +285,98 @@ class LiveDashboard:
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
 
+    def final_text(self, *, color: bool = True) -> str:
+        with self.lock:
+            snap = LiveSnapshot(**asdict(self.snapshot))
+            findings = [dict(item) for item in self.finding_details]
+            events = list(self.events)
+        c = (lambda value: value) if color else (lambda value: "")
+        confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
+        lines = [
+            "=" * 80,
+            f"{c(CYAN)}╔{'═' * 78}╗{c(RESET)}",
+            f"{c(CYAN)}║{c(RESET)} {c(MAGENTA)}FINAL ASSESSMENT DASHBOARD — DETAILED RESULTS{' ' * 30}{c(CYAN)}║{c(RESET)}",
+            f"{c(CYAN)}╚{'═' * 78}╝{c(RESET)}",
+            f"{c(CYAN)}Target:{c(RESET)} {snap.target}",
+            f"{c(CYAN)}Total Time:{c(RESET)} {self._elapsed()}",
+            f"{c(CYAN)}Total Findings / Leads:{c(RESET)} {c(GREEN if findings else YELLOW)}{len(findings)}{c(RESET)}",
+            f"{c(CYAN)}Confirmed Findings:{c(RESET)} {c(GREEN if confirmed else YELLOW)}{len(confirmed)}{c(RESET)}",
+            f"{c(CYAN)}Total Requests / Actions:{c(RESET)} {c(WHITE)}{snap.requests}{c(RESET)}",
+            "─" * 80,
+        ]
+        if not findings:
+            lines.append(f"{c(YELLOW)}No vulnerabilities were confirmed. No reportable evidence leads were captured within the tested safe vectors.{c(RESET)}")
+        else:
+            lines.append(f"{c(GREEN)}DETAILED FINDINGS / CONFIRMED AND REVIEW-READY RESULTS{c(RESET)}")
+            lines.append("─" * 80)
+            for idx, finding in enumerate(findings, 1):
+                severity = finding.get("severity", "INFO")
+                status = finding.get("confirmation", "review_lead").replace("_", " ").upper()
+                severity_color = RED if severity in {"CRITICAL", "HIGH"} else YELLOW if severity in {"MEDIUM", "LOW"} else GREEN
+                lines += [
+                    "",
+                    f"{c(severity_color)}═══ FINDING #{idx} — {status} ═══{c(RESET)}",
+                    f"{c(YELLOW)}WHAT:{c(RESET)} {finding.get('type')} ({severity})",
+                    f"{c(YELLOW)}WHY:{c(RESET)} {finding.get('description')}",
+                    f"{c(YELLOW)}WHERE:{c(RESET)} URL: {finding.get('url')}",
+                    f"       Domain: {finding.get('domain')}",
+                    f"       Path: {finding.get('path')}",
+                    f"       Parameter: {finding.get('parameter')}",
+                    f"       String under test: {finding.get('test_string')}",
+                    f"{c(YELLOW)}TESTED EVIDENCE:{c(RESET)}",
+                    f"       Evidence snippet: {finding.get('evidence')}",
+                    f"       CVSS Score: {finding.get('cvss')}",
+                    f"       Confidence: {finding.get('confidence')}",
+                    f"       Confirmation status: {status}",
+                    f"{c(YELLOW)}REPRODUCTION / VALIDATION STEPS:{c(RESET)}",
+                ]
+                for line in str(finding.get("reproduction") or "See evidence above.").splitlines():
+                    lines.append(f"       {line}")
+                lines.append("─" * 80)
+        lines.append("\n--- Final Activity Log ---")
+        for entry in events[-self.max_events :]:
+            lines.append(entry)
+        lines += [
+            "=" * 80,
+            f"{c(GREEN)}✅ Reports saved under: reports/output/cai-superior/<target>/{c(RESET)}",
+            f"{c(CYAN)}📊 Detailed dashboard displayed above.{c(RESET)}",
+        ]
+        text = "\n".join(lines)
+        return text if color else _strip_ansi(text)
+
+    def show_final(self) -> None:
+        print(self.final_text(color=self.interactive), flush=True)
+
     def draw(self, *, final: bool = False) -> None:
         if not self.enabled:
             return
         if self.interactive:
             sys.stdout.write("\033[2J\033[H")
-        print(self.render_text(final=final, color=self.interactive), flush=True)
+        print((self.final_text if final else self.render_text)(final=final, color=self.interactive) if not final else self.final_text(color=self.interactive), flush=True)
 
     def write_reports(self, out: Path) -> dict[str, str]:
         out.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            payload = {"snapshot": asdict(self.snapshot), "events": list(self.events), "generated_at": time.time()}
-        json_path = out / "live-dashboard.json"
-        md_path = out / "live-dashboard.md"
-        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        md_path.write_text("# VulnScope Live Dashboard\n\n```text\n" + self.render_text(final=True, color=False) + "\n```\n", encoding="utf-8")
-        return {"live_dashboard_json": str(json_path), "live_dashboard_md": str(md_path)}
+            payload = {
+                "snapshot": asdict(self.snapshot),
+                "events": list(self.events),
+                "findings": [dict(item) for item in self.finding_details],
+                "generated_at": time.time(),
+            }
+        live_json_path = out / "live-dashboard.json"
+        live_md_path = out / "live-dashboard.md"
+        final_json_path = out / "final-assessment.json"
+        final_md_path = out / "final-assessment.md"
+        findings_json_path = out / "detailed-findings.json"
+        live_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        live_md_path.write_text("# VulnScope Live Dashboard\n\n```text\n" + self.render_text(final=True, color=False) + "\n```\n", encoding="utf-8")
+        final_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        final_md_path.write_text("# VulnScope Final Assessment Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
+        findings_json_path.write_text(json.dumps(payload["findings"], indent=2, ensure_ascii=False), encoding="utf-8")
+        return {
+            "live_dashboard_json": str(live_json_path),
+            "live_dashboard_md": str(live_md_path),
+            "final_assessment_json": str(final_json_path),
+            "final_assessment_md": str(final_md_path),
+            "detailed_findings_json": str(findings_json_path),
+        }
