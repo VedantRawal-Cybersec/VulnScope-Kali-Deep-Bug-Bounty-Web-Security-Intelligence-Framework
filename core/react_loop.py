@@ -11,7 +11,7 @@ from cai_error_handler import handled_error, write_json, write_markdown
 from cai_safety_gate import evaluate_action
 from cai_scope_guard import cai_output_dir, normalize_target
 
-from core.live_dashboard import LiveDashboard
+from core.live_dashboard import LiveDashboard, target_components
 from core.ollama_brain import ALLOWED_ACTIONS, think
 from core.state_manager import StateManager
 
@@ -91,6 +91,47 @@ def _observation_evidence(observation: dict[str, Any]) -> str:
     return str(result)[:600]
 
 
+def _confirmation_status(observation: dict[str, Any]) -> str:
+    blob = json.dumps(observation, ensure_ascii=False, default=str).lower()
+    if "unconfirmed" in blob or "not_confirmed" in blob:
+        return "review_lead"
+    if '"confirmed"' in blob or "confirmed": true" in blob or "status=confirmed" in blob:
+        return "confirmed"
+    return "review_lead"
+
+
+def _severity_from_observation(observation: dict[str, Any]) -> str:
+    blob = json.dumps(observation, ensure_ascii=False, default=str).lower()
+    if "critical" in blob:
+        return "CRITICAL"
+    if "high" in blob or "high_confidence" in blob or "high confidence" in blob:
+        return "HIGH"
+    if "medium" in blob:
+        return "MEDIUM"
+    if "low" in blob:
+        return "LOW"
+    return "INFO"
+
+
+def _confidence_from_observation(observation: dict[str, Any]) -> str:
+    blob = json.dumps(observation, ensure_ascii=False, default=str).lower()
+    if "high_confidence" in blob or "high confidence" in blob:
+        return "High evidence confidence"
+    if _confirmation_status(observation) == "confirmed":
+        return "Confirmed by evidence engine"
+    return "Review required"
+
+
+def _validation_steps(target: str, action: str) -> str:
+    label = _action_label(action)
+    return "\n".join([
+        f"1. Open the generated {label} artifact for {target}.",
+        "2. Review the evidence snippet, affected URL/path, parameter inventory, and confidence notes.",
+        "3. Validate manually only inside the authorized scope using read-only or zero-impact checks.",
+        "4. Use final-assessment.md and detailed-findings.json for the report package.",
+    ])
+
+
 def _progress(turn: int, max_turns: int) -> int:
     if max_turns <= 0:
         return 0
@@ -109,6 +150,7 @@ def run_loop(
 ) -> dict[str, Any]:
     """Run a safe ReAct loop: think, call one allowlisted actuator, observe, repeat."""
     target = normalize_target(target)
+    target_parts = target_components(target)
     state = StateManager(target)
     dashboard = LiveDashboard(target, max_turns=max_turns, enabled=live_dashboard)
     dashboard.start()
@@ -134,7 +176,7 @@ def run_loop(
                 phase_progress=_progress(turn - 1, max_turns),
                 turn=turn,
                 requests=len(executed),
-                findings=len(state.state.get("findings", [])),
+                findings=dashboard.finding_count(),
                 action=f"Ollama selecting next safe actuator ({turn}/{max_turns})",
                 probe_string="safe-planning:allowlisted-actuator-only",
                 hypothesis="Waiting for Ollama/fallback planner decision",
@@ -197,6 +239,7 @@ def run_loop(
                     phase=label,
                     phase_progress=_progress(turn, max_turns),
                     requests=len(executed),
+                    findings=dashboard.finding_count(),
                     action=f"Blocked by safety gate: {label}",
                     evidence=_observation_evidence(observation),
                     safety_status="Blocked by scope/safety gate",
@@ -223,14 +266,29 @@ def run_loop(
             executed.append(observation)
             if _is_reportable_observation(observation):
                 state.add_finding({"turn": turn, "action": action, "observation": observation})
-                dashboard.event("FINDING", f"Review lead captured from {label}; confidence scoring required.")
+                evidence = _observation_evidence(observation)
+                confirmation = _confirmation_status(observation)
+                dashboard.add_finding(
+                    f"{label} Evidence Lead",
+                    f"{label} produced {confirmation.replace('_', ' ')} evidence that must be reviewed before external reporting.",
+                    _severity_from_observation(observation),
+                    url=target,
+                    parameter=target_parts.get("parameters", "—"),
+                    test_string=f"safe-actuator:{action}",
+                    evidence=evidence,
+                    cvss="Pending CVSS scoring" if confirmation != "confirmed" else "Evidence-scored by confirmation engine",
+                    confidence=_confidence_from_observation(observation),
+                    reproduction=_validation_steps(target, action),
+                    confirmation=confirmation,
+                )
+                dashboard.event("FINDING", f"Detailed result captured from {label}.")
 
             current_output = _scan_output_from_result(observation)
             dashboard.update(
                 phase=label,
                 phase_progress=_progress(turn, max_turns),
                 requests=len(executed),
-                findings=len(state.state.get("findings", [])),
+                findings=dashboard.finding_count(),
                 action=f"Observed result from {label}",
                 evidence=_observation_evidence(observation),
                 safety_status="Observation recorded • state checkpoint updated",
@@ -247,7 +305,7 @@ def run_loop(
             phase="Final Dashboard",
             phase_progress=100,
             action="Writing final ReAct reports",
-            findings=len(state.state.get("findings", [])),
+            findings=dashboard.finding_count(),
             requests=len(executed),
             safety_status="Finalized without production data modification",
         )
