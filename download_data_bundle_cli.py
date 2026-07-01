@@ -32,6 +32,8 @@ REPORT_PATHS = [
     "reports/output/vulnscope-main/final-summary.md",
     "reports/output/safe-canary/safe-canary.md",
     "reports/output/safe-canary/safe-canary.json",
+    "reports/output/safe-canary/safe-probes.md",
+    "reports/output/safe-canary/safe-probes.json",
     "reports/output/top100-tools/top100-status.md",
     "reports/output/top100-tools/top100-status.json",
     "reports/output/top100-tools/top100-install.json",
@@ -81,6 +83,10 @@ def build_bundle(target: str) -> dict[str, object]:
             add_path(zf, Path(raw), base, added)
         add_path(zf, Path("reports/output/domain-reports") / f"{slug}-finding-brief.md", base, added)
         add_path(zf, Path("reports/output/domain-reports") / f"{slug}-finding-brief.json", base, added)
+        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-dashboard.html", base, added)
+        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-dashboard.md", base, added)
+        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-dashboard.json", base, added)
+        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-latest-dashboard.html", base, added)
         add_path(zf, Path("reports/output/top100-tools") / slug, base, added)
         add_path(zf, Path("reports/output/autonomous-live/module-logs"), base, added)
 
