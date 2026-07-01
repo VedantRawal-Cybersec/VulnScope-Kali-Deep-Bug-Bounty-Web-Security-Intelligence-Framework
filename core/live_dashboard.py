@@ -102,12 +102,12 @@ class LiveDashboard:
     def __init__(self, target: str, *, max_turns: int = 0, enabled: bool = True, refresh_interval: float = 0.5, interactive: bool | None = None) -> None:
         parts = target_components(target)
         self.snapshot = LiveSnapshot(
-            target=parts["target"],
+            target=_clean(parts["target"], 180),
             max_turns=max_turns,
-            domain=parts["domain"],
-            endpoint=parts["endpoint"],
-            path=parts["path"],
-            parameters=parts["parameters"],
+            domain=_clean(parts["domain"], 100),
+            endpoint=_clean(parts["endpoint"], 180),
+            path=_clean(parts["path"], 140),
+            parameters=_clean(parts["parameters"], 160),
         )
         self.enabled = bool(enabled) and os.getenv("VULNSCOPE_NO_LIVE_DASHBOARD", "0") != "1"
         self.interactive = sys.stdout.isatty() if interactive is None else bool(interactive)
@@ -143,8 +143,6 @@ class LiveDashboard:
             self.draw(final=True)
 
     def update(self, **kwargs: Any) -> None:
-        if not self.enabled:
-            return
         with self.lock:
             for key, value in kwargs.items():
                 if hasattr(self.snapshot, key):
@@ -157,8 +155,6 @@ class LiveDashboard:
                         setattr(self.snapshot, key, _clean(value, 180))
 
     def event(self, level: str, message: str) -> None:
-        if not self.enabled:
-            return
         level = str(level or "INFO").upper()
         icon = {"SUCCESS": "✅", "INFO": "ℹ️", "WARNING": "⚠️", "BLOCKED": "⛔", "FINDING": "🔥", "THINKING": "💭"}.get(level, "•")
         rendered = f"{icon} [{level}] {_clean(message, 220)}"
@@ -166,7 +162,7 @@ class LiveDashboard:
             self.events.append(rendered)
             self.events = self.events[-self.max_events :]
             self.snapshot.latest_status = level.lower()
-        if not self.interactive:
+        if self.enabled and not self.interactive:
             print(_strip_ansi(rendered), flush=True)
 
     def set_target_detail(self, target: str, *, probe_string: str = "—") -> None:
