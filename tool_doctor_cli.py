@@ -16,9 +16,6 @@ LOCAL_BIN = Path.home() / ".vulnscope" / "tools" / "bin"
 GO_BIN = Path.home() / "go" / "bin"
 USER_LOCAL_BIN = Path.home() / ".local" / "bin"
 
-# This registry keeps the old "top 100" visibility, but the live autonomous
-# run does not perform sudo/system installs. System-level tools are inventoried
-# and reported as optional so the scanner never freezes at a password prompt.
 TOP_TOOLS = [
     "python3", "python", "pip", "git", "curl", "wget", "jq", "whois", "dig", "host", "nslookup", "openssl",
     "sslscan", "testssl.sh", "nmap", "whatweb", "node", "npm", "go", "parallel", "sponge", "semgrep", "safety",
@@ -30,7 +27,7 @@ TOP_TOOLS = [
     "jsluice", "getJS", "SecretFinder", "LinkFinder", "git-secrets", "detect-secrets", "checkov", "trivy", "grype",
     "syft", "osv-scanner", "npm-audit", "yarn", "pnpm", "cargo", "cargo-audit", "bundler-audit", "retire-js",
     "cyclonedx-py", "snyk", "zap-baseline.py", "nikto", "wapiti", "lynis", "httpie", "xh", "curlie", "mitmproxy",
-    "burpsuite", "chromium", "google-chrome", "firefox", "chromedriver",
+    "burpsuite", "chromium", "google-chrome", "firefox", "chromedriver", "vulnscope-safe-param", "vulnscope-review-dashboard",
 ]
 
 PYTHON_DEPS: dict[str, str] = {
@@ -77,7 +74,6 @@ def run_live(command: list[str], timeout: int = 180) -> dict[str, Any]:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env())
     except Exception as exc:
         return {"ok": False, "error": str(exc), "seconds": 0}
-
     tail: list[str] = []
     with log_path.open("a", encoding="utf-8", errors="ignore") as log:
         log.write("\n$ " + " ".join(command) + "\n")
@@ -124,13 +120,7 @@ def inventory_top_tools(limit: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for name in TOP_TOOLS[: max(1, limit)]:
         installed = binary_exists(name)
-        rows.append({
-            "name": name,
-            "kind": "binary_or_external_helper",
-            "installed": installed,
-            "path": shutil.which(name, path=env().get("PATH")),
-            "action": "available" if installed else "optional_missing_no_sudo_autoinstall",
-        })
+        rows.append({"name": name, "kind": "binary_or_external_helper", "installed": installed, "path": shutil.which(name, path=env().get("PATH")), "action": "available" if installed else "optional_missing_no_sudo_autoinstall"})
     return rows
 
 
@@ -167,32 +157,30 @@ def main() -> int:
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--tools", nargs="*", default=[])
-    parser.add_argument("--top", type=int, default=100)
+    parser.add_argument("--top", type=int, default=102)
     args = parser.parse_args()
-
     OUT.mkdir(parents=True, exist_ok=True)
     print("=" * 72, flush=True)
     print("VULNSCOPE TOOL DOCTOR — visible, no-sudo, non-blocking", flush=True)
     print("System/helper binaries are inventoried only. No password prompt will block the scan.", flush=True)
     print("=" * 72, flush=True)
-
     python_rows = repair_python_deps(args.install)
     top_rows = inventory_top_tools(args.top)
-    external_available = len([r for r in top_rows if r["installed"]])
     payload = {
+        "generated_at": time.time(),
+        "safe_install_note": SAFE_INSTALL_NOTE,
         "summary": {
             "checked_top_tools": len(top_rows),
-            "external_available": external_available,
-            "external_missing_optional": len(top_rows) - external_available,
+            "external_available": len([r for r in top_rows if r["installed"]]),
+            "external_missing_optional": len([r for r in top_rows if not r["installed"]]),
             "python_deps_available": len([r for r in python_rows if r["installed_after"]]),
-            "mode": SAFE_INSTALL_NOTE,
         },
         "python_deps": python_rows,
         "top_tools": top_rows,
-        "path_hint": f"export PATH='{LOCAL_BIN}:{GO_BIN}:{USER_LOCAL_BIN}:$PATH'",
     }
     write_reports(payload)
-    print(json.dumps({"summary": payload["summary"], "report": "reports/output/tool-doctor/tool-doctor.md", "log": "reports/output/tool-doctor/tool-doctor-install.log"}, indent=2), flush=True)
+    print(json.dumps(payload["summary"], indent=2))
+    print("[report] reports/output/tool-doctor/tool-doctor.md")
     return 0
 
 
