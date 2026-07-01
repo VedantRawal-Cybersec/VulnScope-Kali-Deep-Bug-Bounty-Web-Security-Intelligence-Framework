@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-
 RESET = "\033[0m"
+BOLD = "\033[1m"
 CYAN = "\033[36m"
 BLUE = "\033[34m"
 GREEN = "\033[32m"
@@ -97,9 +97,18 @@ def target_components(target: str) -> dict[str, str]:
 
 
 class LiveDashboard:
-    """Terminal dashboard for transparent, zero-impact autonomous execution."""
+    """Kali CLI dashboard for transparent, zero-impact autonomous execution."""
 
-    def __init__(self, target: str, *, max_turns: int = 0, enabled: bool = True, refresh_interval: float = 0.5, interactive: bool | None = None) -> None:
+    def __init__(
+        self,
+        target: str,
+        *,
+        max_turns: int = 0,
+        enabled: bool = True,
+        live_stream: bool = False,
+        refresh_interval: float = 0.5,
+        interactive: bool | None = None,
+    ) -> None:
         parts = target_components(target)
         self.snapshot = LiveSnapshot(
             target=_clean(parts["target"], 180),
@@ -109,7 +118,8 @@ class LiveDashboard:
             path=_clean(parts["path"], 140),
             parameters=_clean(parts["parameters"], 160),
         )
-        self.enabled = bool(enabled) and os.getenv("VULNSCOPE_NO_LIVE_DASHBOARD", "0") != "1"
+        self.enabled = bool(enabled) and os.getenv("VULNSCOPE_NO_CLI_DASHBOARD", "0") != "1"
+        self.live_stream = bool(live_stream) and os.getenv("VULNSCOPE_NO_LIVE_DASHBOARD", "0") != "1"
         self.interactive = sys.stdout.isatty() if interactive is None else bool(interactive)
         self.refresh_interval = max(float(refresh_interval), 0.2)
         self.lock = threading.Lock()
@@ -120,14 +130,14 @@ class LiveDashboard:
         self.thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if not self.enabled:
+        if not self.enabled or not self.live_stream:
             return
         self.running = True
         if self.interactive:
             self.thread = threading.Thread(target=self._refresh_loop, daemon=True)
             self.thread.start()
         else:
-            print("[live-dashboard] started", flush=True)
+            print("[kali-cli-dashboard] live stream started", flush=True)
 
     def _refresh_loop(self) -> None:
         while self.running:
@@ -135,12 +145,10 @@ class LiveDashboard:
             time.sleep(self.refresh_interval)
 
     def stop(self, *, final: bool = True) -> None:
-        if not self.enabled:
-            return
         self.running = False
         if self.thread:
             self.thread.join(timeout=1)
-        if final:
+        if final and self.enabled:
             self.show_final()
 
     def update(self, **kwargs: Any) -> None:
@@ -163,7 +171,7 @@ class LiveDashboard:
             self.events.append(rendered)
             self.events = self.events[-self.max_events :]
             self.snapshot.latest_status = level.lower()
-        if self.enabled and not self.interactive:
+        if self.enabled and self.live_stream and not self.interactive:
             print(_strip_ansi(rendered), flush=True)
 
     def add_finding(
@@ -181,11 +189,6 @@ class LiveDashboard:
         reproduction: str = "",
         confirmation: str = "review_lead",
     ) -> dict[str, Any]:
-        """Store a detailed final-dashboard result.
-
-        Use confirmation='confirmed' only when the evidence engine has enough
-        zero-impact evidence. Otherwise keep the default review_lead status.
-        """
         severity = _clean(severity or "INFO", 30).upper()
         confirmation = _clean(confirmation or "review_lead", 40).lower()
         with self.lock:
@@ -242,6 +245,25 @@ class LiveDashboard:
         except Exception:
             return 96
 
+    def _severity_color(self, severity: str) -> str:
+        severity = str(severity or "INFO").upper()
+        if severity == "CRITICAL":
+            return BOLD + RED
+        if severity == "HIGH":
+            return RED
+        if severity == "MEDIUM":
+            return YELLOW
+        if severity == "LOW":
+            return BLUE
+        return GREEN
+
+    def _severity_counts(self, findings: list[dict[str, Any]]) -> dict[str, int]:
+        counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+        for finding in findings:
+            severity = str(finding.get("severity") or "INFO").upper()
+            counts[severity if severity in counts else "INFO"] += 1
+        return counts
+
     def render_text(self, *, final: bool = False, color: bool = True) -> str:
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
@@ -250,7 +272,7 @@ class LiveDashboard:
         width = self._term_width()
         inner = width - 2
         title = "VULNSCOPE — AUTONOMOUS SECURITY AI"
-        subtitle = "Live Assessment • Full Visibility • Zero-Impact"
+        subtitle = "Kali CLI Assessment • Full Visibility • Zero-Impact"
         phase_line = f"Target: {snap.target} | Phase: {snap.phase} | Findings: {snap.findings} | Requests: {snap.requests} | Time: {self._elapsed()}"
         lines = [
             f"{c(CYAN)}╔{'═' * inner}╗{c(RESET)}",
@@ -280,7 +302,7 @@ class LiveDashboard:
         else:
             lines.append("ℹ️ [INFO] Waiting for first autonomous action…")
         lines.append(f"{c(CYAN)}{'═' * min(width, 96)}{c(RESET)}")
-        footer = "Final dashboard" if final else "Press Ctrl+C to stop scan | All findings are evidence-scored"
+        footer = "Final Kali CLI dashboard" if final else "Optional live CLI view | Press Ctrl+C to stop safely"
         lines.append(f"{c(CYAN)}{footer}{c(RESET)}")
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
@@ -292,16 +314,25 @@ class LiveDashboard:
             events = list(self.events)
         c = (lambda value: value) if color else (lambda value: "")
         confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
+        counts = self._severity_counts(findings)
+        severity_line = (
+            f"{c(BOLD + RED)}CRITICAL:{counts['CRITICAL']}{c(RESET)}  "
+            f"{c(RED)}HIGH:{counts['HIGH']}{c(RESET)}  "
+            f"{c(YELLOW)}MEDIUM:{counts['MEDIUM']}{c(RESET)}  "
+            f"{c(BLUE)}LOW:{counts['LOW']}{c(RESET)}  "
+            f"{c(GREEN)}INFO:{counts['INFO']}{c(RESET)}"
+        )
         lines = [
             "=" * 80,
             f"{c(CYAN)}╔{'═' * 78}╗{c(RESET)}",
-            f"{c(CYAN)}║{c(RESET)} {c(MAGENTA)}FINAL ASSESSMENT DASHBOARD — DETAILED RESULTS{' ' * 30}{c(CYAN)}║{c(RESET)}",
+            f"{c(CYAN)}║{c(RESET)} {c(MAGENTA)}KALI CLI FINAL ASSESSMENT DASHBOARD — DETAILED RESULTS{' ' * 19}{c(CYAN)}║{c(RESET)}",
             f"{c(CYAN)}╚{'═' * 78}╝{c(RESET)}",
             f"{c(CYAN)}Target:{c(RESET)} {snap.target}",
             f"{c(CYAN)}Total Time:{c(RESET)} {self._elapsed()}",
             f"{c(CYAN)}Total Findings / Leads:{c(RESET)} {c(GREEN if findings else YELLOW)}{len(findings)}{c(RESET)}",
             f"{c(CYAN)}Confirmed Findings:{c(RESET)} {c(GREEN if confirmed else YELLOW)}{len(confirmed)}{c(RESET)}",
             f"{c(CYAN)}Total Requests / Actions:{c(RESET)} {c(WHITE)}{snap.requests}{c(RESET)}",
+            f"{c(CYAN)}Severity Summary:{c(RESET)} {severity_line}",
             "─" * 80,
         ]
         if not findings:
@@ -310,12 +341,12 @@ class LiveDashboard:
             lines.append(f"{c(GREEN)}DETAILED FINDINGS / CONFIRMED AND REVIEW-READY RESULTS{c(RESET)}")
             lines.append("─" * 80)
             for idx, finding in enumerate(findings, 1):
-                severity = finding.get("severity", "INFO")
-                status = finding.get("confirmation", "review_lead").replace("_", " ").upper()
-                severity_color = RED if severity in {"CRITICAL", "HIGH"} else YELLOW if severity in {"MEDIUM", "LOW"} else GREEN
+                severity = str(finding.get("severity", "INFO")).upper()
+                status = str(finding.get("confirmation", "review_lead")).replace("_", " ").upper()
+                severity_color = self._severity_color(severity)
                 lines += [
                     "",
-                    f"{c(severity_color)}═══ FINDING #{idx} — {status} ═══{c(RESET)}",
+                    f"{c(severity_color)}═══ FINDING #{idx} — {severity} — {status} ═══{c(RESET)}",
                     f"{c(YELLOW)}WHAT:{c(RESET)} {finding.get('type')} ({severity})",
                     f"{c(YELLOW)}WHY:{c(RESET)} {finding.get('description')}",
                     f"{c(YELLOW)}WHERE:{c(RESET)} URL: {finding.get('url')}",
@@ -338,8 +369,8 @@ class LiveDashboard:
             lines.append(entry)
         lines += [
             "=" * 80,
-            f"{c(GREEN)}✅ Reports saved under: reports/output/cai-superior/<target>/{c(RESET)}",
-            f"{c(CYAN)}📊 Detailed dashboard displayed above.{c(RESET)}",
+            f"{c(GREEN)}✅ CLI reports saved under: reports/output/cai-superior/<target>/{c(RESET)}",
+            f"{c(CYAN)}📊 This is a Kali terminal dashboard. No website dashboard is launched by this feature.{c(RESET)}",
         ]
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
@@ -352,7 +383,7 @@ class LiveDashboard:
             return
         if self.interactive:
             sys.stdout.write("\033[2J\033[H")
-        print((self.final_text if final else self.render_text)(final=final, color=self.interactive) if not final else self.final_text(color=self.interactive), flush=True)
+        print(self.final_text(color=self.interactive) if final else self.render_text(final=False, color=self.interactive), flush=True)
 
     def write_reports(self, out: Path) -> dict[str, str]:
         out.mkdir(parents=True, exist_ok=True)
@@ -362,21 +393,20 @@ class LiveDashboard:
                 "events": list(self.events),
                 "findings": [dict(item) for item in self.finding_details],
                 "generated_at": time.time(),
+                "interface": "kali_cli",
+                "website_dashboard": False,
             }
-        live_json_path = out / "live-dashboard.json"
-        live_md_path = out / "live-dashboard.md"
-        final_json_path = out / "final-assessment.json"
-        final_md_path = out / "final-assessment.md"
+        session_json_path = out / "cli-session.json"
+        final_json_path = out / "cli-final-dashboard.json"
+        final_md_path = out / "cli-final-dashboard.md"
         findings_json_path = out / "detailed-findings.json"
-        live_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        live_md_path.write_text("# VulnScope Live Dashboard\n\n```text\n" + self.render_text(final=True, color=False) + "\n```\n", encoding="utf-8")
+        session_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         final_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        final_md_path.write_text("# VulnScope Final Assessment Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
+        final_md_path.write_text("# VulnScope Kali CLI Final Assessment Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
         findings_json_path.write_text(json.dumps(payload["findings"], indent=2, ensure_ascii=False), encoding="utf-8")
         return {
-            "live_dashboard_json": str(live_json_path),
-            "live_dashboard_md": str(live_md_path),
-            "final_assessment_json": str(final_json_path),
-            "final_assessment_md": str(final_md_path),
+            "cli_session_json": str(session_json_path),
+            "cli_final_dashboard_json": str(final_json_path),
+            "cli_final_dashboard_md": str(final_md_path),
             "detailed_findings_json": str(findings_json_path),
         }
