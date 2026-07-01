@@ -39,6 +39,7 @@ REPORT_PATHS = [
     "reports/output/top100-tools/top100-install.json",
     "reports/output/top100-tools/top100-methodology.md",
     "reports/output/top100-tools/top100-methodology.json",
+    "reports/output/cai-superior/cai_superior.log",
 ]
 
 
@@ -93,6 +94,7 @@ def build_bundle(target: str) -> dict[str, object]:
             "suppressed-noise.json",
         ]:
             add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-{suffix}", base, added)
+        add_path(zf, Path("reports/output/cai-superior") / slug, base, added)
         add_path(zf, Path("reports/output/top100-tools") / slug, base, added)
         add_path(zf, Path("reports/output/autonomous-live/module-logs"), base, added)
 
@@ -103,7 +105,7 @@ def build_bundle(target: str) -> dict[str, object]:
             "bundle": str(zip_path),
             "files_count": len(added),
             "files": sorted(set(added)),
-            "note": "This bundle contains scan data and confirmation reports only, not the VulnScope source code.",
+            "note": "This bundle contains scan data, CAI Superior Layer 0-1 artifacts, and confirmation reports only, not the VulnScope source code.",
         }
         zf.writestr("bundle-manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
 
@@ -120,7 +122,7 @@ def build_bundle(target: str) -> dict[str, object]:
         f"Latest bundle: `{latest_path}`",
         f"Manifest: `{manifest_path}`",
         "",
-        "This is a data-only export for the selected website scan. It includes the final confirmation dashboard and suppressed-noise artifacts.",
+        "This is a data-only export for the selected website scan. It includes the CAI Superior target profile, passive recon asset graph, final confirmation dashboard, and suppressed-noise artifacts.",
     ]), encoding="utf-8")
 
     return {"target": target, "bundle": str(zip_path), "latest": str(latest_path), "manifest": str(manifest_path), "summary": str(md_path), "files_count": len(set(added))}
