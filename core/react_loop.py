@@ -128,7 +128,7 @@ def _validation_steps(target: str, action: str) -> str:
         f"1. Open the generated {label} artifact for {target}.",
         "2. Review the evidence snippet, affected URL/path, parameter inventory, and confidence notes.",
         "3. Validate manually only inside the authorized scope using read-only or zero-impact checks.",
-        "4. Use final-assessment.md and detailed-findings.json for the report package.",
+        "4. Use cli-final-dashboard.md and detailed-findings.json for the report package.",
     ])
 
 
@@ -146,13 +146,14 @@ def run_loop(
     include_subdomains: bool = False,
     criticality: str = "normal",
     force: bool = False,
-    live_dashboard: bool = True,
+    live_dashboard: bool = False,
+    final_dashboard: bool = True,
 ) -> dict[str, Any]:
     """Run a safe ReAct loop: think, call one allowlisted actuator, observe, repeat."""
     target = normalize_target(target)
     target_parts = target_components(target)
     state = StateManager(target)
-    dashboard = LiveDashboard(target, max_turns=max_turns, enabled=live_dashboard)
+    dashboard = LiveDashboard(target, max_turns=max_turns, enabled=final_dashboard, live_stream=live_dashboard)
     dashboard.start()
     dashboard.event("INFO", "Scope locked to authorized target. Zero-impact mode active.")
 
@@ -299,7 +300,7 @@ def run_loop(
     except KeyboardInterrupt:
         interrupted = True
         state.stop("interrupted by user")
-        dashboard.event("WARNING", "Interrupted by user; final dashboard and reports are being written.")
+        dashboard.event("WARNING", "Interrupted by user; final CLI dashboard and reports are being written.")
     finally:
         dashboard.update(
             phase="Final Dashboard",
@@ -334,7 +335,8 @@ def run_loop(
             "shell_execution": False,
             "target_data_modification": False,
             "scope_gate_per_turn": True,
-            "live_dashboard_zero_impact": True,
+            "kali_cli_dashboard_only": True,
+            "website_dashboard": False,
         },
     }
     write_json(out / "react-run.json", payload)
@@ -365,9 +367,9 @@ def main() -> int:
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", default="normal", choices=["low", "normal", "high", "critical"])
     parser.add_argument("--force", action="store_true")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--live-dashboard", dest="live_dashboard", action="store_true", default=True)
-    group.add_argument("--no-live-dashboard", dest="live_dashboard", action="store_false")
+    parser.add_argument("--live-dashboard", action="store_true", default=False, help="Optional live terminal refresh during execution. Final CLI dashboard is shown by default.")
+    parser.add_argument("--no-live-dashboard", action="store_true", help="Compatibility flag. Live refresh is already off by default.")
+    parser.add_argument("--no-final-dashboard", action="store_true")
     args = parser.parse_args()
     payload = run_loop(
         args.target,
@@ -375,7 +377,8 @@ def main() -> int:
         include_subdomains=args.include_subdomains,
         criticality=args.criticality,
         force=args.force,
-        live_dashboard=args.live_dashboard,
+        live_dashboard=bool(args.live_dashboard and not args.no_live_dashboard),
+        final_dashboard=not args.no_final_dashboard,
     )
     print(json.dumps({"status": "completed", "reports": payload.get("reports", {})}, indent=2))
     return 0
