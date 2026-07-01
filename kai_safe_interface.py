@@ -116,6 +116,23 @@ def build_scan_env(session: dict) -> dict[str, str]:
     return env
 
 
+def run_cai_superior_layer01(session: dict) -> None:
+    if os.getenv("VULNSCOPE_SKIP_CAI_SUPERIOR", "0") == "1":
+        print("\n[skip] CAI Superior Layer 0–1 skipped by VULNSCOPE_SKIP_CAI_SUPERIOR=1")
+        return
+    cmd = ["python3", "cai_superior_cli.py", "--target", session["target"]]
+    if session.get("include_subdomains"):
+        cmd.append("--include-subdomains")
+    run_visible_command(
+        "CAI Superior Layer 0-1 Target Profile + Passive Recon",
+        cmd,
+        env=build_scan_env(session),
+        timeout=420,
+        estimated_seconds=180,
+        log_path="reports/output/runtime-logs/cai-superior-layer01.log",
+    )
+
+
 def run_top100_status(session: dict) -> None:
     cmd = ["python3", "top100_integrator_cli.py", "--target", session["target"], "--status"]
     run_visible_command(
@@ -193,6 +210,8 @@ def main() -> int:
     print(f"[+] Scope locked to: {session['target']} ({session['host']})")
     print(f"[+] Removed stale previous outputs: {len(isolation.get('removed_previous_outputs', []))}")
 
+    run_cai_superior_layer01(session)
+
     dashboard = choose_dashboard(session)
     session["dashboard"] = dashboard
     (OUT / "direct-session.json").write_text(json.dumps(session, indent=2), encoding="utf-8")
@@ -222,6 +241,10 @@ def main() -> int:
     else:
         print(f"\n[!] Selected flow exited with code {code}. Open the logs below to see the exact failing module:")
     print("- reports/output/kai-interface/scan-dashboard-selection.md")
+    print("- reports/output/cai-superior/{}/cai-superior-summary.md".format(slug))
+    print("- reports/output/cai-superior/{}/target-profile.md".format(slug))
+    print("- reports/output/cai-superior/{}/recon-agent.md".format(slug))
+    print("- reports/output/cai-superior/{}/asset-graph.md".format(slug))
     print("- reports/output/autonomous-live/live-run.md")
     print("- reports/output/autonomous-live/live-run.json")
     print("- reports/output/vulnscope-main/final-summary.md")
