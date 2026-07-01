@@ -6,7 +6,10 @@ import json
 import time
 from typing import Any
 
+from cai_actuator_registry import write_catalog
 from cai_adaptive_risk_cli import build_adaptive_risk, write_adaptive_risk_reports
+from cai_agentic_memory import ingest_scan_outputs, record_event, write_memory_report
+from cai_brain_cli import build_plan, observe, write_plan
 from cai_business_logic_cli import build_business_review, write_business_review_reports
 from cai_error_handler import handled_error, write_json, write_log, write_markdown
 from cai_evidence_engine_cli import build_evidence_layer, write_evidence_reports
@@ -18,6 +21,7 @@ from cai_prioritization_cli import build_prioritization, write_prioritization_re
 from cai_recon_agent_cli import run_recon, write_recon_reports
 from cai_report_agent_cli import build_reports, write_report_outputs
 from cai_scope_guard import cai_output_dir, normalize_target
+from cai_sensors_cli import record_sensor_event, sensor_config, write_sensor_config
 from cai_target_profiler_cli import build_target_profile, write_profile_reports
 from cai_verification_agent_cli import verify_from_existing_evidence, write_verification_reports
 
@@ -40,6 +44,9 @@ def build_run_summary(target: str, checkpoints: dict[str, dict[str, Any]]) -> di
         "checkpoints": checkpoints,
         "reports": {
             "summary": str(out_dir / "cai-superior-summary.md"),
+            "agentic_plan": str(out_dir / "agentic-plan.md"),
+            "agentic_sensors": str(out_dir / "agentic-sensors.md"),
+            "agentic_memory": str(out_dir / "agentic-memory.md"),
             "target_profile": str(out_dir / "target-profile.md"),
             "asset_graph": str(out_dir / "asset-graph.md"),
             "input_inventory": str(out_dir / "input-inventory.md"),
@@ -92,6 +99,16 @@ def run_cai_superior(target: str, *, include_subdomains: bool = False, criticali
     print(BANNER, flush=True)
     print(f"[CAI] Target: {target}", flush=True)
 
+    write_catalog()
+    sensors = _safe_stage(checkpoints, "agentic-sensors", "Agentic Sensors", lambda: sensor_config(target), "agentic_sensors")
+    if sensors is not None:
+        checkpoints["agentic-sensors"] = write_sensor_config(target, sensors)
+        record_sensor_event(target, "user_command", {"mode": "cai_superior_cli", "include_subdomains": include_subdomains, "criticality": criticality})
+    plan = _safe_stage(checkpoints, "agentic-brain", "Agentic Brain Planner", lambda: build_plan(target, include_subdomains=include_subdomains, criticality=criticality, force=False), "agentic_brain")
+    if plan is not None:
+        checkpoints["agentic-brain"] = write_plan(target, plan)
+        record_event(target, "brain_plan_created", {"decision": plan.get("decision", {})})
+
     profile = _safe_stage(checkpoints, "0", "System Initialization and Target Profiler", lambda: build_target_profile(target, include_subdomains=include_subdomains), "layer0")
     if profile is not None:
         checkpoints["0"] = write_profile_reports(profile)
@@ -141,6 +158,11 @@ def run_cai_superior(target: str, *, include_subdomains: bool = False, criticali
     feedback = _safe_stage(checkpoints, "feedback", "Continuous Feedback Calibration", lambda: calibration_summary(target), "feedback")
     if feedback is not None:
         checkpoints["feedback"] = write_feedback_reports(target, feedback)
+
+    memory_payload = _safe_stage(checkpoints, "agentic-memory", "Agentic Memory", lambda: ingest_scan_outputs(target), "agentic_memory")
+    if memory_payload is not None:
+        checkpoints["agentic-memory"] = write_memory_report(target, memory_payload)
+        observe(target)
 
     payload = build_run_summary(target, checkpoints)
     write_run_summary(target, payload)
