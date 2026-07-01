@@ -25,5 +25,5 @@ jobs:
             cai_learning_cli.py cai_adaptive_risk_cli.py \
             cai_business_logic_cli.py cai_feedback_cli.py \
             cai_safety_gate.py cai_superior_cli.py vulnscope.py \
-            core/ollama_brain.py core/react_loop.py core/state_manager.py core/scope_guard.py
-      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py -q
+            core/live_dashboard.py core/ollama_brain.py core/react_loop.py core/state_manager.py core/scope_guard.py
+      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py tests/test_live_dashboard.py -q
