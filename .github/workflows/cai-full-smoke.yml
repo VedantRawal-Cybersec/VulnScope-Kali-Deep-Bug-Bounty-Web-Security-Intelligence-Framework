@@ -14,7 +14,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install --upgrade pip pytest
+      - run: python -m pip install --upgrade pip pytest requests
       - run: |
-          python -m py_compile cai_error_handler.py cai_scope_guard.py cai_asset_graph.py cai_target_profiler_cli.py cai_recon_agent_cli.py cai_parameter_analysis_cli.py cai_hypothesis_agent_cli.py cai_verification_agent_cli.py cai_evidence_engine_cli.py cai_prioritization_cli.py cai_report_agent_cli.py cai_learning_cli.py cai_adaptive_risk_cli.py cai_business_logic_cli.py cai_feedback_cli.py cai_safety_gate.py cai_superior_cli.py main.py
-      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py -q
+          python -m py_compile \
+            cai_error_handler.py cai_scope_guard.py cai_asset_graph.py \
+            cai_target_profiler_cli.py cai_recon_agent_cli.py \
+            cai_parameter_analysis_cli.py cai_hypothesis_agent_cli.py \
+            cai_verification_agent_cli.py cai_evidence_engine_cli.py \
+            cai_prioritization_cli.py cai_report_agent_cli.py \
+            cai_learning_cli.py cai_adaptive_risk_cli.py \
+            cai_business_logic_cli.py cai_feedback_cli.py \
+            cai_safety_gate.py cai_superior_cli.py vulnscope.py \
+            core/ollama_brain.py core/react_loop.py core/state_manager.py core/scope_guard.py
+      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py -q
