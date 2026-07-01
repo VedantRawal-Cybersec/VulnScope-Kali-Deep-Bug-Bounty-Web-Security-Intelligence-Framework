@@ -10,14 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "1.2.0-agentic-react"
+from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
+
+VERSION = "1.3.0-one-command-agentic"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope                                ║
-║           Single safe launcher for authorized review              ║
+║        Preflight → URL → Consent → Autonomous Safe Review         ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -43,19 +45,22 @@ def run(label: str, command: list[str], timeout: int = 3600) -> dict:
     started = datetime.now(timezone.utc)
     try:
         proc = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-        print(proc.stdout[-4000:])
-        return {"label": label, "ok": proc.returncode == 0, "exit_code": proc.returncode, "command": command, "output_tail": proc.stdout[-4000:]}
+        print((proc.stdout or "")[-4000:])
+        return {"label": label, "ok": proc.returncode == 0, "exit_code": proc.returncode, "command": command, "output_tail": (proc.stdout or "")[-4000:]}
     except Exception as exc:
         print(f"error: {exc}")
         return {"label": label, "ok": False, "error": str(exc), "command": command, "started_at": started.isoformat()}
 
 
 def confirm(target: str, yes: bool) -> None:
-    print(BANNER)
-    print("Authorized use only. Scope is locked to the target you provide.")
+    print("\nAuthorized use only. Scope is locked to the target you provide.")
     print(f"Target: {target}")
     if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
-        answer = input("Type YES to confirm authorization: ").strip()
+        print("\nRules:")
+        print("- You own this target or have explicit written authorization.")
+        print("- VulnScope will run zero-impact, evidence-first, report-focused checks.")
+        print("- Production data modification, credential attacks, and exploit chains are not allowed.")
+        answer = input("\nType YES to confirm authorization: ").strip()
         if answer != "YES":
             raise SystemExit("Authorization not confirmed.")
     AUTH.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +70,7 @@ def confirm(target: str, yes: bool) -> None:
 def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
+        "preflight": "reports/output/vulnscope-main/preflight.md",
         "react_loop": f"reports/output/cai-superior/{host}/react-run.md",
         "react_state": f"reports/output/cai-superior/{host}/react-state.md",
         "cai_summary": f"reports/output/cai-superior/{host}/cai-superior-summary.md",
@@ -86,8 +92,50 @@ def final_summary(target: str, history: list[dict]) -> None:
         print("- " + path)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="VulnScope single safe launcher")
+def run_agentic(target: str, args: argparse.Namespace) -> dict:
+    os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
+    os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
+    cmd = [
+        sys.executable,
+        "-m",
+        "core.react_loop",
+        "--target",
+        target,
+        "--max-turns",
+        str(args.max_turns),
+        "--criticality",
+        args.criticality,
+    ]
+    if args.include_subdomains:
+        cmd.append("--include-subdomains")
+    if args.force:
+        cmd.append("--force")
+    return run("Autonomous Ollama/ReAct Loop", cmd, timeout=3600)
+
+
+def run_cai(target: str, args: argparse.Namespace) -> dict:
+    cmd = [sys.executable, "cai_superior_cli.py", "--target", target, "--criticality", args.criticality]
+    if args.include_subdomains:
+        cmd.append("--include-subdomains")
+    return run("CAI checkpoint pipeline", cmd, timeout=3600)
+
+
+def run_preflight_step(args: argparse.Namespace) -> dict:
+    payload = run_preflight(
+        install_python=not args.no_python_install,
+        run_tool_setup_flag=not args.skip_tool_setup,
+        check_ollama_flag=not args.skip_ollama,
+        require_ollama=not args.allow_ollama_fallback and args.mode == "agentic",
+        auto_pull_model=not args.no_model_pull,
+        ollama_url=args.ollama_url,
+        ollama_model=args.ollama_model,
+    )
+    print_preflight_status(payload)
+    return {"label": "Preflight", "ok": bool(payload.get("ok")), "exit_code": 0 if payload.get("ok") else 2, "summary": payload.get("summary", {}), "blocking_issues": payload.get("blocking_issues", [])}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="VulnScope one-command safe autonomous launcher")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["deps", "cai", "agentic"], default="agentic")
@@ -96,34 +144,44 @@ def main() -> int:
     parser.add_argument("--criticality", choices=["low", "normal", "high", "critical"], default="normal")
     parser.add_argument("--max-turns", type=int, default=15)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--install-python", action="store_true")
-    parser.add_argument("--clone-cai-reference", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--skip-preflight", action="store_true")
+    parser.add_argument("--skip-tool-setup", action="store_true")
+    parser.add_argument("--skip-ollama", action="store_true")
+    parser.add_argument("--allow-ollama-fallback", action="store_true")
+    parser.add_argument("--no-model-pull", action="store_true")
+    parser.add_argument("--no-python-install", action="store_true")
+    parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", DEFAULT_OLLAMA_URL))
+    parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL))
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
     if args.version:
         print(VERSION)
         return 0
-    target = normalize_target(args.target or input("Target URL/domain: ").strip())
-    confirm(target, args.yes)
+
+    print(BANNER)
     history: list[dict] = []
+
+    if not args.skip_preflight:
+        preflight = run_preflight_step(args)
+        history.append(preflight)
+        if not preflight.get("ok"):
+            print("\nPreflight blocked launch. Fix the blocking items above, or use --allow-ollama-fallback only when you accept deterministic fallback.")
+            return 2
+
     if args.mode == "deps":
-        cmd = [sys.executable, "cai_dependency_manager_cli.py"]
-        if args.install_python:
-            cmd.append("--install-python")
-        if args.clone_cai_reference:
-            cmd.append("--clone-cai-reference")
-        history.append(run("Dependency readiness", cmd, timeout=900))
-    elif args.mode == "cai":
-        cmd = [sys.executable, "cai_superior_cli.py", "--target", target, "--criticality", args.criticality]
-        if args.include_subdomains:
-            cmd.append("--include-subdomains")
-        history.append(run("CAI checkpoint pipeline", cmd, timeout=3600))
+        return 0 if all(x.get("ok") for x in history) else 2
+
+    target = normalize_target(args.target or input("\nTarget URL/domain: ").strip())
+    confirm(target, args.yes)
+
+    if args.mode == "cai":
+        history.append(run_cai(target, args))
     else:
-        cmd = [sys.executable, "-m", "core.react_loop", "--target", target, "--max-turns", str(args.max_turns), "--criticality", args.criticality]
-        if args.include_subdomains:
-            cmd.append("--include-subdomains")
-        if args.force:
-            cmd.append("--force")
-        history.append(run("Safe ReAct loop", cmd, timeout=3600))
+        history.append(run_agentic(target, args))
+
     final_summary(target, history)
     return 0 if all(x.get("ok") for x in history) else 1
 
