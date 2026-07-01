@@ -87,6 +87,8 @@ def final_summary(target: str, history: list[dict]) -> None:
     reports = {
         "preflight": "reports/output/vulnscope-main/preflight.md",
         "live_dashboard": f"reports/output/cai-superior/{host}/live-dashboard.md",
+        "final_assessment": f"reports/output/cai-superior/{host}/final-assessment.md",
+        "detailed_findings": f"reports/output/cai-superior/{host}/detailed-findings.json",
         "react_loop": f"reports/output/cai-superior/{host}/react-run.md",
         "react_state": f"reports/output/cai-superior/{host}/react-state.md",
         "cai_summary": f"reports/output/cai-superior/{host}/cai-superior-summary.md",
