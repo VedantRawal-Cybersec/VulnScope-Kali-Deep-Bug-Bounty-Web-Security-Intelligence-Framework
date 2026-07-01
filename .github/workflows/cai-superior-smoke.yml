@@ -26,6 +26,9 @@ jobs:
             cai_asset_graph.py \
             cai_target_profiler_cli.py \
             cai_recon_agent_cli.py \
+            cai_parameter_analysis_cli.py \
+            cai_hypothesis_agent_cli.py \
+            cai_verification_agent_cli.py \
             cai_superior_cli.py \
             kai_safe_interface.py \
             download_data_bundle_cli.py \
