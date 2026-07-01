@@ -49,6 +49,12 @@ def test_detailed_final_dashboard_fields_and_reports(tmp_path):
         confirmation="confirmed",
     )
     final_text = dashboard.final_text(color=False)
+    assert "KALI CLI FINAL ASSESSMENT DASHBOARD" in final_text
+    assert "Severity Summary:" in final_text
+    assert "CRITICAL:" in final_text
+    assert "HIGH:" in final_text
+    assert "MEDIUM:" in final_text
+    assert "LOW:" in final_text
     assert "WHAT:" in final_text
     assert "WHY:" in final_text
     assert "WHERE:" in final_text
@@ -56,8 +62,9 @@ def test_detailed_final_dashboard_fields_and_reports(tmp_path):
     assert "REPRODUCTION / VALIDATION STEPS:" in final_text
     assert "Confirmed Findings:" in final_text
     paths = dashboard.write_reports(tmp_path)
-    assert Path(paths["final_assessment_md"]).exists()
-    assert Path(paths["final_assessment_json"]).exists()
+    assert Path(paths["cli_final_dashboard_md"]).exists()
+    assert Path(paths["cli_final_dashboard_json"]).exists()
+    assert Path(paths["cli_session_json"]).exists()
     assert Path(paths["detailed_findings_json"]).exists()
 
 
@@ -65,7 +72,7 @@ def test_dashboard_redacts_sensitive_strings_in_report(tmp_path):
     dashboard = LiveDashboard("https://example.com/api?token=secret-value", enabled=False, interactive=False)
     dashboard.update(evidence="api_key=super-secret-value token=hidden")
     paths = dashboard.write_reports(tmp_path)
-    md_text = Path(paths["live_dashboard_md"]).read_text()
+    md_text = Path(paths["cli_final_dashboard_md"]).read_text()
     assert "api_key=<redacted>" in md_text
     assert "token=<redacted>" in md_text
     assert "super-secret-value" not in md_text
