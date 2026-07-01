@@ -33,6 +33,34 @@ def test_dashboard_renders_required_visibility_fields():
     assert "Evidence snippet:" in text
 
 
+def test_detailed_final_dashboard_fields_and_reports(tmp_path):
+    dashboard = LiveDashboard("https://example.com/api/users?id=1", enabled=False, interactive=False)
+    dashboard.add_finding(
+        "Evidence Review Lead",
+        "A safe evidence module produced a review-ready security signal.",
+        "HIGH",
+        url="https://example.com/api/users?id=1",
+        parameter="id=1",
+        test_string="safe-actuator:evidence_review",
+        evidence="status=confirmed confidence=high",
+        cvss="Pending CVSS scoring",
+        confidence="High evidence confidence",
+        reproduction="1. Open react-run.md\n2. Review generated evidence\n3. Validate only inside authorized scope",
+        confirmation="confirmed",
+    )
+    final_text = dashboard.final_text(color=False)
+    assert "WHAT:" in final_text
+    assert "WHY:" in final_text
+    assert "WHERE:" in final_text
+    assert "TESTED EVIDENCE:" in final_text
+    assert "REPRODUCTION / VALIDATION STEPS:" in final_text
+    assert "Confirmed Findings:" in final_text
+    paths = dashboard.write_reports(tmp_path)
+    assert Path(paths["final_assessment_md"]).exists()
+    assert Path(paths["final_assessment_json"]).exists()
+    assert Path(paths["detailed_findings_json"]).exists()
+
+
 def test_dashboard_redacts_sensitive_strings_in_report(tmp_path):
     dashboard = LiveDashboard("https://example.com/api?token=secret-value", enabled=False, interactive=False)
     dashboard.update(evidence="api_key=super-secret-value token=hidden")
