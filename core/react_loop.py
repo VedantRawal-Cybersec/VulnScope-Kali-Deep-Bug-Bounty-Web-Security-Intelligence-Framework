@@ -11,6 +11,7 @@ from cai_error_handler import handled_error, write_json, write_markdown
 from cai_safety_gate import evaluate_action
 from cai_scope_guard import cai_output_dir, normalize_target
 
+from core.live_dashboard import LiveDashboard
 from core.ollama_brain import ALLOWED_ACTIONS, think
 from core.state_manager import StateManager
 
@@ -29,6 +30,26 @@ DEFAULT_PLAN = [
     "business_review",
     "feedback",
 ]
+
+ACTION_LABELS = {
+    "dependency_status": "Dependency readiness",
+    "target_profile": "Target profile",
+    "passive_recon": "Passive reconnaissance",
+    "input_inventory": "Input inventory",
+    "hypothesis_matrix": "Hypothesis matrix",
+    "evidence_review": "Evidence review",
+    "evidence_scoring": "Evidence scoring",
+    "prioritize": "Finding prioritization",
+    "report": "Report generation",
+    "learning": "Learning notes",
+    "adaptive_risk": "Adaptive risk review",
+    "business_review": "Business logic review",
+    "feedback": "Feedback checkpoint",
+}
+
+
+def _action_label(action: str) -> str:
+    return ACTION_LABELS.get(action, action.replace("_", " ").title())
 
 
 def _summarize_result(result: Any) -> dict[str, Any]:
@@ -54,6 +75,28 @@ def _is_reportable_observation(observation: dict[str, Any]) -> bool:
     return any(marker in blob for marker in ["confirmed", "high_confidence", "high confidence", "surface_count", "review_leads"])
 
 
+def _decision_summary(decision: dict[str, Any]) -> str:
+    for key in ("next_action", "analysis", "reason_to_continue", "risk"):
+        value = decision.get(key)
+        if value:
+            return str(value)
+    return "Safe autonomous step selected by Ollama/fallback planner"
+
+
+def _observation_evidence(observation: dict[str, Any]) -> str:
+    result = observation.get("result") or observation.get("gate") or observation
+    if isinstance(result, dict):
+        summary = result.get("summary") or result.get("status") or result.get("name") or result
+        return json.dumps(summary, ensure_ascii=False, default=str)[:600]
+    return str(result)[:600]
+
+
+def _progress(turn: int, max_turns: int) -> int:
+    if max_turns <= 0:
+        return 0
+    return int(max(0, min(100, (turn / max_turns) * 100)))
+
+
 def run_loop(
     target: str,
     initial_scan_output: str = "",
@@ -62,74 +105,163 @@ def run_loop(
     include_subdomains: bool = False,
     criticality: str = "normal",
     force: bool = False,
+    live_dashboard: bool = True,
 ) -> dict[str, Any]:
     """Run a safe ReAct loop: think, call one allowlisted actuator, observe, repeat."""
     target = normalize_target(target)
     state = StateManager(target)
+    dashboard = LiveDashboard(target, max_turns=max_turns, enabled=live_dashboard)
+    dashboard.start()
+    dashboard.event("INFO", "Scope locked to authorized target. Zero-impact mode active.")
+
     if force:
         state.state["completed"] = []
         state.state["stopped"] = False
         state.state["stop_reason"] = ""
         state.save()
+        dashboard.event("INFO", "Previous ReAct checkpoint cleared because --force was provided.")
 
     current_output = initial_scan_output or "Loop started. No prior output."
     executed: list[dict[str, Any]] = []
+    interrupted = False
 
-    for turn in range(1, max_turns + 1):
-        state.state["turn"] = turn
-        completed = list(state.state.get("completed", []))
-        context = {
-            "target": target,
-            "phase": "safe_react",
-            "turn": turn,
-            "plan": DEFAULT_PLAN,
-            "completed": completed,
-            "findings": state.state.get("findings", []),
-        }
-        decision = think(current_output, context)
-        state.decision(decision)
-        action = str(decision.get("action") or "stop")
+    try:
+        for turn in range(1, max_turns + 1):
+            state.state["turn"] = turn
+            completed = list(state.state.get("completed", []))
+            dashboard.update(
+                phase="AI Planning",
+                phase_progress=_progress(turn - 1, max_turns),
+                turn=turn,
+                requests=len(executed),
+                findings=len(state.state.get("findings", [])),
+                action=f"Ollama selecting next safe actuator ({turn}/{max_turns})",
+                probe_string="safe-planning:allowlisted-actuator-only",
+                hypothesis="Waiting for Ollama/fallback planner decision",
+                evidence=current_output[:600],
+                safety_status="Allowlisted actuators only • GET/safe topics • no production data modification",
+            )
 
-        if action == "stop" or action not in ALLOWED_ACTIONS:
-            state.stop(decision.get("reason_to_continue") or "brain selected stop")
-            break
-        if action in completed:
-            remaining = [x for x in DEFAULT_PLAN if x not in completed]
-            action = remaining[0] if remaining else "stop"
-            if action == "stop":
-                state.stop("all safe actuators completed")
+            context = {
+                "target": target,
+                "phase": "safe_react",
+                "turn": turn,
+                "plan": DEFAULT_PLAN,
+                "completed": completed,
+                "findings": state.state.get("findings", []),
+            }
+            decision = think(current_output, context)
+            state.decision(decision)
+            action = str(decision.get("action") or "stop")
+
+            if action == "stop" or action not in ALLOWED_ACTIONS:
+                dashboard.update(
+                    phase="Stopping",
+                    phase_progress=_progress(turn, max_turns),
+                    action="Planner selected stop",
+                    probe_string=f"safe-actuator:{action}",
+                    hypothesis=_decision_summary(decision),
+                    safety_status="Stopped before actuator execution",
+                )
+                dashboard.event("INFO", decision.get("reason_to_continue") or "Planner selected stop.")
+                state.stop(decision.get("reason_to_continue") or "brain selected stop")
                 break
 
-        gate = evaluate_action(target=target, candidate_url=target, method="GET", topic=action, include_subdomains=include_subdomains, user_approved=False)
-        if not gate.get("allowed"):
-            observation = {"action": action, "status": "blocked_by_safety_gate", "gate": gate}
+            if action in completed:
+                remaining = [x for x in DEFAULT_PLAN if x not in completed]
+                action = remaining[0] if remaining else "stop"
+                if action == "stop":
+                    dashboard.update(phase="Complete", phase_progress=100, action="All safe actuators completed", probe_string="safe-actuator:stop")
+                    dashboard.event("SUCCESS", "All safe actuators completed.")
+                    state.stop("all safe actuators completed")
+                    break
+
+            label = _action_label(action)
+            dashboard.update(
+                phase=label,
+                phase_progress=_progress(turn - 1, max_turns),
+                action=f"Selected actuator: {label}",
+                probe_string=f"safe-actuator:{action}",
+                hypothesis=_decision_summary(decision),
+                safety_status="Checking scope gate before execution",
+            )
+            dashboard.event("THINKING", f"Turn {turn}: selected {label}.")
+
+            gate = evaluate_action(target=target, candidate_url=target, method="GET", topic=action, include_subdomains=include_subdomains, user_approved=False)
+            if not gate.get("allowed"):
+                observation = {"action": action, "status": "blocked_by_safety_gate", "gate": gate}
+                state.mark_completed(action, observation)
+                executed.append(observation)
+                current_output = _scan_output_from_result(observation)
+                dashboard.update(
+                    phase=label,
+                    phase_progress=_progress(turn, max_turns),
+                    requests=len(executed),
+                    action=f"Blocked by safety gate: {label}",
+                    evidence=_observation_evidence(observation),
+                    safety_status="Blocked by scope/safety gate",
+                )
+                dashboard.event("BLOCKED", f"{label} blocked by safety gate.")
+                continue
+
+            dashboard.update(
+                phase=label,
+                phase_progress=_progress(turn - 1, max_turns),
+                action=f"Running {label}",
+                safety_status="Allowed by safety gate • zero-impact execution",
+                requests=len(executed) + 1,
+            )
+            try:
+                raw_result = call_actuator(action, target=target, include_subdomains=include_subdomains, criticality=criticality)
+                observation = {"action": action, "status": "completed", "gate": gate, "result": _summarize_result(raw_result)}
+                dashboard.event("SUCCESS", f"{label} completed.")
+            except Exception as exc:
+                observation = {"action": action, "status": "handled_error", "error": handled_error(component="react_loop", action=action, error=exc)}
+                dashboard.event("WARNING", f"{label} handled error and continued safely.")
+
             state.mark_completed(action, observation)
             executed.append(observation)
+            if _is_reportable_observation(observation):
+                state.add_finding({"turn": turn, "action": action, "observation": observation})
+                dashboard.event("FINDING", f"Review lead captured from {label}; confidence scoring required.")
+
             current_output = _scan_output_from_result(observation)
-            continue
-
-        try:
-            raw_result = call_actuator(action, target=target, include_subdomains=include_subdomains, criticality=criticality)
-            observation = {"action": action, "status": "completed", "gate": gate, "result": _summarize_result(raw_result)}
-        except Exception as exc:
-            observation = {"action": action, "status": "handled_error", "error": handled_error(component="react_loop", action=action, error=exc)}
-
-        state.mark_completed(action, observation)
-        executed.append(observation)
-        if _is_reportable_observation(observation):
-            state.add_finding({"turn": turn, "action": action, "observation": observation})
-        current_output = _scan_output_from_result(observation)
-
-    else:
-        state.stop("max turns reached")
+            dashboard.update(
+                phase=label,
+                phase_progress=_progress(turn, max_turns),
+                requests=len(executed),
+                findings=len(state.state.get("findings", [])),
+                action=f"Observed result from {label}",
+                evidence=_observation_evidence(observation),
+                safety_status="Observation recorded • state checkpoint updated",
+            )
+        else:
+            state.stop("max turns reached")
+            dashboard.event("INFO", "Max turns reached; finalizing reports.")
+    except KeyboardInterrupt:
+        interrupted = True
+        state.stop("interrupted by user")
+        dashboard.event("WARNING", "Interrupted by user; final dashboard and reports are being written.")
+    finally:
+        dashboard.update(
+            phase="Final Dashboard",
+            phase_progress=100,
+            action="Writing final ReAct reports",
+            findings=len(state.state.get("findings", [])),
+            requests=len(executed),
+            safety_status="Finalized without production data modification",
+        )
+        dashboard.stop(final=True)
 
     checkpoint = state.write_report()
     out = cai_output_dir(target)
+    dashboard_reports = dashboard.write_reports(out)
     payload = {
         "target": target,
         "generated_at": time.time(),
         "mode": "safe_react_loop",
         "max_turns": max_turns,
+        "interrupted": interrupted,
         "executed": executed,
         "state_checkpoint": checkpoint,
         "final_state": state.state,
@@ -137,12 +269,14 @@ def run_loop(
             "react_run_json": str(out / "react-run.json"),
             "react_run_md": str(out / "react-run.md"),
             "react_state_md": str(out / "react-state.md"),
+            **dashboard_reports,
         },
         "safety": {
             "allowlisted_actuators_only": True,
             "shell_execution": False,
             "target_data_modification": False,
             "scope_gate_per_turn": True,
+            "live_dashboard_zero_impact": True,
         },
     }
     write_json(out / "react-run.json", payload)
@@ -151,11 +285,15 @@ def run_loop(
         "",
         f"Target: `{target}`",
         f"Executed turns: `{len(executed)}`",
+        f"Interrupted: `{interrupted}`",
         f"Stopped: `{state.state.get('stopped', False)}`",
         f"Stop reason: `{state.state.get('stop_reason', '')}`",
         "",
-        "## Turns",
+        "## Reports",
     ]
+    for name, path in payload["reports"].items():
+        lines.append(f"- `{name}`: `{path}`")
+    lines += ["", "## Turns"]
     for item in executed:
         lines.append(f"- action=`{item.get('action')}` status=`{item.get('status')}` result=`{json.dumps(item.get('result', item.get('gate', {})), ensure_ascii=False)[:500]}`")
     write_markdown(out / "react-run.md", lines)
@@ -169,8 +307,18 @@ def main() -> int:
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", default="normal", choices=["low", "normal", "high", "critical"])
     parser.add_argument("--force", action="store_true")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--live-dashboard", dest="live_dashboard", action="store_true", default=True)
+    group.add_argument("--no-live-dashboard", dest="live_dashboard", action="store_false")
     args = parser.parse_args()
-    payload = run_loop(args.target, max_turns=args.max_turns, include_subdomains=args.include_subdomains, criticality=args.criticality, force=args.force)
+    payload = run_loop(
+        args.target,
+        max_turns=args.max_turns,
+        include_subdomains=args.include_subdomains,
+        criticality=args.criticality,
+        force=args.force,
+        live_dashboard=args.live_dashboard,
+    )
     print(json.dumps({"status": "completed", "reports": payload.get("reports", {})}, indent=2))
     return 0
 
