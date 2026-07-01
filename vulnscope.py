@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.4.0-live-dashboard"
+VERSION = "1.4.1-kali-cli-final-dashboard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope                                ║
-║   Preflight → URL → Consent → Live Autonomous Safe Review         ║
+║      Preflight → URL → Consent → Final Kali CLI Dashboard         ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -40,7 +40,7 @@ def host_from_target(target: str) -> str:
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
-    """Run a child command with inherited stdout so live terminal dashboards render correctly."""
+    """Run a child command with inherited stdout so the final Kali CLI dashboard renders correctly."""
     print(f"\n[{label}]")
     print("$ " + " ".join(command))
     started = datetime.now(timezone.utc)
@@ -86,19 +86,18 @@ def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
         "preflight": "reports/output/vulnscope-main/preflight.md",
-        "live_dashboard": f"reports/output/cai-superior/{host}/live-dashboard.md",
-        "final_assessment": f"reports/output/cai-superior/{host}/final-assessment.md",
+        "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
+        "cli_session": f"reports/output/cai-superior/{host}/cli-session.json",
         "detailed_findings": f"reports/output/cai-superior/{host}/detailed-findings.json",
         "react_loop": f"reports/output/cai-superior/{host}/react-run.md",
         "react_state": f"reports/output/cai-superior/{host}/react-state.md",
         "cai_summary": f"reports/output/cai-superior/{host}/cai-superior-summary.md",
-        "final_dashboard": f"reports/output/final-dashboard/{host}-dashboard.html",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat()}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Interface: `Kali CLI final dashboard`", "Website dashboard: `false`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -128,10 +127,10 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         cmd.append("--include-subdomains")
     if args.force:
         cmd.append("--force")
-    if args.no_live_dashboard:
-        cmd.append("--no-live-dashboard")
-    else:
+    if args.live_dashboard and not args.no_live_dashboard:
         cmd.append("--live-dashboard")
+    if args.no_final_dashboard:
+        cmd.append("--no-final-dashboard")
     return run("Autonomous Ollama/ReAct Loop", cmd, timeout=3600)
 
 
@@ -172,7 +171,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-ollama-fallback", action="store_true")
     parser.add_argument("--no-model-pull", action="store_true")
     parser.add_argument("--no-python-install", action="store_true")
-    parser.add_argument("--no-live-dashboard", action="store_true")
+    parser.add_argument("--live-dashboard", action="store_true", default=False, help="Optional live terminal refresh. Final CLI dashboard is shown after completion by default.")
+    parser.add_argument("--no-live-dashboard", action="store_true", help="Compatibility flag. Live refresh is already off by default.")
+    parser.add_argument("--no-final-dashboard", action="store_true")
     parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", DEFAULT_OLLAMA_URL))
     parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL))
     return parser.parse_args()
