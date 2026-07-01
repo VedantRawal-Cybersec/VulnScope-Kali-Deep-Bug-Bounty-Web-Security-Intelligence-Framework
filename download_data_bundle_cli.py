@@ -83,10 +83,16 @@ def build_bundle(target: str) -> dict[str, object]:
             add_path(zf, Path(raw), base, added)
         add_path(zf, Path("reports/output/domain-reports") / f"{slug}-finding-brief.md", base, added)
         add_path(zf, Path("reports/output/domain-reports") / f"{slug}-finding-brief.json", base, added)
-        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-dashboard.html", base, added)
-        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-dashboard.md", base, added)
-        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-dashboard.json", base, added)
-        add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-latest-dashboard.html", base, added)
+        for suffix in [
+            "dashboard.html",
+            "dashboard.md",
+            "dashboard.json",
+            "latest-dashboard.html",
+            "confirmation-engine.json",
+            "confirmation-methodology.md",
+            "suppressed-noise.json",
+        ]:
+            add_path(zf, Path("reports/output/final-dashboard") / f"{slug}-{suffix}", base, added)
         add_path(zf, Path("reports/output/top100-tools") / slug, base, added)
         add_path(zf, Path("reports/output/autonomous-live/module-logs"), base, added)
 
@@ -97,7 +103,7 @@ def build_bundle(target: str) -> dict[str, object]:
             "bundle": str(zip_path),
             "files_count": len(added),
             "files": sorted(set(added)),
-            "note": "This bundle contains scan data and reports only, not the VulnScope source code.",
+            "note": "This bundle contains scan data and confirmation reports only, not the VulnScope source code.",
         }
         zf.writestr("bundle-manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
 
@@ -114,7 +120,7 @@ def build_bundle(target: str) -> dict[str, object]:
         f"Latest bundle: `{latest_path}`",
         f"Manifest: `{manifest_path}`",
         "",
-        "This is a data-only export for the selected website scan. It does not contain the tool source code.",
+        "This is a data-only export for the selected website scan. It includes the final confirmation dashboard and suppressed-noise artifacts.",
     ]), encoding="utf-8")
 
     return {"target": target, "bundle": str(zip_path), "latest": str(latest_path), "manifest": str(manifest_path), "summary": str(md_path), "files_count": len(set(added))}
