@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.3.0-one-command-agentic"
+VERSION = "1.4.0-live-dashboard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope                                ║
-║        Preflight → URL → Consent → Autonomous Safe Review         ║
+║   Preflight → URL → Consent → Live Autonomous Safe Review         ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -40,13 +40,28 @@ def host_from_target(target: str) -> str:
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
+    """Run a child command with inherited stdout so live terminal dashboards render correctly."""
     print(f"\n[{label}]")
     print("$ " + " ".join(command))
     started = datetime.now(timezone.utc)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     try:
-        proc = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-        print((proc.stdout or "")[-4000:])
-        return {"label": label, "ok": proc.returncode == 0, "exit_code": proc.returncode, "command": command, "output_tail": (proc.stdout or "")[-4000:]}
+        proc = subprocess.Popen(command, env=env)
+        try:
+            exit_code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            exit_code = proc.wait(timeout=10)
+            return {
+                "label": label,
+                "ok": False,
+                "exit_code": exit_code,
+                "command": command,
+                "error": f"timeout after {timeout}s",
+                "started_at": started.isoformat(),
+            }
+        return {"label": label, "ok": exit_code == 0, "exit_code": exit_code, "command": command, "started_at": started.isoformat(), "ended_at": datetime.now(timezone.utc).isoformat()}
     except Exception as exc:
         print(f"error: {exc}")
         return {"label": label, "ok": False, "error": str(exc), "command": command, "started_at": started.isoformat()}
@@ -71,6 +86,7 @@ def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
         "preflight": "reports/output/vulnscope-main/preflight.md",
+        "live_dashboard": f"reports/output/cai-superior/{host}/live-dashboard.md",
         "react_loop": f"reports/output/cai-superior/{host}/react-run.md",
         "react_state": f"reports/output/cai-superior/{host}/react-state.md",
         "cai_summary": f"reports/output/cai-superior/{host}/cai-superior-summary.md",
@@ -110,6 +126,10 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         cmd.append("--include-subdomains")
     if args.force:
         cmd.append("--force")
+    if args.no_live_dashboard:
+        cmd.append("--no-live-dashboard")
+    else:
+        cmd.append("--live-dashboard")
     return run("Autonomous Ollama/ReAct Loop", cmd, timeout=3600)
 
 
@@ -150,6 +170,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-ollama-fallback", action="store_true")
     parser.add_argument("--no-model-pull", action="store_true")
     parser.add_argument("--no-python-install", action="store_true")
+    parser.add_argument("--no-live-dashboard", action="store_true")
     parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", DEFAULT_OLLAMA_URL))
     parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL))
     return parser.parse_args()
