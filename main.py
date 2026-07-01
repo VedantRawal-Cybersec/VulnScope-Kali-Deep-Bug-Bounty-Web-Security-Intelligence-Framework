@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from vulnscope_clean_cli import main
+from vulnscope import main
 
 
 if __name__ == "__main__":
