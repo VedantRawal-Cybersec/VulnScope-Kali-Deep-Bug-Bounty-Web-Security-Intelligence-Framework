@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from urllib.parse import urljoin, urlparse, urldefrag
 
+from cai_scope_guard import cai_output_dir, host_from_target, is_allowed_host, normalize_target, scope_policy, slug_from_target
+
 
 def normalize_link(base_url: str, href: str) -> str | None:
     if not href:
@@ -20,3 +22,15 @@ def normalize_link(base_url: str, href: str) -> str | None:
 def is_same_domain(url: str, target_host: str) -> bool:
     parsed = urlparse(url)
     return parsed.netloc.lower() == target_host.lower()
+
+
+__all__ = [
+    "normalize_link",
+    "is_same_domain",
+    "normalize_target",
+    "host_from_target",
+    "slug_from_target",
+    "is_allowed_host",
+    "scope_policy",
+    "cai_output_dir",
+]
