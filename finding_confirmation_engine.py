@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -8,6 +9,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
+
+from cai_confidence_policy import score_candidate
 
 OUT = Path("reports/output/final-dashboard")
 
@@ -20,9 +23,7 @@ STATE_CHANGE_WORDS = {"update", "change", "delete", "remove", "create", "add", "
 OBJECT_WORDS = {"id", "uid", "user", "account", "order", "invoice", "object", "tenant", "profile", "customer", "booking", "cart", "payment"}
 API_WORDS = {"api", "graphql", "ajax", "json", "data", "v1", "v2", "rest"}
 TOKEN_WORDS = {"authorization", "bearer", "jwt", "session", "cookie", "set-cookie", "token", "csrf", "xsrf"}
-DB_ERROR_PATTERNS = [
-    "sql syntax", "mysql", "postgres", "sqlite", "ora-", "odbc", "jdbc", "database error", "stack trace", "traceback", "exception", "debug",
-]
+DB_ERROR_PATTERNS = ["sql syntax", "mysql", "postgres", "sqlite", "ora-", "odbc", "jdbc", "database error", "stack trace", "traceback", "exception", "debug"]
 
 
 def short(value: Any, n: int = 500) -> str:
@@ -79,11 +80,7 @@ def where_found(item: dict[str, Any], target: str) -> str:
 
 
 def evidence_text(item: dict[str, Any]) -> str:
-    return value(
-        item,
-        ["evidence_detail", "evidence", "why_flagged", "reason", "decision", "safe_check", "verdict", "tail"],
-        "",
-    )
+    return value(item, ["evidence_detail", "evidence", "why_flagged", "reason", "decision", "safe_check", "verdict", "tail"], "")
 
 
 def is_static_path(path: str) -> bool:
@@ -107,40 +104,32 @@ def eligibility(item: dict[str, Any], vtype: str, target: str) -> tuple[bool, st
         if (path_parts | {p.lower() for p in params}) & OBJECT_WORDS or re.search(r"/[0-9a-f-]{6,}(/|$)", path.lower()):
             return True, "passed: endpoint appears object/account identifier tied"
         return False, "ineligible: no account-specific or object-specific identifier evidence"
-
     if vtype == "SQLi":
         if any(x in text for x in ["response diff", "status code change", "body structure", "data lookup", "different valid input", *DB_ERROR_PATTERNS]):
             return True, "passed: observable data lookup variation or server-side error evidence"
         return False, "ineligible: parameter did not show observable data-lookup variation"
-
     if vtype == "CSRF":
         if any(x in text or x in path.lower() for x in STATE_CHANGE_WORDS):
             return True, "passed: state-changing endpoint indicators present"
         return False, "ineligible: read-only endpoint or no state-changing action evidence"
-
     if vtype in {"SSRF", "Open Redirect"}:
         if any(x in text for x in ["location", "redirect", "callback", "listener", "outbound", "fetch", "external", "example.invalid"]):
             return True, "passed: redirect/fetch behavior evidence present"
         return False, "ineligible: parameter presence without redirect/fetch behavior"
-
     if vtype == "CORS":
         if not ((path_parts & API_WORDS) or any(x in text for x in ["api", "json", "data endpoint", "access-control-allow-origin"])):
             return False, "ineligible: not an API/data endpoint"
         if "access-control-allow-origin" in text or "access-control-allow-credentials" in text:
             return True, "passed: captured CORS header evidence on data endpoint"
         return False, "ineligible: missing captured CORS header pair"
-
     if vtype == "Auth/JWT":
         if any(x in text for x in TOKEN_WORDS):
             return True, "passed: token/session artifact present in captured evidence"
         return False, "ineligible: auth/session wording without token or session artifact"
-
     if vtype == "Safe Parameter Review":
         if any(x in text for x in ["marker", "canary", "safe parameter", "reflected", "reflection", "location", "header", "body"]):
             return True, "passed: safe structural marker observation exists"
         return False, "ineligible: no behavioral evidence beyond parameter naming"
-
-    # Generic evidence-driven classes such as headers or reportability notes.
     if evidence_text(item) or any(x in text for x in ["header", "cookie", "diff", "evidence", "observed", "missing"]):
         return True, "passed: generic evidence artifact present"
     return False, "ineligible: no comparable evidence artifact"
@@ -187,24 +176,9 @@ def evidence_strength(item: dict[str, Any]) -> int:
     return score
 
 
-def confidence(item: dict[str, Any], evidence_type: str | None) -> str:
-    text = joined(item)
-    has_control = any(x in text for x in ["control", "baseline", "known-safe", "known safe"])
-    reproduced = any(x in text for x in ["reproduced", "2 independent", "twice", "second request", "two requests"])
-    if evidence_type and has_control and reproduced:
-        return "high"
-    if evidence_type:
-        return "medium"
-    return "low"
-
-
-def classification(vtype: str, conf: str, item: dict[str, Any]) -> tuple[str, bool, str, str]:
-    text = joined(item)
-    if conf == "high" and any(x in text for x in ["confirmed", "validated", "verified", "proven", "cross-account", "callback", "access-control-allow-credentials"]):
-        return "CONFIRMED", True, "Confirmed by comparable evidence artifact", "Potentially reportable after final human review"
-    if conf in {"medium", "high"}:
-        return "REVIEW LEAD", False, "Behavioral evidence exists but confirmation threshold is not fully met", "Review lead only"
-    return "NOISE", False, "No behavioral evidence artifact met the confirmation threshold", "Do not report"
+def stable_artifact_id(item: dict[str, Any], where: str, evidence_detail: str) -> str:
+    raw = value(item, ["request_id", "response_id", "evidence_id", "id"], "") or f"{where}|{evidence_detail}"
+    return hashlib.sha256(str(raw).encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
 def dedup(raw: list[dict[str, Any]], target: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
@@ -216,7 +190,6 @@ def dedup(raw: list[dict[str, Any]], target: str) -> tuple[list[dict[str, Any]],
         enriched["_vulnerability_type"] = vtype
         enriched["_url_path"] = path
         groups[(vtype, path)].append(enriched)
-
     unique: list[dict[str, Any]] = []
     duplicates: list[dict[str, Any]] = []
     for key, items in groups.items():
@@ -247,43 +220,35 @@ def confirm_findings(raw_findings: list[dict[str, Any]], target: str) -> dict[st
         param = item.get("parameter") or (params_from_url(where)[0] if params_from_url(where) else "n/a")
         ok, elig_reason = eligibility(item, vtype, target)
         if not ok:
-            suppressed.append({
-                "vulnerability_type": vtype,
-                "url_path": path,
-                "where_found": where,
-                "reason": elig_reason,
-                "dedup_group_size": int(item.get("dedup_group_size", 1)),
-            })
+            suppressed.append({"vulnerability_type": vtype, "url_path": path, "where_found": where, "reason": elig_reason, "dedup_group_size": int(item.get("dedup_group_size", 1))})
             continue
         etype, edetail = evidence_type_and_detail(item)
-        conf = confidence(item, etype)
-        if conf == "low":
-            needs_signal.append({
-                "vulnerability_type": vtype,
-                "url_path": path,
-                "where_found": where,
-                "reason": "low confidence: passed eligibility gate only, no sufficient behavioral evidence artifact",
-                "dedup_group_size": int(item.get("dedup_group_size", 1)),
-            })
+        if not etype:
+            needs_signal.append({"vulnerability_type": vtype, "url_path": path, "where_found": where, "reason": "low confidence: passed eligibility gate only, no sufficient behavioral evidence artifact", "dedup_group_size": int(item.get("dedup_group_size", 1))})
             continue
-        cls, confirmed, confirm_reason, reportability = classification(vtype, conf, item)
+        control = control_result(item)
+        score = score_candidate(vulnerability_type=vtype, item=item, evidence_type=etype, evidence_detail=edetail, control_comparison_result=control)
+        conf = str(score["confidence"])
+        if conf == "low":
+            needs_signal.append({"vulnerability_type": vtype, "url_path": path, "where_found": where, "reason": "low confidence: failed weighted scoring threshold", "dedup_group_size": int(item.get("dedup_group_size", 1)), "confidence_score": score["confidence_score"], "score_breakdown": score["score_breakdown"]})
+            continue
+        classification = str(score["classification"])
+        confirmed = classification == "CONFIRMED"
         source = value(item, ["source", "module", "how_found"], "confirmation_engine")
         title = value(item, ["what_found", "title", "name", "type", "category"], vtype)
-        control = control_result(item)
-        false_positive = "Could still be benign if the observed difference is expected application variance or lacks user-impact proof."
-        if conf == "high":
-            false_positive = "Lower risk because reproduced evidence and a control/baseline comparison are present; still requires final human review."
         row = {
             "vulnerability_type": vtype,
             "url_path": path,
             "dedup_group_size": int(item.get("dedup_group_size", 1)),
             "eligibility_check": elig_reason,
-            "evidence_type": etype or "n/a",
+            "evidence_type": etype,
             "evidence_detail": edetail,
             "confidence": conf,
+            "confidence_score": score["confidence_score"],
+            "score_breakdown": score["score_breakdown"],
             "control_comparison_result": control,
-            "false_positive_risk_notes": false_positive,
-            "classification": cls,
+            "false_positive_risk_notes": score["false_positive_risk_notes"],
+            "classification": classification,
             "source": source,
             "what_found": short(title, 140),
             "type": vtype,
@@ -293,24 +258,20 @@ def confirm_findings(raw_findings: list[dict[str, Any]], target: str) -> dict[st
             "parameter": param or "n/a",
             "how_found": short(source, 220),
             "evidence": edetail,
+            "evidence_artifact_id": stable_artifact_id(item, where, edetail),
             "confirmation_status": "Confirmed" if confirmed else "Review lead - not confirmed",
             "confirmed": confirmed,
-            "confirmation_reason": confirm_reason,
-            "reportability": reportability,
+            "confirmation_reason": score["decision_rationale"],
+            "reportability": score["reportability"],
             "safe_confirmation_plan": "Use only existing approved non-destructive comparison evidence. Add reproduction/control artifacts before upgrading confidence.",
-            "status": cls.lower().replace(" ", "_"),
+            "status": classification.lower().replace(" ", "_"),
         }
         surface.append(row)
 
     suppressed.extend(duplicates)
     return {
         "generated_at": time.time(),
-        "deduplication": {
-            "raw_count": counts["raw"],
-            "unique_count": counts["unique"],
-            "dedup_ratio": f"{counts['raw']} -> {counts['unique']}",
-            "duplicates_suppressed": len(duplicates),
-        },
+        "deduplication": {"raw_count": counts["raw"], "unique_count": counts["unique"], "dedup_ratio": f"{counts['raw']} -> {counts['unique']}", "duplicates_suppressed": len(duplicates)},
         "summary": {
             "surface_count": len(surface),
             "confirmed": len([x for x in surface if x.get("classification") == "CONFIRMED"]),
@@ -319,6 +280,7 @@ def confirm_findings(raw_findings: list[dict[str, Any]], target: str) -> dict[st
             "needs_more_signal": len(needs_signal),
             "high_confidence": len([x for x in surface if x.get("confidence") == "high"]),
             "medium_confidence": len([x for x in surface if x.get("confidence") == "medium"]),
+            "avg_confidence_score": round(sum(float(x.get("confidence_score", 0.0)) for x in surface) / len(surface), 3) if surface else 0.0,
         },
         "findings": [x for x in surface if x.get("classification") == "CONFIRMED"],
         "review_leads": [x for x in surface if x.get("classification") == "REVIEW LEAD"],
@@ -345,7 +307,8 @@ def write_confirmation_reports(target_slug: str, payload: dict[str, Any]) -> Non
         "## Stage 2 — Evidence Requirements",
         "Only captured comparable artifacts are accepted: structural diff, cross-session comparison, server-side error, redirect/fetch confirmation, or header inspection.",
         "",
-        "## Stage 3 — Confidence Tiering",
+        "## Stage 3 — Confidence Scoring",
+        "Confidence = evidence_strength*0.4 + reproducibility*0.3 + impact_estimate*0.3.",
         "LOW goes to needs-more-signal. MEDIUM becomes a review lead. HIGH can become confirmed only when comparable evidence supports it.",
         "",
         "## Stage 4 — Output",
@@ -353,6 +316,7 @@ def write_confirmation_reports(target_slug: str, payload: dict[str, Any]) -> Non
         f"Review leads: `{payload['summary']['review_leads']}`",
         f"Noise suppressed: `{payload['summary']['noise_suppressed']}`",
         f"Needs more signal: `{payload['summary']['needs_more_signal']}`",
+        f"Average confidence score: `{payload['summary']['avg_confidence_score']}`",
     ]
     (OUT / f"{target_slug}-confirmation-methodology.md").write_text("\n".join(lines), encoding="utf-8")
 
