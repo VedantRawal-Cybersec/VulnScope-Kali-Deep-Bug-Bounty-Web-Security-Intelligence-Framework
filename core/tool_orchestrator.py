@@ -188,20 +188,23 @@ class UltimateToolOrchestrator:
     def _emit(self, level: str, message: str) -> None:
         if self.dashboard is not None and hasattr(self.dashboard, "event"):
             self.dashboard.event(level, message)
+        else:
+            print(f"[{level}] {message}", flush=True)
 
     def _update_dashboard(self, spec: ToolSpec, index: int, total: int, status: str, evidence: str = "") -> None:
+        progress = int(index * 100 / max(1, total))
         if self.dashboard is None or not hasattr(self.dashboard, "update"):
             return
-        progress = int(index * 100 / max(1, total))
         self.dashboard.update(
             phase="100-Tool Orchestration",
             phase_progress=progress,
             phase_total=100,
-            action=f"{spec.tool_name} → {status}",
+            requests=index,
+            action=f"{index}/{total} {spec.tool_name} → {status}",
             probe_string=f"safe-orchestrator:{spec.tool_id}",
             hypothesis=f"{spec.category} via {spec.run_function}",
             evidence=evidence or "Structured safe tool status event emitted",
-            safety_status="100-tool registry • allowlisted actuators • no target data modification",
+            safety_status="100-tool registry • allowlisted actuators • target data modification disabled",
         )
 
     def _run_one(self, spec: ToolSpec, index: int, total: int) -> ToolResult:
@@ -213,7 +216,7 @@ class UltimateToolOrchestrator:
         if spec.run_function not in ACTUATORS:
             return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", 0, error=f"unregistered actuator {spec.run_function}", actuator=spec.run_function)
         self._update_dashboard(spec, index, total, "running")
-        self._emit("INFO", f"{spec.tool_name}: running through {spec.run_function}")
+        self._emit("INFO", f"{index}/{total} {spec.tool_name}: running through {spec.run_function}")
         try:
             cache_reused = spec.run_function in self.actuator_cache
             if cache_reused:
@@ -223,15 +226,15 @@ class UltimateToolOrchestrator:
                 self.actuator_cache[spec.run_function] = raw
             runtime_ms = int((time.time() - started) * 1000)
             if _is_error_result(raw):
-                self._emit("WARNING", f"{spec.tool_name}: failed safely and scan continued")
+                self._emit("WARNING", f"{index}/{total} {spec.tool_name}: failed safely and scan continued")
                 return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", runtime_ms, output_count=_output_count(raw), actuator=spec.run_function, error=_summary(raw), cache_reused=cache_reused)
             result = ToolResult(spec.tool_id, spec.tool_name, spec.category, "completed", runtime_ms, output_count=_output_count(raw), actuator=spec.run_function, message="completed using safe integrated actuator output", evidence_summary=_summary(raw), cache_reused=cache_reused)
-            self._emit("SUCCESS", f"{spec.tool_name}: completed")
+            self._emit("SUCCESS", f"{index}/{total} {spec.tool_name}: completed")
             self._update_dashboard(spec, index, total, "completed", result.evidence_summary)
             return result
         except Exception as exc:
             runtime_ms = int((time.time() - started) * 1000)
-            self._emit("WARNING", f"{spec.tool_name}: {exc}")
+            self._emit("WARNING", f"{index}/{total} {spec.tool_name}: {exc}")
             return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", runtime_ms, actuator=spec.run_function, error=str(exc)[:500])
 
     def run(self) -> dict[str, Any]:
@@ -241,9 +244,9 @@ class UltimateToolOrchestrator:
             result = self._run_one(spec, index, total)
             self.results.append(result)
             if result.status == "skipped":
-                self._emit("INFO", f"{spec.tool_name}: skipped ({result.skipped_reason})")
+                self._emit("INFO", f"{index}/{total} {spec.tool_name}: skipped ({result.skipped_reason})")
             elif result.status == "failed":
-                self._emit("WARNING", f"{spec.tool_name}: failed safely")
+                self._emit("WARNING", f"{index}/{total} {spec.tool_name}: failed safely")
             self._update_dashboard(spec, index, total, result.status, result.evidence_summary or result.error or result.skipped_reason)
         self._emit("SUCCESS", "100-tool orchestrator completed")
         return self.payload()
@@ -286,20 +289,51 @@ class UltimateToolOrchestrator:
         return {"tool_matrix_json": str(matrix_json), "tool_matrix_md": str(matrix_md), "tool_registry_100_json": str(registry_json)}
 
 
+def _print_summary(payload: dict[str, Any], reports: dict[str, str]) -> None:
+    counts = payload.get("status_counts", {})
+    print("\n" + "=" * 80)
+    print("VULNSCOPE 100-TOOL ORCHESTRATION MATRIX — FINAL")
+    print("=" * 80)
+    print(f"Target: {payload.get('target')}")
+    print(f"Scan mode: {payload.get('scan_mode')}")
+    print(f"Total tools: {payload.get('tool_count')}")
+    print(f"Completed: {counts.get('completed', 0)}")
+    print(f"Skipped: {counts.get('skipped', 0)}")
+    print(f"Failed: {counts.get('failed', 0)}")
+    print(f"Blocked by scope: {counts.get('blocked_by_scope', 0)}")
+    print(f"Blocked by safety: {counts.get('blocked_by_safety', 0)}")
+    print("Reports:")
+    for name, path in reports.items():
+        print(f"- {name}: {path}")
+    print("=" * 80)
+
+
 def main() -> int:
     import argparse
     from cai_scope_guard import cai_output_dir, normalize_target
+    from core.live_dashboard import LiveDashboard
+
     parser = argparse.ArgumentParser(description="VulnScope deterministic 100-tool safe orchestrator")
     parser.add_argument("--target", required=True)
     parser.add_argument("--scan-mode", default="passive", choices=["passive", "safe-active", "lab"])
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", default="normal", choices=["low", "normal", "high", "critical"])
+    parser.add_argument("--no-live-dashboard", action="store_true")
     args = parser.parse_args()
+
     target = normalize_target(args.target)
-    orchestrator = UltimateToolOrchestrator(target, scan_mode=args.scan_mode, include_subdomains=args.include_subdomains, criticality=args.criticality)
-    orchestrator.run()
+    dashboard = LiveDashboard(target, max_turns=100, enabled=True, live_stream=not args.no_live_dashboard)
+    dashboard.start()
+    try:
+        dashboard.event("INFO", "100-tool matrix started. Live output is enabled by default.")
+        orchestrator = UltimateToolOrchestrator(target, scan_mode=args.scan_mode, include_subdomains=args.include_subdomains, criticality=args.criticality, dashboard=dashboard)
+        payload = orchestrator.run()
+    finally:
+        dashboard.stop(final=False)
     reports = orchestrator.write_reports(cai_output_dir(target))
-    print(json.dumps({"status": "completed", "reports": reports}, indent=2, ensure_ascii=False))
+    dashboard.report_paths = dict(reports)
+    _print_summary(payload, reports)
+    print(json.dumps({"status": "completed", "reports": reports, "status_counts": payload.get("status_counts", {})}, indent=2, ensure_ascii=False))
     return 0
 
 
