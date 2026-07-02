@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -71,11 +71,12 @@ class SafeHttpClientV2:
             raise ValueError("blocked non-http URL")
         if not parsed.hostname:
             raise ValueError("blocked URL without hostname")
+        host = parsed.hostname.lower()
+        base = self.state.host.lower()
+        if host != base and not host.endswith("." + base):
+            raise ValueError("blocked out-of-scope hostname")
 
-    def request(self, method: str, url: str, *, purpose: str = "scan", allow_redirects: bool = True) -> ResponseRecord:
-        method = method.upper()
-        if method not in {"GET", "HEAD"}:
-            raise ValueError("safe client only permits GET and HEAD")
+    def _fetch_once(self, method: str, url: str, purpose: str) -> ResponseRecord:
         self._same_host_guard(url)
         if self.budget_remaining() <= 0:
             raise RuntimeError("request budget exhausted")
@@ -84,7 +85,7 @@ class SafeHttpClientV2:
         started = time.time()
         self.state.stats["requests"] = int(self.state.stats.get("requests", 0)) + 1
         try:
-            response = self.session.request(method, url, timeout=self.timeout, allow_redirects=allow_redirects, stream=True)
+            response = self.session.request(method, url, timeout=self.timeout, allow_redirects=False, stream=True)
             chunks: list[bytes] = []
             total = 0
             if method != "HEAD":
@@ -116,6 +117,26 @@ class SafeHttpClientV2:
             elapsed_ms = int((time.time() - started) * 1000)
             res_id = self.evidence.record_response(request_id=req_id, url=url, status_code=0, headers={}, body="", elapsed_ms=elapsed_ms, error=str(exc))
             return ResponseRecord(url=url, status_code=0, headers={}, text="", elapsed_ms=elapsed_ms, request_id=req_id, response_id=res_id, error=str(exc))
+
+    def request(self, method: str, url: str, *, purpose: str = "scan", allow_redirects: bool = True) -> ResponseRecord:
+        method = method.upper()
+        if method not in {"GET", "HEAD"}:
+            raise ValueError("safe client only permits GET and HEAD")
+        current = url
+        response = self._fetch_once(method, current, purpose)
+        redirects = 0
+        while allow_redirects and response.status_code in {301, 302, 303, 307, 308} and redirects < 3:
+            location = response.headers.get("Location", "")
+            if not location:
+                break
+            next_url = urljoin(response.url, location)
+            try:
+                self._same_host_guard(next_url)
+            except Exception:
+                break
+            redirects += 1
+            response = self._fetch_once("GET" if response.status_code in {301, 302, 303} else method, next_url, purpose + ":redirect")
+        return response
 
     def get(self, url: str, *, purpose: str = "scan", allow_redirects: bool = True) -> ResponseRecord:
         return self.request("GET", url, purpose=purpose, allow_redirects=allow_redirects)
