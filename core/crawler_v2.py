@@ -12,10 +12,7 @@ from core.http_client_v2 import SafeHttpClientV2
 from core.parameter_inventory import add_get_form_params, add_params_from_url
 from core.scan_state import ScanState
 
-ASSET_EXTENSIONS = (
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".css",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot", ".pdf", ".zip", ".mp4", ".webm",
-)
+ASSET_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".css", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".pdf", ".zip", ".mp4", ".webm")
 SENSITIVE_HINTS = ("login", "logout", "signin", "signup", "register", "reset", "password", "checkout", "payment", "cart", "upload", "delete")
 
 
@@ -116,9 +113,35 @@ class CrawlerV2:
         self.form_count = 0
 
     def _update(self, message: str, url: str, progress: int) -> None:
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
+        paths = {urlparse(item.url).path or "/" for item in self.state.urls.values()}
+        api_routes = [item.url for item in self.state.urls.values() if "/api/" in (urlparse(item.url).path or "").lower() or "graphql" in (urlparse(item.url).path or "").lower()]
         if self.dashboard is not None and hasattr(self.dashboard, "update"):
-            parts = {"endpoint": url, "request_line": "GET " + (urlparse(url).path or "/"), "path": urlparse(url).path or "/", "parameters": urlparse(url).query or "—", "domain": urlparse(url).hostname or "—"}
-            self.dashboard.update(phase="Crawler v2", phase_progress=progress, requests=self.client.state.stats.get("requests", 0), findings=len(self.state.findings), action=message, endpoint=parts["endpoint"], request_line=parts["request_line"], path=parts["path"], parameters=parts["parameters"], domain=parts["domain"], probe_string="crawl", evidence=f"urls={len(self.state.urls)} params={len(self.state.params)}", safety_status="same-scope crawl with request budget and adaptive backoff")
+            self.dashboard.update(
+                current_agent="CrawlerAgent",
+                current_tool="safe_crawler",
+                phase="Crawler v2",
+                phase_progress=progress,
+                requests=self.client.state.stats.get("requests", 0),
+                findings=len(self.state.findings),
+                action=message,
+                endpoint=url,
+                request_line="GET " + path + (("?" + parsed.query) if parsed.query else ""),
+                path=path,
+                parameters=query,
+                domain=parsed.hostname or "—",
+                probe_string="crawl",
+                evidence=f"urls={len(self.state.urls)} paths={len(paths)} params={len(self.state.params)} forms={self.form_count} scripts={len(self.script_urls)}",
+                urls_found=len(self.state.urls),
+                paths_found=len(paths),
+                params_found=len(self.state.params),
+                forms_found=self.form_count,
+                js_found=len(self.script_urls),
+                api_routes_found=len(api_routes),
+                safety_status="same-scope crawl with request budget and adaptive backoff",
+            )
         if self.dashboard is not None and hasattr(self.dashboard, "event"):
             self.dashboard.event("INFO", message)
 
@@ -192,6 +215,7 @@ class CrawlerV2:
                         if route not in self.state.urls and len(queue) + len(self.state.urls) < self.max_pages * 3:
                             self.state.add_url(route, depth=depth + 1, source="inline-js")
                             queue.append((route, depth + 1))
+            self._update(f"Completed page {done + 1}: discovered urls={len(self.state.urls)} params={len(self.state.params)}", result.url, progress)
             record.status = "done"
             done += 1
             if done % 5 == 0:
