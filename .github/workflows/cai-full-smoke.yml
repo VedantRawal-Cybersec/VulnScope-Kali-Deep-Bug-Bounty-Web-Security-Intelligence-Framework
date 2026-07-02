@@ -26,5 +26,9 @@ jobs:
             cai_business_logic_cli.py cai_feedback_cli.py \
             cai_safety_gate.py cai_superior_cli.py vulnscope.py \
             core/live_dashboard.py core/ollama_brain.py core/react_loop.py \
-            core/state_manager.py core/scope_guard.py core/tool_orchestrator.py
-      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py tests/test_live_dashboard.py tests/test_tool_orchestrator.py -q
+            core/state_manager.py core/scope_guard.py core/tool_orchestrator.py \
+            core/scan_state.py core/evidence_store.py core/http_client_v2.py \
+            core/parameter_inventory.py core/crawler_v2.py core/browser_crawler.py \
+            core/test_engine.py core/ai_planner.py core/reporting_v2.py \
+            core/autonomous_scan_engine.py
+      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py tests/test_live_dashboard.py tests/test_tool_orchestrator.py tests/test_autonomous_scan_engine.py -q
