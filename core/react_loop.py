@@ -310,7 +310,7 @@ def run_loop(
             requests=len(executed),
             safety_status="Finalized without production data modification",
         )
-        dashboard.stop(final=True)
+        dashboard.stop(final=False)
 
     checkpoint = state.write_report()
     out = cai_output_dir(target)
@@ -337,6 +337,7 @@ def run_loop(
             "scope_gate_per_turn": True,
             "kali_cli_dashboard_only": True,
             "website_dashboard": False,
+            "final_dashboard_direct_stdout": True,
         },
     }
     write_json(out / "react-run.json", payload)
@@ -357,6 +358,11 @@ def run_loop(
     for item in executed:
         lines.append(f"- action=`{item.get('action')}` status=`{item.get('status')}` result=`{json.dumps(item.get('result', item.get('gate', {})), ensure_ascii=False)[:500]}`")
     write_markdown(out / "react-run.md", lines)
+    dashboard.report_paths = dict(payload["reports"])
+    if final_dashboard:
+        dashboard.show_final()
+        final_md = out / "cli-final-dashboard.md"
+        final_md.write_text("# VulnScope Ultimate Kali CLI Final Dashboard\n\n```text\n" + dashboard.final_text(color=False) + "\n```\n", encoding="utf-8")
     return payload
 
 
