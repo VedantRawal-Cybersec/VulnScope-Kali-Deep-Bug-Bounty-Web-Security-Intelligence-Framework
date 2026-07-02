@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.6.1-visible-100-tool-orchestrator"
+VERSION = "1.6.2-hard-timeout-100-tool-orchestrator"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope Ultimate                       ║
-║      Preflight → Consent → Live 100 Tools → Live ReAct → Report   ║
+║  Preflight → Consent → 100 Tools with Timeout → Live ReAct → Report ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -88,10 +88,10 @@ def final_summary(target: str, history: list[dict]) -> None:
         "react_state": f"reports/output/cai-superior/{host}/react-state.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "dashboard": "visible_100_tool_cli_direct_output", "hundred_tool_orchestrator": True, "live_output_default": True, "final_dashboard_direct_stdout": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "dashboard": "visible_100_tool_cli_direct_output", "hundred_tool_orchestrator": True, "hard_timeout_per_actuator": True, "live_output_default": True, "final_dashboard_direct_stdout": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Interface: `Kali CLI live dashboard`", "100-tool orchestrator: `true`", "Live output default: `true`", "Direct stdout dashboard: `true`", "Website dashboard: `false`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Interface: `Kali CLI live dashboard`", "100-tool orchestrator: `true`", "Hard timeout per actuator: `true`", "Live output default: `true`", "Direct stdout dashboard: `true`", "Website dashboard: `false`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -107,7 +107,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
     history: list[dict] = []
-    orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", args.scan_mode, "--criticality", args.criticality]
+    orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", args.scan_mode, "--criticality", args.criticality, "--tool-timeout", str(args.tool_timeout)]
     if args.include_subdomains:
         orch_cmd.append("--include-subdomains")
     if args.no_live_dashboard:
@@ -155,6 +155,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["deps", "cai", "agentic"], default="agentic")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
+    parser.add_argument("--tool-timeout", type=int, default=20, help="Hard timeout in seconds for each unique 100-tool actuator call.")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", choices=["low", "normal", "high", "critical"], default="normal")
