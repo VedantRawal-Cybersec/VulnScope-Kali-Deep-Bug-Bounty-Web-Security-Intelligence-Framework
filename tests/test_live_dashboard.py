@@ -25,11 +25,13 @@ def test_dashboard_renders_required_visibility_fields():
         evidence="status=completed",
     )
     text = dashboard.render_text(color=False)
+    assert "VULNSCOPE ULTIMATE" in text
     assert "Domain:" in text
+    assert "Full Request:" in text
     assert "Endpoint:" in text
     assert "Path:" in text
     assert "Parameters:" in text
-    assert "String under test:" in text
+    assert "Safe string under test:" in text
     assert "Evidence snippet:" in text
 
 
@@ -49,7 +51,8 @@ def test_detailed_final_dashboard_fields_and_reports(tmp_path):
         confirmation="confirmed",
     )
     final_text = dashboard.final_text(color=False)
-    assert "KALI CLI FINAL ASSESSMENT DASHBOARD" in final_text
+    assert "VULNSCOPE ULTIMATE" in final_text
+    assert "FINAL KALI CLI DASHBOARD" in final_text
     assert "Severity Summary:" in final_text
     assert "CRITICAL:" in final_text
     assert "HIGH:" in final_text
