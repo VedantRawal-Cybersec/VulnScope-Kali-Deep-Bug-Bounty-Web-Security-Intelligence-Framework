@@ -121,7 +121,7 @@ class TestEngine:
             if outcome.finding:
                 record.finding_id = outcome.finding.get("id")
             param.tested.append(test_name) if test_name not in param.tested else None
-            if all(name in param.tested for name in ["reflection_canary", "classification_review"]):
+            if test_name == "classification_review" or all(name in param.tested for name in ["reflection_canary", "classification_review"]):
                 param.status = "done"
             record.finished_at = time.time()
             self.state.save()
@@ -185,7 +185,6 @@ class TestEngine:
         return TestOutcome(status="done", evidence_id=evidence_id, confidence=70, message="no reflection observed")
 
     def error_behavior(self, param: ParamRecord) -> TestOutcome:
-        probe = canary() + "_long"
         return self.reflection_canary(ParamRecord(url=param.url, name=param.name, value=param.value, source=param.source, kind=param.kind, risk_score=param.risk_score))
 
     def redirect_review(self, param: ParamRecord) -> TestOutcome:
