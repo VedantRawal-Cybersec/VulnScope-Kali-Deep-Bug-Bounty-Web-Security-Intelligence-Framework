@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.4.1-kali-cli-final-dashboard"
+VERSION = "1.5.0-ultimate-cli-dashboard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
-║                         VulnScope                                ║
-║      Preflight → URL → Consent → Final Kali CLI Dashboard         ║
+║                         VulnScope Ultimate                       ║
+║      Preflight → URL → Consent → Direct Kali CLI Dashboard        ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -40,7 +40,7 @@ def host_from_target(target: str) -> str:
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
-    """Run a child command with inherited stdout so the final Kali CLI dashboard renders correctly."""
+    """Run a child command with inherited stdout so the final Kali CLI dashboard renders directly."""
     print(f"\n[{label}]")
     print("$ " + " ".join(command))
     started = datetime.now(timezone.utc)
@@ -94,10 +94,30 @@ def final_summary(target: str, history: list[dict]) -> None:
         "cai_summary": f"reports/output/cai-superior/{host}/cai-superior-summary.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "website_dashboard": False}
+    payload = {
+        "target": target,
+        "history": history,
+        "reports": reports,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "interface": "kali_cli",
+        "dashboard": "ultimate_cli_direct_output",
+        "final_dashboard_direct_stdout": True,
+        "website_dashboard": False,
+    }
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Interface: `Kali CLI final dashboard`", "Website dashboard: `false`", "", "## Steps"]
+    lines = [
+        "# VulnScope Summary",
+        "",
+        f"Target: `{target}`",
+        "",
+        "Interface: `Kali CLI final dashboard`",
+        "Dashboard: `ultimate_cli_direct_output`",
+        "Direct stdout dashboard: `true`",
+        "Website dashboard: `false`",
+        "",
+        "## Steps",
+    ]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]

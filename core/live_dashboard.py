@@ -41,6 +41,7 @@ class LiveSnapshot:
     action: str = "Initializing safe autonomous loop"
     domain: str = "—"
     endpoint: str = "—"
+    request_line: str = "GET /"
     path: str = "—"
     parameters: str = "—"
     probe_string: str = "—"
@@ -90,9 +91,9 @@ def target_components(target: str) -> dict[str, str]:
         "target": normalized,
         "domain": domain,
         "endpoint": endpoint,
+        "request_line": request_line,
         "path": path,
         "parameters": query,
-        "request_line": request_line,
     }
 
 
@@ -115,6 +116,7 @@ class LiveDashboard:
             max_turns=max_turns,
             domain=_clean(parts["domain"], 100),
             endpoint=_clean(parts["endpoint"], 180),
+            request_line=_clean(parts["request_line"], 180),
             path=_clean(parts["path"], 140),
             parameters=_clean(parts["parameters"], 160),
         )
@@ -128,6 +130,7 @@ class LiveDashboard:
         self.max_events = 10
         self.running = False
         self.thread: threading.Thread | None = None
+        self.report_paths: dict[str, str] = {}
 
     def start(self) -> None:
         if not self.enabled or not self.live_stream:
@@ -137,14 +140,14 @@ class LiveDashboard:
             self.thread = threading.Thread(target=self._refresh_loop, daemon=True)
             self.thread.start()
         else:
-            print("[kali-cli-dashboard] live stream started", flush=True)
+            print("[vulnscope-ultimate-cli] live terminal view started", flush=True)
 
     def _refresh_loop(self) -> None:
         while self.running:
             self.draw(final=False)
             time.sleep(self.refresh_interval)
 
-    def stop(self, *, final: bool = True) -> None:
+    def stop(self, *, final: bool = False) -> None:
         self.running = False
         if self.thread:
             self.thread.join(timeout=1)
@@ -199,6 +202,7 @@ class LiveDashboard:
                 "description": _clean(description or "Evidence requires analyst review.", 400),
                 "url": _clean(url or snap.endpoint, 240),
                 "domain": _clean(snap.domain, 120),
+                "request_line": _clean(snap.request_line, 220),
                 "path": _clean(snap.path, 180),
                 "parameter": _clean(parameter or snap.parameters, 220),
                 "test_string": _clean(test_string or snap.probe_string, 220),
@@ -224,6 +228,7 @@ class LiveDashboard:
         self.update(
             domain=parts["domain"],
             endpoint=parts["endpoint"],
+            request_line=parts["request_line"],
             path=parts["path"],
             parameters=parts["parameters"],
             probe_string=probe_string,
@@ -264,6 +269,19 @@ class LiveDashboard:
             counts[severity if severity in counts else "INFO"] += 1
         return counts
 
+    def _report_lines(self) -> list[str]:
+        if not self.report_paths:
+            return ["CLI report paths will be written after finalization."]
+        preferred = ["cli_final_dashboard_md", "detailed_findings_json", "react_run_md"]
+        lines = []
+        for key in preferred:
+            if key in self.report_paths:
+                lines.append(f"{key}: {self.report_paths[key]}")
+        for key, value in self.report_paths.items():
+            if key not in preferred:
+                lines.append(f"{key}: {value}")
+        return lines
+
     def render_text(self, *, final: bool = False, color: bool = True) -> str:
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
@@ -271,7 +289,7 @@ class LiveDashboard:
         c = (lambda value: value) if color else (lambda value: "")
         width = self._term_width()
         inner = width - 2
-        title = "VULNSCOPE — AUTONOMOUS SECURITY AI"
+        title = "VULNSCOPE ULTIMATE — AUTONOMOUS SECURITY AI"
         subtitle = "Kali CLI Assessment • Full Visibility • Zero-Impact"
         phase_line = f"Target: {snap.target} | Phase: {snap.phase} | Findings: {snap.findings} | Requests: {snap.requests} | Time: {self._elapsed()}"
         lines = [
@@ -284,10 +302,11 @@ class LiveDashboard:
             "",
             f"{c(MAGENTA)}🧠 THINKING:{c(RESET)} {snap.action}",
             f"{c(BLUE)}🌐 Domain:{c(RESET)} {snap.domain}",
+            f"{c(CYAN)}📡 Full Request:{c(RESET)} {snap.request_line}",
             f"{c(CYAN)}🔗 Endpoint:{c(RESET)} {snap.endpoint}",
             f"{c(CYAN)}🗂️  Path:{c(RESET)} {snap.path}",
             f"{c(CYAN)}📝 Parameters:{c(RESET)} {snap.parameters}",
-            f"{c(YELLOW)}🔎 String under test:{c(RESET)} {snap.probe_string}",
+            f"{c(YELLOW)}🔎 Safe string under test:{c(RESET)} {snap.probe_string}",
             f"{c(MAGENTA)}💡 Hypothesis:{c(RESET)} {snap.hypothesis}",
             f"{c(CYAN)}🔍 Evidence snippet:{c(RESET)} {snap.evidence}",
             f"{c(GREEN)}🛡️  Safety:{c(RESET)} {snap.safety_status}",
@@ -325,9 +344,14 @@ class LiveDashboard:
         lines = [
             "=" * 80,
             f"{c(CYAN)}╔{'═' * 78}╗{c(RESET)}",
-            f"{c(CYAN)}║{c(RESET)} {c(MAGENTA)}KALI CLI FINAL ASSESSMENT DASHBOARD — DETAILED RESULTS{' ' * 19}{c(CYAN)}║{c(RESET)}",
+            f"{c(CYAN)}║{c(RESET)} {c(MAGENTA)}VULNSCOPE ULTIMATE — FINAL KALI CLI DASHBOARD{' ' * 28}{c(CYAN)}║{c(RESET)}",
             f"{c(CYAN)}╚{'═' * 78}╝{c(RESET)}",
             f"{c(CYAN)}Target:{c(RESET)} {snap.target}",
+            f"{c(CYAN)}Domain:{c(RESET)} {snap.domain}",
+            f"{c(CYAN)}Endpoint:{c(RESET)} {snap.endpoint}",
+            f"{c(CYAN)}Full Request:{c(RESET)} {snap.request_line}",
+            f"{c(CYAN)}Path:{c(RESET)} {snap.path}",
+            f"{c(CYAN)}Parameters:{c(RESET)} {snap.parameters}",
             f"{c(CYAN)}Total Time:{c(RESET)} {self._elapsed()}",
             f"{c(CYAN)}Total Findings / Leads:{c(RESET)} {c(GREEN if findings else YELLOW)}{len(findings)}{c(RESET)}",
             f"{c(CYAN)}Confirmed Findings:{c(RESET)} {c(GREEN if confirmed else YELLOW)}{len(confirmed)}{c(RESET)}",
@@ -351,9 +375,10 @@ class LiveDashboard:
                     f"{c(YELLOW)}WHY:{c(RESET)} {finding.get('description')}",
                     f"{c(YELLOW)}WHERE:{c(RESET)} URL: {finding.get('url')}",
                     f"       Domain: {finding.get('domain')}",
+                    f"       Request: {finding.get('request_line')}",
                     f"       Path: {finding.get('path')}",
                     f"       Parameter: {finding.get('parameter')}",
-                    f"       String under test: {finding.get('test_string')}",
+                    f"       Safe string under test: {finding.get('test_string')}",
                     f"{c(YELLOW)}TESTED EVIDENCE:{c(RESET)}",
                     f"       Evidence snippet: {finding.get('evidence')}",
                     f"       CVSS Score: {finding.get('cvss')}",
@@ -367,15 +392,20 @@ class LiveDashboard:
         lines.append("\n--- Final Activity Log ---")
         for entry in events[-self.max_events :]:
             lines.append(entry)
+        lines.append("\n--- Report Files ---")
+        for entry in self._report_lines():
+            lines.append(f"- {entry}")
         lines += [
             "=" * 80,
-            f"{c(GREEN)}✅ CLI reports saved under: reports/output/cai-superior/<target>/{c(RESET)}",
-            f"{c(CYAN)}📊 This is a Kali terminal dashboard. No website dashboard is launched by this feature.{c(RESET)}",
+            f"{c(GREEN)}✅ Final dashboard displayed directly in Kali CLI.{c(RESET)}",
+            f"{c(CYAN)}📊 No website dashboard is launched by this feature.{c(RESET)}",
         ]
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
 
     def show_final(self) -> None:
+        if not self.enabled:
+            return
         print(self.final_text(color=self.interactive), flush=True)
 
     def draw(self, *, final: bool = False) -> None:
@@ -394,6 +424,7 @@ class LiveDashboard:
                 "findings": [dict(item) for item in self.finding_details],
                 "generated_at": time.time(),
                 "interface": "kali_cli",
+                "dashboard": "ultimate_cli_direct_output",
                 "website_dashboard": False,
             }
         session_json_path = out / "cli-session.json"
@@ -402,11 +433,13 @@ class LiveDashboard:
         findings_json_path = out / "detailed-findings.json"
         session_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         final_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        final_md_path.write_text("# VulnScope Kali CLI Final Assessment Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
         findings_json_path.write_text(json.dumps(payload["findings"], indent=2, ensure_ascii=False), encoding="utf-8")
-        return {
+        reports = {
             "cli_session_json": str(session_json_path),
             "cli_final_dashboard_json": str(final_json_path),
             "cli_final_dashboard_md": str(final_md_path),
             "detailed_findings_json": str(findings_json_path),
         }
+        self.report_paths = dict(reports)
+        final_md_path.write_text("# VulnScope Ultimate Kali CLI Final Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
+        return reports
