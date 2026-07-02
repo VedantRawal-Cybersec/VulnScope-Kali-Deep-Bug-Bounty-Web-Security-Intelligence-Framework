@@ -30,5 +30,6 @@ jobs:
             core/scan_state.py core/evidence_store.py core/http_client_v2.py \
             core/parameter_inventory.py core/crawler_v2.py core/browser_crawler.py \
             core/test_engine.py core/ai_planner.py core/reporting_v2.py \
+            core/agentic_framework.py core/safe_analyzers.py core/colab_backend_api.py \
             core/autonomous_scan_engine.py
       - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py tests/test_live_dashboard.py tests/test_tool_orchestrator.py tests/test_autonomous_scan_engine.py -q
