@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 from cai_actuator_registry import ACTUATORS, call_actuator
@@ -12,6 +14,7 @@ from cai_error_handler import write_json, write_markdown
 
 STATUS_VALUES = {"queued", "running", "completed", "failed", "skipped", "blocked_by_safety", "blocked_by_scope", "timed_out"}
 MODE_RANK = {"passive": 0, "safe-active": 1, "lab": 2}
+DEFAULT_TOOL_TIMEOUT = 20
 
 CATEGORY_ACTUATOR = {
     "Scope and Authorization": "dependency_status",
@@ -114,7 +117,8 @@ def _slug(value: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
 
 
-def build_tool_registry() -> list[ToolSpec]:
+def build_tool_registry(tool_timeout: int = DEFAULT_TOOL_TIMEOUT) -> list[ToolSpec]:
+    timeout = max(3, int(tool_timeout or DEFAULT_TOOL_TIMEOUT))
     registry: list[ToolSpec] = []
     for category, tool_names in CATEGORY_TOOLS.items():
         actuator = CATEGORY_ACTUATOR[category]
@@ -132,7 +136,7 @@ def build_tool_registry() -> list[ToolSpec]:
                 required_scan_mode=required_mode,
                 input_schema={"target": "authorized URL/domain", "scan_mode": "passive|safe-active|lab"},
                 output_schema={"status": "tool execution state", "evidence_summary": "safe structured output summary"},
-                timeout=120,
+                timeout=timeout,
                 rate_limit="shared_safe_pipeline_rate_limit",
                 depends_on=[],
                 run_function=actuator,
@@ -172,18 +176,55 @@ def _summary(result: Any, limit: int = 260) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _actuator_worker(queue: Any, name: str, target: str, include_subdomains: bool, criticality: str) -> None:
+    try:
+        result = call_actuator(name, target=target, include_subdomains=include_subdomains, criticality=criticality)
+        queue.put({"status": "completed", "result": result})
+    except Exception as exc:
+        queue.put({"status": "failed", "error": str(exc)[:1000]})
+
+
+def _bounded_call_actuator(name: str, *, target: str, include_subdomains: bool, criticality: str, timeout: int) -> tuple[str, Any, str]:
+    timeout = max(3, int(timeout or DEFAULT_TOOL_TIMEOUT))
+    methods = mp.get_all_start_methods()
+    ctx = mp.get_context("fork" if "fork" in methods else methods[0])
+    queue: Any = ctx.Queue(maxsize=1)
+    proc = ctx.Process(target=_actuator_worker, args=(queue, name, target, include_subdomains, criticality))
+    proc.daemon = True
+    proc.start()
+    proc.join(timeout)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(2)
+        if proc.is_alive() and hasattr(proc, "kill"):
+            proc.kill()
+            proc.join(1)
+        return "timed_out", None, f"{name} exceeded {timeout}s and was terminated; scan continued"
+    try:
+        payload = queue.get_nowait()
+    except Empty:
+        return "failed", None, f"{name} exited without returning output"
+    except Exception as exc:
+        return "failed", None, f"{name} output read failed: {exc}"
+    status = str(payload.get("status") or "failed")
+    if status == "completed":
+        return "completed", payload.get("result"), ""
+    return "failed", None, str(payload.get("error") or "unknown actuator error")[:1000]
+
+
 class UltimateToolOrchestrator:
     """Deterministic 100-tool coordinator over the existing safe CAI/VulnScope actuator layer."""
 
-    def __init__(self, target: str, *, scan_mode: str = "passive", include_subdomains: bool = False, criticality: str = "normal", dashboard: Any = None) -> None:
+    def __init__(self, target: str, *, scan_mode: str = "passive", include_subdomains: bool = False, criticality: str = "normal", dashboard: Any = None, tool_timeout: int = DEFAULT_TOOL_TIMEOUT) -> None:
         self.target = target
         self.scan_mode = scan_mode if scan_mode in MODE_RANK else "passive"
         self.include_subdomains = bool(include_subdomains)
         self.criticality = criticality
         self.dashboard = dashboard
-        self.registry = build_tool_registry()
+        self.tool_timeout = max(3, int(tool_timeout or DEFAULT_TOOL_TIMEOUT))
+        self.registry = build_tool_registry(self.tool_timeout)
         self.results: list[ToolResult] = []
-        self.actuator_cache: dict[str, Any] = {}
+        self.actuator_cache: dict[str, tuple[str, Any, str]] = {}
 
     def _emit(self, level: str, message: str) -> None:
         if self.dashboard is not None and hasattr(self.dashboard, "event"):
@@ -204,7 +245,7 @@ class UltimateToolOrchestrator:
             probe_string=f"safe-orchestrator:{spec.tool_id}",
             hypothesis=f"{spec.category} via {spec.run_function}",
             evidence=evidence or "Structured safe tool status event emitted",
-            safety_status="100-tool registry • allowlisted actuators • target data modification disabled",
+            safety_status=f"100-tool registry • hard timeout {self.tool_timeout}s • target data modification disabled",
         )
 
     def _run_one(self, spec: ToolSpec, index: int, total: int) -> ToolResult:
@@ -215,38 +256,48 @@ class UltimateToolOrchestrator:
             return ToolResult(spec.tool_id, spec.tool_name, spec.category, "skipped", 0, skipped_reason=f"requires {spec.required_scan_mode}; current mode is {self.scan_mode}", actuator=spec.run_function)
         if spec.run_function not in ACTUATORS:
             return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", 0, error=f"unregistered actuator {spec.run_function}", actuator=spec.run_function)
+
         self._update_dashboard(spec, index, total, "running")
-        self._emit("INFO", f"{index}/{total} {spec.tool_name}: running through {spec.run_function}")
-        try:
-            cache_reused = spec.run_function in self.actuator_cache
-            if cache_reused:
-                raw = self.actuator_cache[spec.run_function]
-            else:
-                raw = call_actuator(spec.run_function, target=self.target, include_subdomains=self.include_subdomains, criticality=self.criticality)
-                self.actuator_cache[spec.run_function] = raw
-            runtime_ms = int((time.time() - started) * 1000)
-            if _is_error_result(raw):
-                self._emit("WARNING", f"{index}/{total} {spec.tool_name}: failed safely and scan continued")
-                return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", runtime_ms, output_count=_output_count(raw), actuator=spec.run_function, error=_summary(raw), cache_reused=cache_reused)
-            result = ToolResult(spec.tool_id, spec.tool_name, spec.category, "completed", runtime_ms, output_count=_output_count(raw), actuator=spec.run_function, message="completed using safe integrated actuator output", evidence_summary=_summary(raw), cache_reused=cache_reused)
-            self._emit("SUCCESS", f"{index}/{total} {spec.tool_name}: completed")
-            self._update_dashboard(spec, index, total, "completed", result.evidence_summary)
-            return result
-        except Exception as exc:
-            runtime_ms = int((time.time() - started) * 1000)
-            self._emit("WARNING", f"{index}/{total} {spec.tool_name}: {exc}")
-            return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", runtime_ms, actuator=spec.run_function, error=str(exc)[:500])
+        self._emit("INFO", f"{index}/{total} {spec.tool_name}: running through {spec.run_function} timeout={spec.timeout}s")
+        cache_reused = spec.run_function in self.actuator_cache
+        if cache_reused:
+            call_status, raw, call_error = self.actuator_cache[spec.run_function]
+        else:
+            call_status, raw, call_error = _bounded_call_actuator(
+                spec.run_function,
+                target=self.target,
+                include_subdomains=self.include_subdomains,
+                criticality=self.criticality,
+                timeout=spec.timeout,
+            )
+            self.actuator_cache[spec.run_function] = (call_status, raw, call_error)
+
+        runtime_ms = int((time.time() - started) * 1000)
+        if call_status == "timed_out":
+            self._emit("WARNING", f"{index}/{total} {spec.tool_name}: timed out after {spec.timeout}s; moving to next tool")
+            return ToolResult(spec.tool_id, spec.tool_name, spec.category, "timed_out", runtime_ms, actuator=spec.run_function, error=call_error, cache_reused=cache_reused)
+        if call_status == "failed":
+            self._emit("WARNING", f"{index}/{total} {spec.tool_name}: failed safely and scan continued")
+            return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", runtime_ms, actuator=spec.run_function, error=call_error, cache_reused=cache_reused)
+        if _is_error_result(raw):
+            self._emit("WARNING", f"{index}/{total} {spec.tool_name}: actuator returned handled error")
+            return ToolResult(spec.tool_id, spec.tool_name, spec.category, "failed", runtime_ms, output_count=_output_count(raw), actuator=spec.run_function, error=_summary(raw), cache_reused=cache_reused)
+
+        result = ToolResult(spec.tool_id, spec.tool_name, spec.category, "completed", runtime_ms, output_count=_output_count(raw), actuator=spec.run_function, message="completed using safe integrated actuator output", evidence_summary=_summary(raw), cache_reused=cache_reused)
+        self._emit("SUCCESS", f"{index}/{total} {spec.tool_name}: completed")
+        self._update_dashboard(spec, index, total, "completed", result.evidence_summary)
+        return result
 
     def run(self) -> dict[str, Any]:
         total = len(self.registry)
-        self._emit("INFO", f"100-tool orchestrator started in {self.scan_mode} mode")
+        self._emit("INFO", f"100-tool orchestrator started in {self.scan_mode} mode with {self.tool_timeout}s hard timeout per actuator")
         for index, spec in enumerate(self.registry, 1):
             result = self._run_one(spec, index, total)
             self.results.append(result)
             if result.status == "skipped":
                 self._emit("INFO", f"{index}/{total} {spec.tool_name}: skipped ({result.skipped_reason})")
-            elif result.status == "failed":
-                self._emit("WARNING", f"{index}/{total} {spec.tool_name}: failed safely")
+            elif result.status in {"failed", "timed_out"}:
+                self._emit("WARNING", f"{index}/{total} {spec.tool_name}: {result.status}; scan continued")
             self._update_dashboard(spec, index, total, result.status, result.evidence_summary or result.error or result.skipped_reason)
         self._emit("SUCCESS", "100-tool orchestrator completed")
         return self.payload()
@@ -258,13 +309,14 @@ class UltimateToolOrchestrator:
         return {
             "target": self.target,
             "scan_mode": self.scan_mode,
+            "tool_timeout": self.tool_timeout,
             "generated_at": time.time(),
             "tool_count": len(self.registry),
             "status_counts": counts,
             "registry": [asdict(item) for item in self.registry],
             "results": [asdict(item) for item in self.results],
             "actuator_cache_keys": sorted(self.actuator_cache.keys()),
-            "safety": {"allowlisted_actuators_only": True, "target_data_modification": False, "skipped_tools_not_marked_completed": True, "failed_tools_do_not_create_findings": True},
+            "safety": {"allowlisted_actuators_only": True, "hard_timeout_per_actuator": True, "target_data_modification": False, "skipped_tools_not_marked_completed": True, "failed_tools_do_not_create_findings": True, "timed_out_tools_do_not_block_scan": True},
         }
 
     def write_reports(self, out: Path) -> dict[str, str]:
@@ -275,7 +327,7 @@ class UltimateToolOrchestrator:
         registry_json = out / "tool-registry-100.json"
         write_json(matrix_json, payload)
         write_json(registry_json, payload["registry"])
-        lines = ["# VulnScope 100-Tool Orchestration Matrix", "", f"Target: `{self.target}`", f"Scan mode: `{self.scan_mode}`", f"Total tools: `{payload['tool_count']}`", "", "## Status counts", ""]
+        lines = ["# VulnScope 100-Tool Orchestration Matrix", "", f"Target: `{self.target}`", f"Scan mode: `{self.scan_mode}`", f"Tool timeout: `{self.tool_timeout}s`", f"Total tools: `{payload['tool_count']}`", "", "## Status counts", ""]
         for key, value in payload["status_counts"].items():
             lines.append(f"- `{key}`: `{value}`")
         lines += ["", "## Tool results", ""]
@@ -296,10 +348,12 @@ def _print_summary(payload: dict[str, Any], reports: dict[str, str]) -> None:
     print("=" * 80)
     print(f"Target: {payload.get('target')}")
     print(f"Scan mode: {payload.get('scan_mode')}")
+    print(f"Tool timeout: {payload.get('tool_timeout')}s")
     print(f"Total tools: {payload.get('tool_count')}")
     print(f"Completed: {counts.get('completed', 0)}")
     print(f"Skipped: {counts.get('skipped', 0)}")
     print(f"Failed: {counts.get('failed', 0)}")
+    print(f"Timed out: {counts.get('timed_out', 0)}")
     print(f"Blocked by scope: {counts.get('blocked_by_scope', 0)}")
     print(f"Blocked by safety: {counts.get('blocked_by_safety', 0)}")
     print("Reports:")
@@ -318,18 +372,23 @@ def main() -> int:
     parser.add_argument("--scan-mode", default="passive", choices=["passive", "safe-active", "lab"])
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", default="normal", choices=["low", "normal", "high", "critical"])
+    parser.add_argument("--tool-timeout", type=int, default=DEFAULT_TOOL_TIMEOUT)
     parser.add_argument("--no-live-dashboard", action="store_true")
     args = parser.parse_args()
 
     target = normalize_target(args.target)
     dashboard = LiveDashboard(target, max_turns=100, enabled=True, live_stream=not args.no_live_dashboard)
     dashboard.start()
+    payload: dict[str, Any] = {}
+    orchestrator: UltimateToolOrchestrator | None = None
     try:
-        dashboard.event("INFO", "100-tool matrix started. Live output is enabled by default.")
-        orchestrator = UltimateToolOrchestrator(target, scan_mode=args.scan_mode, include_subdomains=args.include_subdomains, criticality=args.criticality, dashboard=dashboard)
+        dashboard.event("INFO", f"100-tool matrix started. Hard timeout={args.tool_timeout}s per actuator.")
+        orchestrator = UltimateToolOrchestrator(target, scan_mode=args.scan_mode, include_subdomains=args.include_subdomains, criticality=args.criticality, dashboard=dashboard, tool_timeout=args.tool_timeout)
         payload = orchestrator.run()
     finally:
         dashboard.stop(final=False)
+    if orchestrator is None:
+        raise SystemExit("orchestrator failed to initialize")
     reports = orchestrator.write_reports(cai_output_dir(target))
     dashboard.report_paths = dict(reports)
     _print_summary(payload, reports)
