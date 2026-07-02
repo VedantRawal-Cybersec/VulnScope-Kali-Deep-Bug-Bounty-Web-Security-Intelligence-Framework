@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.5.0-ultimate-cli-dashboard"
+VERSION = "1.6.0-ultimate-100-tool-orchestrator"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope Ultimate                       ║
-║      Preflight → URL → Consent → Direct Kali CLI Dashboard        ║
+║      Preflight → Consent → 100 Tools → Final Kali CLI Dashboard   ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -40,7 +40,6 @@ def host_from_target(target: str) -> str:
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
-    """Run a child command with inherited stdout so the final Kali CLI dashboard renders directly."""
     print(f"\n[{label}]")
     print("$ " + " ".join(command))
     started = datetime.now(timezone.utc)
@@ -53,14 +52,7 @@ def run(label: str, command: list[str], timeout: int = 3600) -> dict:
         except subprocess.TimeoutExpired:
             proc.kill()
             exit_code = proc.wait(timeout=10)
-            return {
-                "label": label,
-                "ok": False,
-                "exit_code": exit_code,
-                "command": command,
-                "error": f"timeout after {timeout}s",
-                "started_at": started.isoformat(),
-            }
+            return {"label": label, "ok": False, "exit_code": exit_code, "command": command, "error": f"timeout after {timeout}s", "started_at": started.isoformat()}
         return {"label": label, "ok": exit_code == 0, "exit_code": exit_code, "command": command, "started_at": started.isoformat(), "ended_at": datetime.now(timezone.utc).isoformat()}
     except Exception as exc:
         print(f"error: {exc}")
@@ -73,7 +65,7 @@ def confirm(target: str, yes: bool) -> None:
     if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
         print("\nRules:")
         print("- You own this target or have explicit written authorization.")
-        print("- VulnScope will run zero-impact, evidence-first, report-focused checks.")
+        print("- VulnScope runs evidence-first defensive checks only.")
         print("- Production data modification, credential attacks, and exploit chains are not allowed.")
         answer = input("\nType YES to confirm authorization: ").strip()
         if answer != "YES":
@@ -86,12 +78,14 @@ def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
         "preflight": "reports/output/vulnscope-main/preflight.md",
+        "ultimate_run": f"reports/output/cai-superior/{host}/ultimate-run.md",
+        "tool_matrix": f"reports/output/cai-superior/{host}/tool-matrix.md",
+        "tool_registry_100": f"reports/output/cai-superior/{host}/tool-registry-100.json",
         "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
         "cli_session": f"reports/output/cai-superior/{host}/cli-session.json",
         "detailed_findings": f"reports/output/cai-superior/{host}/detailed-findings.json",
         "react_loop": f"reports/output/cai-superior/{host}/react-run.md",
         "react_state": f"reports/output/cai-superior/{host}/react-state.md",
-        "cai_summary": f"reports/output/cai-superior/{host}/cai-superior-summary.md",
         "authorization": str(AUTH),
     }
     payload = {
@@ -100,7 +94,8 @@ def final_summary(target: str, history: list[dict]) -> None:
         "reports": reports,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "interface": "kali_cli",
-        "dashboard": "ultimate_cli_direct_output",
+        "dashboard": "ultimate_100_tool_cli_direct_output",
+        "hundred_tool_orchestrator": True,
         "final_dashboard_direct_stdout": True,
         "website_dashboard": False,
     }
@@ -112,7 +107,8 @@ def final_summary(target: str, history: list[dict]) -> None:
         f"Target: `{target}`",
         "",
         "Interface: `Kali CLI final dashboard`",
-        "Dashboard: `ultimate_cli_direct_output`",
+        "Dashboard: `ultimate_100_tool_cli_direct_output`",
+        "100-tool orchestrator: `true`",
         "Direct stdout dashboard: `true`",
         "Website dashboard: `false`",
         "",
@@ -135,13 +131,15 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     cmd = [
         sys.executable,
         "-m",
-        "core.react_loop",
+        "core.ultimate_orchestrated_loop",
         "--target",
         target,
         "--max-turns",
         str(args.max_turns),
         "--criticality",
         args.criticality,
+        "--scan-mode",
+        args.scan_mode,
     ]
     if args.include_subdomains:
         cmd.append("--include-subdomains")
@@ -151,7 +149,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         cmd.append("--live-dashboard")
     if args.no_final_dashboard:
         cmd.append("--no-final-dashboard")
-    return run("Autonomous Ollama/ReAct Loop", cmd, timeout=3600)
+    return run("Ultimate 100-Tool Orchestrated Safe Review", cmd, timeout=3600)
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -180,6 +178,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["deps", "cai", "agentic"], default="agentic")
+    parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", choices=["low", "normal", "high", "critical"], default="normal")
