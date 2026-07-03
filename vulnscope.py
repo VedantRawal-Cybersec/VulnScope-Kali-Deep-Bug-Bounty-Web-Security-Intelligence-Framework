@@ -12,14 +12,16 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.15.2-batch-tool-installer"
+VERSION = "1.15.3-batch-tools-lab-alias"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
+TOOLS_TXT = Path("tools.txt")
 
 RESET = "\033[0m"
 CYAN = "\033[36m"
 GREEN = "\033[32m"
 RED = "\033[31m"
+YELLOW = "\033[33m"
 
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
@@ -49,7 +51,7 @@ def host_from_target(target: str) -> str:
 
 
 def effective_scan_mode(args: argparse.Namespace) -> str:
-    if getattr(args, "lab_mode", False):
+    if getattr(args, "lab_mode", False) or getattr(args, "mode", "") == "lab":
         return "lab"
     if getattr(args, "mode", "") == "bugbounty" and args.scan_mode == "passive":
         return "safe-active"
@@ -57,12 +59,7 @@ def effective_scan_mode(args: argparse.Namespace) -> str:
 
 
 def preprocess_argv(argv: list[str]) -> list[str]:
-    """Make `--add-tool -tools.txt` work with argparse.
-
-    A value beginning with '-' normally looks like an option to argparse. For this
-    project, a single-dash value after --add-tool means a batch file path.
-    `-tools.txt` becomes `--add-tool-file tools.txt` before parsing.
-    """
+    """Make `--add-tool -tools.txt` work with argparse."""
     rewritten: list[str] = []
     index = 0
     while index < len(argv):
@@ -101,13 +98,15 @@ def run(label: str, command: list[str], timeout: int = 3600) -> dict:
 def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = False) -> None:
     host = host_from_target(target)
     print(c("\n[Authorization] Confirmed for: " + target, GREEN))
+    if scan_mode == "lab":
+        print(c("WARNING: lab mode is intended only for targets you own or intentionally vulnerable labs. Destructive actions remain disabled in VulnScope core.", YELLOW))
     if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
         print("\nRules:")
         print("- You own this target, are using a local/intentionally vulnerable lab, or have explicit written authorization.")
         print("- VulnScope runs evidence-first defensive checks only.")
         print("- Production data modification is not allowed.")
-        answer = input("\nType YES to confirm authorization: ").strip()
-        if answer != "YES":
+        answer = input("\nDo you have explicit written authorization to test this target? (yes/no): ").strip().lower()
+        if answer not in {"yes", "y"}:
             raise SystemExit("Authorization not confirmed.")
     if scan_mode in {"safe-active", "lab"} and not yes and os.getenv("VULNSCOPE_SAFE_ACTIVE_OK", "0") != "1":
         answer = input(f"\n{scan_mode} mode sends harmless canary/check values to safe GET parameters. Type CONTINUE to proceed: ").strip()
@@ -183,7 +182,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     append_headers(engine_cmd, args.header)
     history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope 1.15.2 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope 1.15.3 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -199,10 +198,23 @@ def run_preflight_step(args: argparse.Namespace) -> dict:
     return {"label": "Preflight", "ok": bool(payload.get("ok")), "exit_code": 0 if payload.get("ok") else 2, "summary": payload.get("summary", {}), "blocking_issues": payload.get("blocking_issues", [])}
 
 
+def edit_tools_file() -> int:
+    if not TOOLS_TXT.exists():
+        TOOLS_TXT.write_text("# Add one GitHub repository URL per line\n", encoding="utf-8")
+    editor = os.getenv("EDITOR") or "nano"
+    try:
+        return subprocess.call([editor, str(TOOLS_TXT)])
+    except FileNotFoundError:
+        print(f"Editor not found: {editor}. Edit {TOOLS_TXT} manually.")
+        return 1
+
+
 def handle_tool_registry(args: argparse.Namespace) -> int | None:
     from core.tool_import_wizard import PROMPT_TOKEN, run_import_wizard
     from core.tool_manager import ToolManager
     manager = ToolManager()
+    if args.edit_tools:
+        return edit_tools_file()
     if args.list_tools:
         print(json.dumps({"tools": manager.list_tools()}, indent=2, ensure_ascii=False))
         return 0
@@ -224,12 +236,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VulnScope CAI-style autonomous safe scanner")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
-    parser.add_argument("--mode", choices=["deps", "cai", "agentic", "bugbounty"], default="agentic")
+    parser.add_argument("--mode", choices=["deps", "cai", "agentic", "bugbounty", "lab"], default="agentic")
     parser.add_argument("--lab-mode", action="store_true")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
     parser.add_argument("--add-tool", nargs="?", const="__prompt__", default=None, help="Simple tool import. Use --add-tool -tools.txt for batch file import.")
     parser.add_argument("--add-tool-file", default="", help="Batch install GitHub tool URLs from a file. Usually produced by --add-tool -tools.txt.")
     parser.add_argument("--list-tools", action="store_true", help="List dynamic tools registered in tools/registry.json.")
+    parser.add_argument("--edit-tools", action="store_true", help="Open tools.txt in nano or $EDITOR for editing.")
     parser.add_argument("--approve-tool", default="", help="Approve an existing dynamic tool by id.")
     parser.add_argument("--approve-tool-install", action="store_true")
     parser.add_argument("--approve-tool-run", action="store_true")
