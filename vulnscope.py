@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.16.0-unified-research-orchestration"
+VERSION = "1.16.1-external-tool-repair"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 TOOLS_TXT = Path("tools.txt")
@@ -125,7 +125,7 @@ def final_summary(target: str, history: list[dict]) -> None:
         "dynamic_tool_registry": "tools/registry.json",
         "dynamic_tool_phase_summary": f"reports/output/cai-superior/{host}/dynamic-tool-phase-summary.json",
         "batch_tool_install_log": "logs/tool_install.log",
-        "batch_tool_install_summary": "logs/tool_install_summary.json",
+        "vulnscope_log": "logs/vulnscope.log",
         "phase_runner_summary": f"reports/output/cai-superior/{host}/phase-runner-summary.json",
         "owasp_coverage": f"reports/output/cai-superior/{host}/owasp-coverage-report.md",
         "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md",
@@ -182,7 +182,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     append_headers(engine_cmd, args.header)
     history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope 1.16.0 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope 1.16.1 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -286,7 +286,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-final-dashboard", action="store_true")
     parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", DEFAULT_OLLAMA_URL))
     parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL))
-    return parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        os.environ["VULNSCOPE_IGNORED_ARGS"] = " ".join(unknown)
+    return args
 
 
 def main() -> int:
