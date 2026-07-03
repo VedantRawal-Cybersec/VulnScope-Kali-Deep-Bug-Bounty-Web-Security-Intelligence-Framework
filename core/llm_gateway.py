@@ -176,11 +176,21 @@ class LLMGateway:
             return self.report_model
         return self.fast_model
 
+    def _generation_allowed(self, health: LLMHealth) -> tuple[bool, str]:
+        if not (health.transport_ok and health.model_available):
+            return False, health.error or "Ollama unavailable"
+        if self.health_mode == "tags-only" and health.generation_status == "skipped":
+            return False, "generation skipped by tags-only health mode"
+        if self.health_mode == "disabled":
+            return False, "LLM disabled"
+        return True, "generation allowed"
+
     def chat_json(self, *, messages: list[dict[str, str]], model_role: str = "fast", timeout: int | None = None, force_no_health: bool = False) -> LLMResponse:
         if not force_no_health:
             health = self.health_check()
-            if not (health.transport_ok and health.model_available):
-                return LLMResponse(False, "fallback", self._model_for_role(model_role), error=health.error or "Ollama unavailable")
+            allowed, reason = self._generation_allowed(health)
+            if not allowed:
+                return LLMResponse(False, "fallback", self._model_for_role(model_role), error=reason)
         model = self._model_for_role(model_role)
         started = time.time()
         try:
@@ -202,8 +212,9 @@ class LLMGateway:
     def stream_public_reasoning(self, *, messages: list[dict[str, str]], model_role: str = "fast", on_chunk: Callable[[str], None] | None = None, timeout: int | None = None) -> LLMResponse:
         health = self.health_check()
         model = self._model_for_role(model_role)
-        if not (health.transport_ok and health.model_available):
-            return LLMResponse(False, "fallback", model, error=health.error or "Ollama unavailable")
+        allowed, reason = self._generation_allowed(health)
+        if not allowed:
+            return LLMResponse(False, "fallback", model, error=reason)
         started = time.time()
         collected: list[str] = []
         try:
