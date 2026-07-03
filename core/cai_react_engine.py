@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -88,10 +89,11 @@ class ReactObservation:
 
 
 class SafeCAIReactAgent:
-    """CAI-style ReAct controller for authorized zero-impact VulnScope scans.
+    """Autonomous, evidence-first ReAct controller for authorized VulnScope scans.
 
-    The LLM proposes the next action, but deterministic guardrails enforce scope,
-    allowed tools, scan mode, request budget, and discovered-parameter-only tests.
+    The deterministic scheduler owns forward progress. The LLM improves prioritization
+    and interpretation, but cannot stall scanning, invent targets, or end the scan while
+    safe queued work remains.
     """
 
     SYSTEM_PROMPT = """
@@ -108,7 +110,7 @@ Hard rules:
   SSRF exploitation, SQL injection exploit payloads, XSS exploit payloads,
   or production data modification.
 - Parameter tests may use only already discovered safe GET/query parameters.
-- If evidence is weak, choose summarize_surface or write_reports.
+- If safe queued work remains, do not choose write_reports.
 
 Required JSON schema:
 {
@@ -149,6 +151,10 @@ Required JSON schema:
         self.max_params = max(1, int(max_params))
         self.history: list[dict[str, Any]] = []
         self.current_tool: str | None = None
+        self.decision_index = 0
+        self.llm_interval = max(1, int(os.getenv("VULNSCOPE_LLM_DECISION_INTERVAL", "4")))
+        self.llm_timeout = max(2, int(os.getenv("VULNSCOPE_LLM_DECISION_TIMEOUT", "6")))
+        self.llm_disabled = os.getenv("VULNSCOPE_DISABLE_LLM_PLANNER", "0") == "1"
 
     def _coverage_text(self) -> str:
         cov = self.state.coverage()
@@ -177,9 +183,25 @@ Required JSON schema:
             "api_routes_found": len(api_like) + int(self.state.stats.get("javascript_routes", 0)),
         }
 
-    def _top_parameters(self, limit: int = 25) -> list[dict[str, Any]]:
+    def _next_test_for_param(self, item: ParamRecord) -> str | None:
+        tested = set(item.tested or [])
+        if item.status in {"done", "skipped", "failed"}:
+            return None
+        if self.scan_mode == "passive":
+            return None if "classification_review" in tested else "classification_review"
+        if item.kind in {"object-like", "resource-like"}:
+            return None if "classification_review" in tested else "classification_review"
+        if item.kind in {"route-like", "reference-like"}:
+            if "redirect_review" not in tested:
+                return "redirect_review"
+            return None if "classification_review" in tested else "classification_review"
+        if "reflection_canary" not in tested:
+            return "reflection_canary"
+        return None if "classification_review" in tested else "classification_review"
+
+    def _top_parameters(self, limit: int = 18) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
-        for item in dedupe_by_cluster(list(self.state.params.values()), max_per_cluster=1)[:limit]:
+        for item in dedupe_by_cluster(list(self.state.params.values()), max_per_cluster=2)[:limit]:
             output.append(
                 {
                     "url": item.url,
@@ -188,6 +210,7 @@ Required JSON schema:
                     "risk_score": item.risk_score,
                     "status": item.status,
                     "tested": list(item.tested),
+                    "next_test": self._next_test_for_param(item),
                     "source": item.source,
                 }
             )
@@ -200,9 +223,9 @@ Required JSON schema:
             "coverage": self.state.coverage(),
             "surface": self._surface(),
             "budget_remaining": self.tester.client.budget_remaining() if hasattr(self.tester, "client") else 0,
-            "queued_urls": [item.url for item in self.state.queued_urls(limit=10)],
-            "top_parameters": self._top_parameters(),
-            "recent_observations": self.history[-8:],
+            "queued_urls": [item.url for item in self.state.queued_urls(limit=5)],
+            "top_parameters": self._top_parameters(limit=12),
+            "recent_observations": self.history[-4:],
             "available_tools": TOOL_DESCRIPTIONS,
             "safety_boundary": {
                 "same_scope_only": True,
@@ -300,29 +323,45 @@ Required JSON schema:
             progress_percent=progress,
         )
 
+    def _next_parameter_decision(self) -> ReactDecision | None:
+        candidates = dedupe_by_cluster(self.state.queued_params(limit=self.max_params), max_per_cluster=2)
+        for item in candidates:
+            next_test = self._next_test_for_param(item)
+            if next_test is None:
+                item.status = "done"
+                continue
+            item.status = "review"
+            return ReactDecision(
+                f"Next safe test for parameter `{item.name}` is `{next_test}`; kind={item.kind} risk={item.risk_score}.",
+                "test_parameter",
+                {"url": item.url, "parameter": item.name, "test_name": next_test},
+                92,
+                "deterministic",
+            ).safe(scan_mode=self.scan_mode)
+        return None
+
     def _fallback_decision(self) -> ReactDecision:
         cov = self.state.coverage()
         if self.state.queued_urls(limit=1) and cov["urls_done"] < max(1, min(cov["urls_total"], int(self.state.stats.get("max_pages", 120)))):
             return ReactDecision("Queued URLs remain; continue safe same-scope crawling.", "crawl", {}, 85, "deterministic")
         if int(self.state.stats.get("javascript_routes", 0)) == 0 and int(self.state.stats.get("scripts", 0)) > 0:
             return ReactDecision("Scripts were discovered; review them for route and query hints.", "review_scripts", {}, 80, "deterministic")
-        candidates = dedupe_by_cluster(self.state.queued_params(limit=self.max_params), max_per_cluster=2)
-        for item in candidates:
-            if item.status in {"queued", "review"}:
-                test_name = "classification_review" if self.scan_mode == "passive" else "reflection_canary"
-                if item.kind in {"route-like", "reference-like"} and self.scan_mode != "passive":
-                    test_name = "redirect_review"
-                return ReactDecision(
-                    f"Highest-value safe parameter remains: {item.name} kind={item.kind} risk={item.risk_score}.",
-                    "test_parameter",
-                    {"url": item.url, "parameter": item.name, "test_name": test_name},
-                    90,
-                    "deterministic",
-                ).safe(scan_mode=self.scan_mode)
-        return ReactDecision("No queued URLs or safe parameters remain; write reports.", "write_reports", {}, 90, "deterministic")
+        parameter_decision = self._next_parameter_decision()
+        if parameter_decision is not None:
+            return parameter_decision
+        self.state.save()
+        return ReactDecision("No queued URLs or safe parameter test steps remain; write reports.", "write_reports", {}, 90, "deterministic")
 
-    def _llm_decision(self) -> ReactDecision:
-        fallback = self._fallback_decision()
+    def _llm_should_run(self, fallback: ReactDecision) -> bool:
+        if self.llm_disabled:
+            return False
+        if os.getenv("VULNSCOPE_LLM_EVERY_TURN", "0") == "1":
+            return True
+        if fallback.tool in {"write_reports", "stop"}:
+            return False
+        return self.decision_index == 1 or self.decision_index % self.llm_interval == 0
+
+    def _llm_decision(self, fallback: ReactDecision) -> ReactDecision:
         try:
             response = self.llm.chat_json(
                 messages=[
@@ -330,7 +369,7 @@ Required JSON schema:
                     {"role": "user", "content": json.dumps(self._context(), ensure_ascii=False)},
                 ],
                 model_role="fast",
-                timeout=20,
+                timeout=self.llm_timeout,
             )
         except Exception:
             return fallback
@@ -344,6 +383,9 @@ Required JSON schema:
             confidence=int(parsed.get("confidence") or fallback.confidence),
             source="ollama",
         ).safe(scan_mode=self.scan_mode)
+        # Do not let the LLM stop/report early while deterministic safe work remains.
+        if fallback.tool not in {"write_reports", "stop"} and decision.tool in {"write_reports", "stop", "summarize_surface"}:
+            return fallback
         return self._bind_to_discovered_input(decision, fallback)
 
     def _find_param(self, url: str, parameter: str) -> ParamRecord | None:
@@ -357,20 +399,27 @@ Required JSON schema:
             return decision
         url = str(decision.arguments.get("url") or "")
         param = str(decision.arguments.get("parameter") or "")
-        if url and param and self._find_param(url, param):
-            return decision
+        found = self._find_param(url, param) if url and param else None
+        if found is not None:
+            planned = self._next_test_for_param(found)
+            if planned is None:
+                found.status = "done"
+                return fallback
+            decision.arguments["test_name"] = planned
+            return decision.safe(scan_mode=self.scan_mode)
         if fallback.tool == "test_parameter":
             return fallback
-        queued = dedupe_by_cluster(self.state.queued_params(limit=self.max_params), max_per_cluster=2)
-        if queued:
-            item = queued[0]
-            decision.arguments["url"] = item.url
-            decision.arguments["parameter"] = item.name
-            return decision
+        parameter_decision = self._next_parameter_decision()
+        if parameter_decision is not None:
+            return parameter_decision
         return ReactDecision("Planner requested parameter testing, but no discovered safe parameter exists.", "summarize_surface", {}, 70, decision.source)
 
     def decide(self) -> ReactDecision:
-        return self._llm_decision().safe(scan_mode=self.scan_mode)
+        self.decision_index += 1
+        fallback = self._fallback_decision().safe(scan_mode=self.scan_mode)
+        if not self._llm_should_run(fallback):
+            return fallback
+        return self._llm_decision(fallback).safe(scan_mode=self.scan_mode)
 
     def execute(self, decision: ReactDecision, turn_id: str, progress: int) -> ReactObservation:
         started = time.time()
@@ -386,14 +435,20 @@ Required JSON schema:
                 param = self._find_param(str(decision.arguments.get("url") or ""), str(decision.arguments.get("parameter") or ""))
                 if param is None:
                     return ReactObservation(turn_id, decision.tool, "skipped", "No matching discovered safe parameter", {}, int((time.time() - started) * 1000))
-                test_name = str(decision.arguments.get("test_name") or "classification_review")
+                test_name = str(decision.arguments.get("test_name") or self._next_test_for_param(param) or "classification_review")
                 outcome = self.tester.run_test(param, test_name)
+                next_test = self._next_test_for_param(param)
+                if next_test is None:
+                    param.status = "done"
+                elif outcome.status in {"done", "finding"}:
+                    param.status = "review"
+                self.state.save()
                 return ReactObservation(
                     turn_id,
                     decision.tool,
                     "completed" if outcome.status in {"done", "finding"} else outcome.status,
-                    outcome.message or f"{test_name} completed",
-                    {"test_name": test_name, "status": outcome.status, "confidence": outcome.confidence, "evidence_id": outcome.evidence_id},
+                    outcome.message or f"{test_name} completed; next={next_test or 'done'}",
+                    {"test_name": test_name, "next_test": next_test, "status": outcome.status, "confidence": outcome.confidence, "evidence_id": outcome.evidence_id},
                     int((time.time() - started) * 1000),
                 )
             if decision.tool == "summarize_surface":
@@ -418,7 +473,7 @@ Required JSON schema:
                 status="completed",
                 message=decision.reasoning,
                 decision=decision,
-                evidence_summary=json.dumps({"source": decision.source, "confidence": decision.confidence}, ensure_ascii=False),
+                evidence_summary=json.dumps({"source": decision.source, "confidence": decision.confidence, "llm_interval": self.llm_interval}, ensure_ascii=False),
                 progress=progress,
             )
             self._dashboard(phase="CAI ReAct Planning", decision=decision, action=decision.reasoning, progress=progress)
@@ -441,7 +496,6 @@ Required JSON schema:
             self.state.add_event("INFO", "cai react observation", tool=decision.tool, status=observation.status, message=observation.message)
             self.state.save()
             if observation.status == "failed":
-                # Error is kept in history so the next turn can re-plan. If no budget remains, stop.
                 if hasattr(self.tester, "client") and self.tester.client.budget_remaining() <= 0:
                     break
                 continue
@@ -458,6 +512,11 @@ Required JSON schema:
             "history": self.history[-50:],
             "coverage": self.state.coverage(),
             "surface": self._surface(),
+            "llm_pacing": {
+                "decision_interval": self.llm_interval,
+                "decision_timeout": self.llm_timeout,
+                "disabled": self.llm_disabled,
+            },
             "safety": {
                 "same_scope_only": True,
                 "allowed_tools_only": True,
