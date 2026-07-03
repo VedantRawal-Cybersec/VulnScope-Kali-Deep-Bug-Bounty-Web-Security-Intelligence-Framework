@@ -83,16 +83,7 @@ def _extract_json(text: str) -> dict[str, Any]:
 class LLMGateway:
     """Single Ollama entry point for planning, public reasoning, validation, and reports."""
 
-    def __init__(
-        self,
-        *,
-        ollama_url: str | None = None,
-        fast_model: str | None = None,
-        deep_model: str | None = None,
-        report_model: str | None = None,
-        timeout: int | None = None,
-        health_mode: str | None = None,
-    ) -> None:
+    def __init__(self, *, ollama_url: str | None = None, fast_model: str | None = None, deep_model: str | None = None, report_model: str | None = None, timeout: int | None = None, health_mode: str | None = None) -> None:
         env_url = ollama_url or os.getenv("VULNSCOPE_OLLAMA_URL") or os.getenv("VULNSCOPE_OLLAMA_BASE") or "http://localhost:11434/api/chat"
         self.base_url = _base_from_url(env_url)
         self.chat_url = self.base_url + "/api/chat"
@@ -147,12 +138,7 @@ class LLMGateway:
                 self._health_cache = health
                 return health
             gen_started = time.time()
-            quick = self.chat_json(
-                messages=[{"role": "user", "content": "Return JSON only: {\"ok\": true}"}],
-                model_role="fast",
-                timeout=self.timeout,
-                force_no_health=True,
-            )
+            quick = self.chat_json(messages=[{"role": "user", "content": "Return JSON only: {\"ok\": true}"}], model_role="fast", timeout=self.timeout, force_no_health=True)
             health.generation_latency_ms = int((time.time() - gen_started) * 1000)
             health.generation_ok = quick.ok and bool((quick.parsed or {}).get("ok", True))
             health.generation_status = "ok" if health.generation_ok else "timeout_or_invalid"
@@ -194,11 +180,7 @@ class LLMGateway:
         model = self._model_for_role(model_role)
         started = time.time()
         try:
-            response = self.session.post(
-                self.chat_url,
-                json={"model": model, "messages": messages, "stream": False, "format": "json", "options": {"temperature": 0.1}},
-                timeout=timeout or self.timeout,
-            )
+            response = self.session.post(self.chat_url, json={"model": model, "messages": messages, "stream": False, "format": "json", "options": {"temperature": 0.1}}, timeout=timeout or self.timeout)
             latency = int((time.time() - started) * 1000)
             if response.status_code != 200:
                 return LLMResponse(False, "ollama", model, latency_ms=latency, error=f"chat HTTP {response.status_code}")
@@ -218,12 +200,7 @@ class LLMGateway:
         started = time.time()
         collected: list[str] = []
         try:
-            response = self.session.post(
-                self.chat_url,
-                json={"model": model, "messages": messages, "stream": True, "options": {"temperature": 0.1}},
-                stream=True,
-                timeout=timeout or self.timeout,
-            )
+            response = self.session.post(self.chat_url, json={"model": model, "messages": messages, "stream": True, "options": {"temperature": 0.1}}, stream=True, timeout=timeout or self.timeout)
             if response.status_code != 200:
                 return LLMResponse(False, "ollama", model, error=f"chat stream HTTP {response.status_code}")
             buffer = ""
@@ -256,19 +233,13 @@ class LLMGateway:
             return LLMResponse(False, "fallback", model, content="\n".join(collected), public_reasoning=collected, latency_ms=int((time.time() - started) * 1000), error=str(exc)[:500])
 
     def plan_actions(self, context: dict[str, Any], *, model_role: str = "fast") -> LLMResponse:
+        health = self.health_check()
+        if health.transport_ok and health.model_available and health.generation_status == "skipped":
+            reasoning = ["Ollama transport and model are available, but generation is skipped by health policy; deterministic scan planning remains active."]
+            return LLMResponse(True, "fallback", self._model_for_role(model_role), parsed={"public_reasoning": reasoning, "actions": []}, public_reasoning=reasoning)
         safe_context = sanitize_evidence_object(context, max_chars=5000)
-        system = (
-            "You are VulnScope's defensive planning assistant. Return JSON only. "
-            "Never propose exploit payloads, credential attacks, destructive methods, stealth, WAF bypass, internal network probing, or data modification. "
-            "Use concise public_reasoning, not hidden chain-of-thought."
-        )
-        user = {
-            "task": "Choose up to five safe next actions for an authorized defensive web assessment.",
-            "allowed_actions": ["crawl", "review_scripts", "test_parameter", "validate_evidence", "write_reports", "stop"],
-            "allowed_tests": ["reflection_canary", "classification_review", "passive_review"],
-            "context": safe_context,
-            "required_json_schema": {"public_reasoning": ["brief rationale"], "actions": [{"action": "test_parameter", "test": "reflection_canary", "url": "", "parameter": "", "reason": ""}]},
-        }
+        system = "You are VulnScope's defensive planning assistant. Return JSON only. Never propose exploit payloads, credential attacks, destructive methods, stealth, WAF bypass, internal network probing, or data modification. Use concise public_reasoning, not hidden chain-of-thought."
+        user = {"task": "Choose up to five safe next actions for an authorized defensive web assessment.", "allowed_actions": ["crawl", "review_scripts", "test_parameter", "validate_evidence", "write_reports", "stop"], "allowed_tests": ["reflection_canary", "classification_review", "passive_review"], "context": safe_context, "required_json_schema": {"public_reasoning": ["brief rationale"], "actions": [{"action": "test_parameter", "test": "reflection_canary", "url": "", "parameter": "", "reason": ""}]}}
         return self.chat_json(messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}], model_role=model_role)
 
     def validate_evidence(self, finding: dict[str, Any]) -> LLMResponse:
