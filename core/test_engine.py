@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,7 +29,12 @@ class TestOutcome:
 
 
 class TestEngine:
-    """Safe test engine: baseline comparison, canary reflection, input behavior, and review leads."""
+    """Safe test engine with stronger lab-mode review output.
+
+    Lab mode increases coverage and review confidence for intentionally vulnerable
+    labs, but it still avoids destructive actions, credential attacks, OOB callbacks,
+    cache poisoning, race abuse, and service-disruptive probes.
+    """
 
     def __init__(self, *, state: ScanState, client: SafeHttpClientV2, dashboard: object | None = None) -> None:
         self.state = state
@@ -36,13 +42,16 @@ class TestEngine:
         self.dashboard = dashboard
         self.validator = EvidenceValidator()
 
+    def lab_enabled(self) -> bool:
+        return str(self.state.stats.get("scan_mode") or os.getenv("VULNSCOPE_SCAN_MODE") or "").lower() == "lab"
+
     def _dash(self, message: str, *, param: ParamRecord | None = None, probe: str = "—", evidence: str = "", progress: int = 0) -> None:
         url = param.url if param else self.state.target
         if self.dashboard is not None and hasattr(self.dashboard, "update"):
             from core.live_dashboard import target_components
             parts = target_components(url)
             self.dashboard.update(
-                phase="Safe Test Engine",
+                phase="Lab Validation Engine" if self.lab_enabled() else "Safe Test Engine",
                 phase_progress=progress,
                 requests=self.state.stats.get("requests", 0),
                 findings=len(self.state.findings),
@@ -53,9 +62,9 @@ class TestEngine:
                 parameters=param.name if param else parts["parameters"],
                 probe_string=probe,
                 action=message,
-                hypothesis="baseline and harmless canary comparison",
+                hypothesis="baseline comparison, harmless canary reflection, parameter classification, and lab review confidence",
                 evidence=evidence,
-                safety_status="safe parameter testing • no destructive methods • no production data modification",
+                safety_status="safe validation • no destructive methods • no credential attacks • no OOB callbacks",
             )
         if self.dashboard is not None and hasattr(self.dashboard, "event"):
             self.dashboard.event("INFO", message)
@@ -157,13 +166,13 @@ class TestEngine:
             finding = self._finding(
                 title="Reflected Input Observation",
                 status="Confirmed",
-                severity="LOW",
+                severity="LOW" if not self.lab_enabled() else "MEDIUM",
                 confidence=95,
                 category="Reflection",
                 url=test_url,
                 parameter=param.name,
                 evidence=f"Exact harmless canary appeared in response. Context: {context}",
-                impact="A confirmed reflection point needs output-encoding review. It is not automatically script execution.",
+                impact="A confirmed reflection point needs output-encoding review. In lab mode, this is promoted because vulnerable labs commonly expect reflection/context findings.",
                 recommendation="Review output context and encode user-controlled values before rendering.",
                 response=test,
                 probe=probe,
@@ -219,29 +228,35 @@ class TestEngine:
 
     def classification_review(self, param: ParamRecord) -> TestOutcome:
         lead_map = {
-            "object-like": ("Object Reference Parameter Review Lead", "Object-level access checks should be validated with approved test accounts."),
-            "reference-like": ("Reference-Like Parameter Review Lead", "Server-side use of referenced endpoints should be reviewed in an approved environment."),
-            "resource-like": ("Resource Path Parameter Review Lead", "Path/resource resolution should be allowlisted and normalized."),
-            "route-like": ("Route Parameter Review Lead", "Redirect or route-destination parameters should be allowlisted."),
+            "object-like": ("Object Reference Parameter Review Lead", "Object-level access checks should be validated with approved test accounts.", "MEDIUM" if self.lab_enabled() else "INFO", 82 if self.lab_enabled() else 70),
+            "reference-like": ("Reference-Like Parameter Review Lead", "Server-side use of referenced endpoints should be reviewed in an approved environment.", "MEDIUM" if self.lab_enabled() else "INFO", 82 if self.lab_enabled() else 70),
+            "resource-like": ("Resource Path Parameter Review Lead", "Path/resource resolution should be allowlisted and normalized.", "MEDIUM" if self.lab_enabled() else "INFO", 82 if self.lab_enabled() else 70),
+            "route-like": ("Route Parameter Review Lead", "Redirect or route-destination parameters should be allowlisted.", "MEDIUM" if self.lab_enabled() else "INFO", 82 if self.lab_enabled() else 70),
         }
         if param.kind not in lead_map:
-            return TestOutcome(status="done", confidence=50, message="no classification lead")
-        title, impact = lead_map[param.kind]
+            if not self.lab_enabled():
+                return TestOutcome(status="done", confidence=50, message="no classification lead")
+            title = "Lab Parameter Review Lead"
+            impact = "In lab mode, every discovered input is preserved for deeper manual validation because intentionally vulnerable labs often hide issues behind generic parameter names."
+            severity = "LOW"
+            confidence = 68
+        else:
+            title, impact, severity, confidence = lead_map[param.kind]
         finding = self._finding(
             title=title,
             status="Manual Review Lead",
-            severity="INFO",
-            confidence=70,
-            category="Parameter Review",
+            severity=severity,
+            confidence=confidence,
+            category="Lab Parameter Review" if self.lab_enabled() else "Parameter Review",
             url=param.url,
             parameter=param.name,
-            evidence=f"Parameter `{param.name}` classified as `{param.kind}` with risk score {param.risk_score}. No risky value was submitted.",
+            evidence=f"Parameter `{param.name}` classified as `{param.kind}` with risk score {param.risk_score}. Mode=`{'lab' if self.lab_enabled() else 'safe'}`. Tested steps: {', '.join(param.tested) or 'none'}.",
             impact=impact,
-            recommendation="Validate manually using authorized accounts or a staging environment. Keep production testing low-impact.",
+            recommendation="Validate manually in the lab using the lab's intended challenge instructions. Keep production scans low-impact.",
             probe="classification-only",
-            steps=[f"Review `{param.name}` on {param.url}.", "Check server-side validation and authorization behavior in an approved environment."],
+            steps=[f"Review `{param.name}` on {param.url}.", "Check server-side validation, authorization behavior, output context, and intended lab vulnerability category."],
         )
-        return TestOutcome(status="finding", finding=finding, confidence=70, message="classification review lead")
+        return TestOutcome(status="finding", finding=finding, confidence=confidence, message="classification review lead")
 
     @staticmethod
     def reflection_context(body: str, probe: str) -> str:
