@@ -30,6 +30,13 @@ class _FakeTester:
     client = _FakeClient()
 
 
+def test_scan_state_event_logging_allows_message_metadata_collision(tmp_path):
+    state = ScanState("https://example.com", resume=False)
+    state.add_event("INFO", "cai react observation", tool="test_parameter", status="completed", message="classification done")
+    assert state.events[-1]["message"] == "cai react observation"
+    assert state.events[-1]["detail_message"] == "classification done"
+
+
 def test_parameter_inventory_v2_classifies_and_replaces_values(tmp_path, monkeypatch):
     assert param_kind("redirect_uri") == "route-like"
     assert param_kind("callback_url") == "reference-like"
