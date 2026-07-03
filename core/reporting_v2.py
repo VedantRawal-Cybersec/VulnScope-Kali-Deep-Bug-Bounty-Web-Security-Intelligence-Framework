@@ -25,12 +25,29 @@ class ReportingV2:
             counts[sev if sev in counts else "INFO"] += 1
         return counts
 
+    def finding_buckets(self) -> dict[str, list[dict[str, Any]]]:
+        buckets = {"confirmed_vulnerabilities": [], "potential_review_leads": [], "informational_observations": []}
+        for finding in self.state.findings:
+            status = str(finding.get("status") or "Potential").lower()
+            if status == "confirmed":
+                buckets["confirmed_vulnerabilities"].append(finding)
+            elif status.startswith("info"):
+                buckets["informational_observations"].append(finding)
+            else:
+                buckets["potential_review_leads"].append(finding)
+        return buckets
+
     def write_json_report(self) -> Path:
         path = self.out / "autonomous-scan-report.json"
+        buckets = self.finding_buckets()
         payload = {
             "target": self.target,
             "coverage": self.state.coverage(),
+            "scan_quality": self.state.stats.get("scan_quality", {}),
             "severity_counts": self.severity_counts(),
+            "confirmed_vulnerabilities": buckets["confirmed_vulnerabilities"],
+            "potential_review_leads": buckets["potential_review_leads"],
+            "informational_observations": buckets["informational_observations"],
             "findings": self.state.findings,
             "parameters": [vars(item) for item in self.state.params.values()],
             "urls": [vars(item) for item in self.state.urls.values()],
@@ -48,33 +65,12 @@ class ReportingV2:
         write_json(path, payload)
         return path
 
-    def write_markdown_report(self) -> Path:
-        path = self.out / "autonomous-scan-report.md"
-        cov = self.state.coverage()
-        counts = self.severity_counts()
-        lines = [
-            "# VulnScope Autonomous Scan Report",
-            "",
-            f"Target: `{self.target}`",
-            "",
-            "## Coverage",
-            "",
-            f"- URLs: `{cov['urls_done']}/{cov['urls_total']}`",
-            f"- Parameters: `{cov['params_done']}/{cov['params_total']}`",
-            f"- Tests: `{cov['tests_done']}/{cov['tests_total']}`",
-            f"- Requests: `{cov['requests']}`",
-            f"- Timeouts: `{cov['timeouts']}`",
-            f"- Findings/leads: `{cov['findings']}`",
-            "",
-            "## Severity Summary",
-            "",
-        ]
-        for key in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
-            lines.append(f"- `{key}`: `{counts[key]}`")
-        lines += ["", "## Findings and Review Leads", ""]
-        if not self.state.findings:
-            lines.append("No confirmed findings or review leads were generated in the selected safe scope.")
-        for finding in self.state.findings:
+    def _write_finding_section(self, lines: list[str], title: str, findings: list[dict[str, Any]]) -> None:
+        lines.extend(["", f"## {title}", ""])
+        if not findings:
+            lines.append("None.")
+            return
+        for finding in findings:
             lines.extend([
                 f"### {finding.get('id')} — {finding.get('title')}",
                 f"- Status: `{finding.get('status')}`",
@@ -92,7 +88,45 @@ class ReportingV2:
             for step in finding.get("reproduction_steps", [])[:8]:
                 lines.append(f"- {step}")
             lines.append("")
-        lines += ["## Top Parameter Inventory", ""]
+
+    def write_markdown_report(self) -> Path:
+        path = self.out / "autonomous-scan-report.md"
+        cov = self.state.coverage()
+        counts = self.severity_counts()
+        buckets = self.finding_buckets()
+        quality = self.state.stats.get("scan_quality", {}) or {}
+        lines = [
+            "# VulnScope Autonomous Scan Report",
+            "",
+            f"Target: `{self.target}`",
+            f"Scan quality: `{quality.get('grade', 'UNKNOWN')}` score=`{quality.get('score', 'n/a')}`",
+            "",
+            "## Coverage",
+            "",
+            f"- URLs: `{cov['urls_done']}/{cov['urls_total']}`",
+            f"- Parameters: `{cov['params_done']}/{cov['params_total']}`",
+            f"- Tests: `{cov['tests_done']}/{cov['tests_total']}`",
+            f"- Requests: `{cov['requests']}`",
+            f"- Timeouts: `{cov['timeouts']}`",
+            f"- Confirmed vulnerabilities: `{cov['confirmed_vulnerabilities']}`",
+            f"- Potential review leads: `{cov['potential_review_leads']}`",
+            f"- Informational observations: `{cov['informational_observations']}`",
+            "",
+            "## Scan Quality Issues",
+            "",
+        ]
+        issues = quality.get("issues", []) if isinstance(quality, dict) else []
+        if not issues:
+            lines.append("No scan-quality blockers were detected.")
+        for issue in issues:
+            lines.append(f"- `{issue.get('severity')}` `{issue.get('code')}` — {issue.get('message')} Fix: {issue.get('recommendation')}")
+        lines += ["", "## Severity Summary", ""]
+        for key in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
+            lines.append(f"- `{key}`: `{counts[key]}`")
+        self._write_finding_section(lines, "Confirmed Vulnerabilities", buckets["confirmed_vulnerabilities"])
+        self._write_finding_section(lines, "Potential Review Leads", buckets["potential_review_leads"])
+        self._write_finding_section(lines, "Informational Observations", buckets["informational_observations"])
+        lines += ["", "## Top Parameter Inventory", ""]
         for param in sorted(self.state.params.values(), key=lambda p: p.risk_score, reverse=True)[:100]:
             lines.append(f"- `{param.name}` kind=`{param.kind}` risk=`{param.risk_score}` status=`{param.status}` source=`{param.source}` url=`{param.url}`")
         if self.extra_reports:

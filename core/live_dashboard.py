@@ -25,9 +25,7 @@ RED = "\033[31m"
 WHITE = "\033[37m"
 DIM = "\033[2m"
 
-SENSITIVE_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie)=([^\s&;]+)"),
-]
+SENSITIVE_PATTERNS = [re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie)=([^\s&;]+)")]
 
 
 @dataclass
@@ -112,37 +110,16 @@ def target_components(target: str) -> dict[str, str]:
     domain = (parsed.hostname or parsed.netloc or raw).split(":")[0].lower().strip() or "—"
     path = parsed.path or "/"
     query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
-    endpoint = normalized
-    request_line = f"GET {path}"
-    if parsed.query:
-        request_line += "?" + parsed.query
-    return {"target": normalized, "domain": domain, "endpoint": endpoint, "request_line": request_line, "path": path, "parameters": query, "method": "GET"}
+    request_line = f"GET {path}" + (("?" + parsed.query) if parsed.query else "")
+    return {"target": normalized, "domain": domain, "endpoint": normalized, "request_line": request_line, "path": path, "parameters": query, "method": "GET"}
 
 
 class LiveDashboard:
     """Stable in-place Kali CLI dashboard for transparent defensive execution."""
 
-    def __init__(
-        self,
-        target: str,
-        *,
-        max_turns: int = 0,
-        enabled: bool = True,
-        live_stream: bool = False,
-        refresh_interval: float = 0.5,
-        interactive: bool | None = None,
-    ) -> None:
+    def __init__(self, target: str, *, max_turns: int = 0, enabled: bool = True, live_stream: bool = False, refresh_interval: float = 0.5, interactive: bool | None = None) -> None:
         parts = target_components(target)
-        self.snapshot = LiveSnapshot(
-            target=_clean(parts["target"], 180),
-            max_turns=max_turns,
-            domain=_clean(parts["domain"], 100),
-            endpoint=_clean(parts["endpoint"], 180),
-            request_line=_clean(parts["request_line"], 180),
-            path=_clean(parts["path"], 140),
-            parameters=_clean(parts["parameters"], 180),
-            method=parts.get("method", "GET"),
-        )
+        self.snapshot = LiveSnapshot(target=_clean(parts["target"], 180), max_turns=max_turns, domain=_clean(parts["domain"], 100), endpoint=_clean(parts["endpoint"], 180), request_line=_clean(parts["request_line"], 180), path=_clean(parts["path"], 140), parameters=_clean(parts["parameters"], 180), method=parts.get("method", "GET"))
         self.enabled = bool(enabled) and os.getenv("VULNSCOPE_NO_CLI_DASHBOARD", "0") != "1"
         self.live_stream = bool(live_stream) and os.getenv("VULNSCOPE_NO_LIVE_DASHBOARD", "0") != "1"
         self.interactive = sys.stdout.isatty() if interactive is None else bool(interactive)
@@ -215,52 +192,20 @@ class LiveDashboard:
             self.events.append(rendered)
             self.events = self.events[-self.max_events :]
             self.snapshot.latest_status = level.lower()
-        if self.enabled and self.live_stream and not self.interactive:
-            # Non-TTY environments cannot update in-place. Keep output minimal.
-            if level in {"WARNING", "BLOCKED", "FINDING", "SUCCESS"}:
-                print(_strip_ansi(rendered), flush=True)
+        if self.enabled and self.live_stream and not self.interactive and level in {"WARNING", "BLOCKED", "FINDING", "SUCCESS"}:
+            print(_strip_ansi(rendered), flush=True)
 
     def trace(self, message: str) -> None:
         with self.lock:
             self.traces.append(f"{time.strftime('%H:%M:%S')} {_clean(message, 240)}")
             self.traces = self.traces[-12:]
 
-    def add_finding(
-        self,
-        finding_type: str,
-        description: str,
-        severity: str = "INFO",
-        *,
-        url: str = "",
-        parameter: str = "",
-        test_string: str = "",
-        evidence: str = "",
-        cvss: str = "N/A",
-        confidence: str = "N/A",
-        reproduction: str = "",
-        confirmation: str = "review_lead",
-    ) -> dict[str, Any]:
+    def add_finding(self, finding_type: str, description: str, severity: str = "INFO", *, url: str = "", parameter: str = "", test_string: str = "", evidence: str = "", cvss: str = "N/A", confidence: str = "N/A", reproduction: str = "", confirmation: str = "review_lead") -> dict[str, Any]:
         severity = _clean(severity or "INFO", 30).upper()
         confirmation = _clean(confirmation or "review_lead", 40).lower()
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
-            finding = {
-                "type": _clean(finding_type or "Security Review Lead", 120),
-                "severity": severity,
-                "description": _clean(description or "Evidence requires analyst review.", 400),
-                "url": _clean(url or snap.endpoint, 240),
-                "domain": _clean(snap.domain, 120),
-                "request_line": _clean(snap.request_line, 220),
-                "path": _clean(snap.path, 180),
-                "parameter": _clean(parameter or snap.parameters, 220),
-                "test_string": _clean(test_string or snap.probe_string, 220),
-                "evidence": _clean(evidence or snap.evidence, 800),
-                "cvss": _clean(cvss, 80),
-                "confidence": _clean(confidence, 80),
-                "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."),
-                "confirmation": confirmation,
-                "recorded_at": time.time(),
-            }
+            finding = {"type": _clean(finding_type or "Security Review Lead", 120), "severity": severity, "description": _clean(description or "Evidence requires analyst review.", 400), "url": _clean(url or snap.endpoint, 240), "domain": _clean(snap.domain, 120), "request_line": _clean(snap.request_line, 220), "path": _clean(snap.path, 180), "parameter": _clean(parameter or snap.parameters, 220), "test_string": _clean(test_string or snap.probe_string, 220), "evidence": _clean(evidence or snap.evidence, 800), "cvss": _clean(cvss, 80), "confidence": _clean(confidence, 80), "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."), "confirmation": confirmation, "recorded_at": time.time()}
             self.finding_details.append(finding)
             self.snapshot.findings = len(self.finding_details)
             self.snapshot.latest_finding = f"{severity} {finding['type']}"
@@ -320,7 +265,7 @@ class LiveDashboard:
     def _report_lines(self) -> list[str]:
         if not self.report_paths:
             return ["CLI report paths will be written after finalization."]
-        preferred = ["autonomous_report_md", "parameter_inventory_v2", "evidence_index_md", "cli_final_dashboard_md", "detailed_findings_json", "react_run_md"]
+        preferred = ["scan_quality_md", "autonomous_report_md", "parameter_inventory_v2", "evidence_index_md", "cli_final_dashboard_md", "detailed_findings_json", "react_run_md"]
         lines = []
         for key in preferred:
             if key in self.report_paths:
@@ -342,40 +287,10 @@ class LiveDashboard:
         width = self._term_width()
         sep = "─" * min(width, 132)
         progress = f"[{self._bar()}] {snap.phase_progress}/{max(1, snap.phase_total)}"
-        lines = [
-            f"{c(CYAN)}VULNSCOPE AUTONOMOUS SECURITY AI{c(RESET)}  {c(DIM)}single stable live dashboard{c(RESET)}",
-            sep,
-            f"Scan ID: {snap.scan_id} | Target: {snap.target} | Mode: {snap.mode} | Auth: {snap.authorization_status} | Time: {self._elapsed()}",
-            f"Ollama: {snap.ollama_status} | Phase: {snap.phase} | Progress: {progress}",
-            sep,
-            f"{c(YELLOW)}Current Activity{c(RESET)}",
-            self._panel_line("Agent", snap.current_agent) + " | " + self._panel_line("Tool", snap.current_tool),
-            self._panel_line("Action", snap.action, 88),
-            self._panel_line("URL", snap.endpoint, 88),
-            self._panel_line("Full request", snap.request_line, 88),
-            self._panel_line("Path", snap.path, 88),
-            self._panel_line("Parameter", snap.parameters, 88),
-            self._panel_line("Safe probe", snap.probe_string, 88),
-            self._panel_line("Response", f"{snap.response_code} / {snap.response_time_ms}ms"),
-            self._panel_line("Evidence", snap.evidence, 88),
-            sep,
-            f"{c(YELLOW)}Discovered Surface{c(RESET)}  URLs:{snap.urls_found}  Paths:{snap.paths_found}  Params:{snap.params_found}  Forms:{snap.forms_found}  JS:{snap.js_found}  API-like:{snap.api_routes_found}",
-            f"{c(YELLOW)}Agent Trace{c(RESET)}  Turn:{snap.turn}/{snap.max_turns or '∞'}  Decision:{snap.decision}  Handoff:{snap.handoff}",
-            f"{c(YELLOW)}Tool Matrix{c(RESET)}  Total:{snap.tools_total}  Running:{snap.tools_running}  Completed:{snap.tools_completed}  Failed:{snap.tools_failed}  Skipped:{snap.tools_skipped}  Blocked:{snap.tools_blocked}",
-            f"{c(YELLOW)}Findings{c(RESET)}  Confirmed:{snap.confirmed}  Potential:{snap.potential}  Info:{snap.informational}  Total:{snap.findings}  Latest:{snap.latest_finding}",
-            f"{c(GREEN)}Safety{c(RESET)}  {snap.safety_status}",
-            sep,
-            f"{c(YELLOW)}Recent Handoffs / Decisions{c(RESET)}",
-        ]
-        if traces:
-            lines.extend(traces[-8:])
-        else:
-            lines.append("No handoff has started yet.")
+        lines = [f"{c(CYAN)}VULNSCOPE ULTIMATE AUTONOMOUS SECURITY AI{c(RESET)}  {c(DIM)}single stable live dashboard{c(RESET)}", sep, f"Scan ID: {snap.scan_id} | Target: {snap.target} | Mode: {snap.mode} | Auth: {snap.authorization_status} | Time: {self._elapsed()}", f"Ollama: {snap.ollama_status} | Phase: {snap.phase} | Progress: {progress}", sep, f"{c(YELLOW)}Current Activity{c(RESET)}", f"Domain: {snap.domain}", f"Endpoint: {snap.endpoint}", f"Full Request: {snap.request_line}", f"Path: {snap.path}", f"Parameters: {snap.parameters}", f"Safe string under test: {snap.probe_string}", f"Evidence snippet: {snap.evidence}", self._panel_line("Agent", snap.current_agent) + " | " + self._panel_line("Tool", snap.current_tool), self._panel_line("Action", snap.action, 88), self._panel_line("Response", f"{snap.response_code} / {snap.response_time_ms}ms"), sep, f"{c(YELLOW)}Discovered Surface{c(RESET)}  URLs:{snap.urls_found}  Paths:{snap.paths_found}  Params:{snap.params_found}  Forms:{snap.forms_found}  JS:{snap.js_found}  API-like:{snap.api_routes_found}", f"{c(YELLOW)}Agent Trace{c(RESET)}  Turn:{snap.turn}/{snap.max_turns or '∞'}  Decision:{snap.decision}  Handoff:{snap.handoff}", f"{c(YELLOW)}Tool Matrix{c(RESET)}  Total:{snap.tools_total}  Running:{snap.tools_running}  Completed:{snap.tools_completed}  Failed:{snap.tools_failed}  Skipped:{snap.tools_skipped}  Blocked:{snap.tools_blocked}", f"{c(YELLOW)}Findings{c(RESET)}  Confirmed:{snap.confirmed}  Potential:{snap.potential}  Info:{snap.informational}  Total:{snap.findings}  Latest:{snap.latest_finding}", f"{c(GREEN)}Safety{c(RESET)}  {snap.safety_status}", sep, f"{c(YELLOW)}Recent Handoffs / Decisions{c(RESET)}"]
+        lines.extend(traces[-8:] if traces else ["No handoff has started yet."])
         lines += [sep, f"{c(YELLOW)}Live Logs (last {self.max_events}){c(RESET)}"]
-        if events:
-            lines.extend(events[-self.max_events :])
-        else:
-            lines.append("Waiting for first scan event…")
+        lines.extend(events[-self.max_events :] if events else ["Waiting for first scan event…"])
         lines.append(sep)
         lines.append("Ctrl+C: stop safely • Reports are written on completion/interruption" if not final else "Final CLI dashboard")
         text = "\n".join(lines)
@@ -390,41 +305,14 @@ class LiveDashboard:
         confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
         counts = self._severity_counts(findings)
         severity_line = f"CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}"
-        lines = [
-            "=" * 90,
-            f"{c(CYAN)}VULNSCOPE AUTONOMOUS FINAL DASHBOARD{c(RESET)}",
-            f"Target: {snap.target}",
-            f"Scan ID: {snap.scan_id}",
-            f"Mode: {snap.mode}",
-            f"Ollama: {snap.ollama_status}",
-            f"Endpoint: {snap.endpoint}",
-            f"Full Request: {snap.request_line}",
-            f"Path: {snap.path}",
-            f"Parameters: {snap.parameters}",
-            f"Time: {self._elapsed()} | Requests: {snap.requests} | Findings/leads: {len(findings)} | Confirmed: {len(confirmed)}",
-            f"Severity Summary: {severity_line}",
-            "─" * 90,
-        ]
+        lines = ["=" * 90, f"{c(CYAN)}VULNSCOPE ULTIMATE FINAL KALI CLI DASHBOARD{c(RESET)}", f"Target: {snap.target}", f"Scan ID: {snap.scan_id}", f"Mode: {snap.mode}", f"Ollama: {snap.ollama_status}", f"Endpoint: {snap.endpoint}", f"Full Request: {snap.request_line}", f"Path: {snap.path}", f"Parameters: {snap.parameters}", f"Evidence snippet: {snap.evidence}", f"Time: {self._elapsed()} | Requests: {snap.requests} | Findings/leads: {len(findings)} | Confirmed: {len(confirmed)}", f"Severity Summary: {severity_line}", f"Confirmed Findings: {len(confirmed)}", "─" * 90]
         if not findings:
             lines.append(f"{c(YELLOW)}No vulnerabilities were confirmed. Review surface inventory and evidence reports for coverage details.{c(RESET)}")
         else:
             for idx, finding in enumerate(findings, 1):
                 severity = str(finding.get("severity", "INFO")).upper()
                 status = str(finding.get("confirmation", "review_lead")).replace("_", " ").upper()
-                lines += [
-                    "",
-                    f"{c(self._severity_color(severity))}FINDING #{idx} — {severity} — {status}{c(RESET)}",
-                    f"WHAT: {finding.get('type')}",
-                    f"WHY: {finding.get('description')}",
-                    f"WHERE: {finding.get('url')}",
-                    f"REQUEST: {finding.get('request_line')}",
-                    f"PATH: {finding.get('path')}",
-                    f"PARAMETER: {finding.get('parameter')}",
-                    f"SAFE PROBE: {finding.get('test_string')}",
-                    f"EVIDENCE: {finding.get('evidence')}",
-                    f"CONFIDENCE: {finding.get('confidence')}",
-                    "VALIDATION STEPS:",
-                ]
+                lines += ["", f"{c(self._severity_color(severity))}FINDING #{idx} — {severity} — {status}{c(RESET)}", f"WHAT: {finding.get('type')}", f"WHY: {finding.get('description')}", f"WHERE: {finding.get('url')}", f"REQUEST: {finding.get('request_line')}", f"PATH: {finding.get('path')}", f"PARAMETER: {finding.get('parameter')}", f"SAFE PROBE: {finding.get('test_string')}", f"TESTED EVIDENCE: {finding.get('test_string')}", f"EVIDENCE: {finding.get('evidence')}", f"CONFIDENCE: {finding.get('confidence')}", "REPRODUCTION / VALIDATION STEPS:"]
                 for line in str(finding.get("reproduction") or "See evidence above.").splitlines():
                     lines.append(f"  {line}")
                 lines.append("─" * 90)
@@ -439,9 +327,8 @@ class LiveDashboard:
         return text if color else _strip_ansi(text)
 
     def show_final(self) -> None:
-        if not self.enabled:
-            return
-        print(self.final_text(color=self.interactive), flush=True)
+        if self.enabled:
+            print(self.final_text(color=self.interactive), flush=True)
 
     def draw(self, *, final: bool = False) -> None:
         if not self.enabled:
@@ -452,8 +339,9 @@ class LiveDashboard:
             height = max(self._last_height, len(raw_lines))
             padded_lines = []
             term_width = self._term_width()
+            split_lines = text.splitlines()
             for idx in range(height):
-                line = text.splitlines()[idx] if idx < len(text.splitlines()) else ""
+                line = split_lines[idx] if idx < len(split_lines) else ""
                 clear = " " * max(0, term_width - len(_strip_ansi(line)))
                 padded_lines.append(line + clear)
             self._last_height = len(raw_lines)
