@@ -23,8 +23,15 @@ class LLMHealth:
     fast_model: str
     deep_model: str
     report_model: str
+    transport_ok: bool = False
     model_available: bool = False
+    generation_ok: bool = False
+    transport_status: str = "unknown"
+    model_status: str = "unknown"
+    generation_status: str = "unknown"
+    mode: str = "deterministic_fallback"
     latency_ms: int = 0
+    generation_latency_ms: int = 0
     error: str = ""
     fallback: str = "deterministic"
 
@@ -83,7 +90,8 @@ class LLMGateway:
         fast_model: str | None = None,
         deep_model: str | None = None,
         report_model: str | None = None,
-        timeout: int = 20,
+        timeout: int | None = None,
+        health_mode: str | None = None,
     ) -> None:
         env_url = ollama_url or os.getenv("VULNSCOPE_OLLAMA_URL") or os.getenv("VULNSCOPE_OLLAMA_BASE") or "http://localhost:11434/api/chat"
         self.base_url = _base_from_url(env_url)
@@ -94,7 +102,10 @@ class LLMGateway:
         self.fast_model = fast_model or os.getenv("VULNSCOPE_FAST_MODEL", default_model)
         self.deep_model = deep_model or os.getenv("VULNSCOPE_DEEP_MODEL", self.fast_model)
         self.report_model = report_model or os.getenv("VULNSCOPE_REPORT_MODEL", self.fast_model)
-        self.timeout = max(3, int(timeout))
+        self.timeout = max(3, int(timeout or os.getenv("VULNSCOPE_OLLAMA_TIMEOUT", "60")))
+        self.health_mode = (health_mode or os.getenv("VULNSCOPE_LLM_HEALTH_MODE", "tags-only")).strip().lower()
+        if self.health_mode not in {"tags-only", "full", "disabled"}:
+            self.health_mode = "tags-only"
         self.session = requests.Session()
         self._health_cache: LLMHealth | None = None
 
@@ -103,33 +114,57 @@ class LLMGateway:
             return self._health_cache
         started = time.time()
         health = LLMHealth(False, "ollama", self.base_url, self.chat_url, self.tags_url, self.fast_model, self.deep_model, self.report_model)
+        if self.health_mode == "disabled":
+            health.transport_status = "skipped"
+            health.model_status = "skipped"
+            health.generation_status = "disabled"
+            health.mode = "deterministic_fallback"
+            health.error = "LLM health check disabled"
+            self._health_cache = health
+            return health
         try:
-            response = self.session.get(self.tags_url, timeout=min(self.timeout, 8))
+            response = self.session.get(self.tags_url, timeout=min(self.timeout, 10))
             health.latency_ms = int((time.time() - started) * 1000)
             if response.status_code != 200:
+                health.transport_status = f"http_{response.status_code}"
                 health.error = f"tags HTTP {response.status_code}"
                 self._health_cache = health
                 return health
+            health.transport_ok = True
+            health.transport_status = "ok"
             payload = response.json()
             names = {str(item.get("name") or item.get("model") or "") for item in payload.get("models", [])}
             health.model_available = self.fast_model in names or any(name.startswith(self.fast_model + ":") for name in names)
+            health.model_status = "available" if health.model_available else "missing"
             if not health.model_available:
                 health.error = f"model `{self.fast_model}` not found"
                 self._health_cache = health
                 return health
+            if self.health_mode == "tags-only":
+                health.ok = True
+                health.generation_status = "skipped"
+                health.mode = "llm_available_tags_only"
+                self._health_cache = health
+                return health
+            gen_started = time.time()
             quick = self.chat_json(
                 messages=[{"role": "user", "content": "Return JSON only: {\"ok\": true}"}],
                 model_role="fast",
-                timeout=min(self.timeout + 5, 15),
+                timeout=self.timeout,
                 force_no_health=True,
             )
-            health.ok = quick.ok and bool((quick.parsed or {}).get("ok", True))
+            health.generation_latency_ms = int((time.time() - gen_started) * 1000)
+            health.generation_ok = quick.ok and bool((quick.parsed or {}).get("ok", True))
+            health.generation_status = "ok" if health.generation_ok else "timeout_or_invalid"
+            health.ok = bool(health.transport_ok and health.model_available and health.generation_ok)
+            health.mode = "llm_generation_ready" if health.ok else "deterministic_fallback"
             if not health.ok:
                 health.error = quick.error or "quick JSON prompt failed"
             self._health_cache = health
             return health
         except Exception as exc:
             health.latency_ms = int((time.time() - started) * 1000)
+            health.transport_status = "error"
             health.error = str(exc)[:500]
             self._health_cache = health
             return health
@@ -144,8 +179,8 @@ class LLMGateway:
     def chat_json(self, *, messages: list[dict[str, str]], model_role: str = "fast", timeout: int | None = None, force_no_health: bool = False) -> LLMResponse:
         if not force_no_health:
             health = self.health_check()
-            if not health.ok:
-                return LLMResponse(False, "fallback", self._model_for_role(model_role), error=health.error)
+            if not (health.transport_ok and health.model_available):
+                return LLMResponse(False, "fallback", self._model_for_role(model_role), error=health.error or "Ollama unavailable")
         model = self._model_for_role(model_role)
         started = time.time()
         try:
@@ -167,8 +202,8 @@ class LLMGateway:
     def stream_public_reasoning(self, *, messages: list[dict[str, str]], model_role: str = "fast", on_chunk: Callable[[str], None] | None = None, timeout: int | None = None) -> LLMResponse:
         health = self.health_check()
         model = self._model_for_role(model_role)
-        if not health.ok:
-            return LLMResponse(False, "fallback", model, error=health.error)
+        if not (health.transport_ok and health.model_available):
+            return LLMResponse(False, "fallback", model, error=health.error or "Ollama unavailable")
         started = time.time()
         collected: list[str] = []
         try:
