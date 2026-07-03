@@ -35,11 +35,12 @@ def test_html_route_parser_extracts_routes_forms_and_scripts():
     assert "https://example.com/api/users?id=1" in routes
 
 
-def test_scope_rules_are_same_scope_only():
+def test_scope_rules_are_same_scope_only_with_landing_host_support():
     assert same_scope("https://example.com/a", "example.com") is True
     assert same_scope("https://api.example.com/a", "example.com") is False
     assert same_scope("https://api.example.com/a", "example.com", include_subdomains=True) is True
-    assert same_scope("https://evil.example.net/a", "example.com") is False
+    assert same_scope("https://www.example.com/a", "example.com", extra_hosts={"www.example.com"}) is True
+    assert same_scope("https://evil.example.net/a", "example.com", extra_hosts={"www.example.com"}) is False
 
 
 def test_ai_planner_fallback_prefers_parameter_testing(monkeypatch, tmp_path):
