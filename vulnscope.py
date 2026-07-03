@@ -12,22 +12,20 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.12.0"
+VERSION = "1.13.0-autonomy-core"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 RESET = "\033[0m"
-BOLD = "\033[1m"
 CYAN = "\033[36m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
-DIM = "\033[2m"
 
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
-║                          VulnScope Ultimate v{VERSION:<7}                       ║
-║                Agents → Ollama Gateway → Reasoning → Evidence → Report       ║
+║                          VulnScope Ultimate v{VERSION:<24}║
+║             Safe CAI ReAct → LLM Pacing → Parameter Tests → Evidence         ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -96,7 +94,8 @@ def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = F
 def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
-        "preflight": "reports/output/vulnscope-main/preflight.md",
+        "main_objective": "docs/VULNSCOPE_MAIN_OBJECTIVE.md",
+        "architecture_audit": "docs/ARCHITECTURE_AUDIT.md",
         "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md",
         "final_findings_dashboard_json": f"reports/output/cai-superior/{host}/final-findings-dashboard.json",
         "final_findings_dashboard_txt": f"reports/output/cai-superior/{host}/final-findings-dashboard.txt",
@@ -108,14 +107,12 @@ def final_summary(target: str, history: list[dict]) -> None:
         "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json",
         "evidence_index": f"reports/output/cai-superior/{host}/evidence/evidence-index.md",
         "agent_trace": f"reports/output/cai-superior/{host}/agent-trace.md",
-        "agent_registry": f"reports/output/cai-superior/{host}/agent-registry.md",
-        "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "safe_cai_react": True, "final_findings_dashboard": True, "cai_style_live_dashboard": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "single_default_engine": True, "legacy_modules_default": False, "safe_cai_react": True, "llm_pacing": True, "parameter_test_progression": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "CAI-style live dashboard: `true`", "Final Findings Dashboard: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Single default engine: `true`", "Legacy modules default: `false`", "LLM pacing: `true`", "Parameter test progression: `true`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -136,6 +133,10 @@ def append_headers(cmd: list[str], headers: list[str]) -> None:
 def run_agentic(target: str, args: argparse.Namespace) -> dict:
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
+    os.environ["VULNSCOPE_LLM_DECISION_INTERVAL"] = str(args.llm_decision_interval)
+    os.environ["VULNSCOPE_LLM_DECISION_TIMEOUT"] = str(args.llm_decision_timeout)
+    if args.no_llm_planner:
+        os.environ["VULNSCOPE_DISABLE_LLM_PLANNER"] = "1"
     history: list[dict] = []
     engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
     if args.include_subdomains:
@@ -148,14 +149,14 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         engine_cmd.append("--no-live-dashboard")
     append_headers(engine_cmd, args.header)
     history.append(run("Safe CAI ReAct Autonomous Engine", engine_cmd, timeout=3600))
-    if not args.skip_100_tools:
+    if args.with_100_tools and not args.skip_100_tools:
         orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", args.scan_mode, "--criticality", args.criticality, "--tool-timeout", str(args.tool_timeout)]
         if args.include_subdomains:
             orch_cmd.append("--include-subdomains")
         if args.no_live_dashboard:
             orch_cmd.append("--no-live-dashboard")
-        history.append(run("Live 100-Tool Safe Orchestrator", orch_cmd, timeout=3600))
-    if not args.skip_react:
+        history.append(run("Optional 100-Tool Safe Orchestrator", orch_cmd, timeout=3600))
+    if args.with_legacy_react and not args.skip_react:
         cmd = [sys.executable, "-m", "core.react_loop", "--target", target, "--max-turns", str(args.max_turns), "--criticality", args.criticality]
         if args.include_subdomains:
             cmd.append("--include-subdomains")
@@ -165,9 +166,9 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--live-dashboard")
         if args.no_final_dashboard:
             cmd.append("--no-final-dashboard")
-        history.append(run("Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
+        history.append(run("Optional Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.12.0 CAI-Style Live Dashboard", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.13.0 Autonomy Core", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -198,11 +199,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-budget", type=int, default=500)
     parser.add_argument("--max-actions", type=int, default=160)
     parser.add_argument("--threads", type=int, default=4, help="Worker hint for supported discovery stages; kept bounded for safe scanning.")
+    parser.add_argument("--llm-decision-interval", type=int, default=4, help="Use LLM planner every N ReAct decisions instead of every turn.")
+    parser.add_argument("--llm-decision-timeout", type=int, default=6, help="Max seconds to wait for one LLM planner decision.")
+    parser.add_argument("--no-llm-planner", action="store_true", help="Use deterministic autonomous scheduling while keeping reports/evidence intact.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--tool-timeout", type=int, default=20)
-    parser.add_argument("--skip-100-tools", action="store_true")
-    parser.add_argument("--skip-react", action="store_true")
+    parser.add_argument("--with-100-tools", action="store_true", help="Opt in to legacy/experimental 100-tool stage after the main engine.")
+    parser.add_argument("--with-legacy-react", action="store_true", help="Opt in to legacy react_loop after the main engine.")
+    parser.add_argument("--skip-100-tools", action="store_true", help="Compatibility flag. The 100-tool stage is already off by default.")
+    parser.add_argument("--skip-react", action="store_true", help="Compatibility flag. Legacy react loop is already off by default.")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", choices=["low", "normal", "high", "critical"], default="normal")
