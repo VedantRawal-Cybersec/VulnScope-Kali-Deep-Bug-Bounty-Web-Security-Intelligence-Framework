@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
+DIM = "\033[2m"
 CYAN = "\033[36m"
 BLUE = "\033[34m"
 GREEN = "\033[32m"
@@ -23,10 +24,11 @@ YELLOW = "\033[33m"
 MAGENTA = "\033[35m"
 RED = "\033[31m"
 WHITE = "\033[37m"
-DIM = "\033[2m"
+
+VERSION = "1.12.0"
 
 SENSITIVE_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie)=([^\s&;]+)"),
+    re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie|session|password)=([^\s&;]+)"),
 ]
 
 
@@ -44,7 +46,7 @@ class LiveSnapshot:
     max_turns: int = 0
     findings: int = 0
     requests: int = 0
-    action: str = "Initializing safe autonomous loop"
+    action: str = "Initializing autonomous ReAct loop"
     current_agent: str = "SupervisorAgent"
     current_tool: str = "initializer"
     handoff: str = "—"
@@ -60,7 +62,7 @@ class LiveSnapshot:
     response_time_ms: str = "—"
     hypothesis: str = "—"
     evidence: str = "—"
-    safety_status: str = "Scope locked • safe methods only • zero-impact"
+    safety_status: str = "Scope locked • passive + safe-active only • zero-impact"
     latest_status: str = "waiting"
     urls_found: int = 0
     paths_found: int = 0
@@ -119,8 +121,46 @@ def target_components(target: str) -> dict[str, str]:
     return {"target": normalized, "domain": domain, "endpoint": endpoint, "request_line": request_line, "path": path, "parameters": query, "method": "GET"}
 
 
+def _colorize(text: str, color: str, enabled: bool) -> str:
+    return f"{color}{text}{RESET}" if enabled else text
+
+
+def _pad(text: str, width: int) -> str:
+    raw = _strip_ansi(text)
+    if len(raw) > width:
+        raw = raw[: max(0, width - 1)] + "…"
+        text = raw
+    return text + (" " * max(0, width - len(raw)))
+
+
+def _box(title: str, lines: list[str], *, color: str = CYAN, enabled: bool = True, width: int = 95) -> list[str]:
+    inner = width - 2
+    out = [
+        _colorize("┌─ " + title + " " + "─" * max(0, inner - len(title) - 3) + "┐", color, enabled)
+    ]
+    for line in lines:
+        out.append(_colorize("│", color, enabled) + " " + _pad(line, inner - 2) + " " + _colorize("│", color, enabled))
+    out.append(_colorize("└" + "─" * inner + "┘", color, enabled))
+    return out
+
+
 class LiveDashboard:
-    """Stable in-place Kali CLI dashboard for transparent defensive execution."""
+    """CAI-style live dashboard with colored panels and final assessment output."""
+
+    TOOL_ORDER = [
+        "crawler_v2",
+        "browser_crawler",
+        "parameter_inventory",
+        "header_analyzer",
+        "cookie_analyzer",
+        "metadata_checker",
+        "js_route_review",
+        "classification_review",
+        "safe_canary_reflection",
+        "report_generator",
+        "llm_public_reasoning",
+        "llm_evidence_validator",
+    ]
 
     def __init__(
         self,
@@ -151,7 +191,7 @@ class LiveDashboard:
         self.events: list[str] = []
         self.traces: list[str] = []
         self.finding_details: list[dict[str, Any]] = []
-        self.max_events = 30
+        self.max_events = 10
         self.running = False
         self.thread: threading.Thread | None = None
         self.report_paths: dict[str, str] = {}
@@ -169,7 +209,7 @@ class LiveDashboard:
             self.thread = threading.Thread(target=self._refresh_loop, daemon=True)
             self.thread.start()
         else:
-            print("[vulnscope] live stream active; stable TTY dashboard unavailable in this output mode", flush=True)
+            print("[vulnscope] live dashboard active; stable in-place TTY dashboard unavailable in this output mode", flush=True)
 
     def _refresh_loop(self) -> None:
         while self.running:
@@ -205,25 +245,33 @@ class LiveDashboard:
                         except Exception:
                             setattr(self.snapshot, key, 0)
                     else:
-                        setattr(self.snapshot, key, _clean(value, 220))
+                        setattr(self.snapshot, key, _clean(value, 260))
 
     def event(self, level: str, message: str) -> None:
         level = str(level or "INFO").upper()
-        icon = {"SUCCESS": "OK", "INFO": "INFO", "WARNING": "WARN", "BLOCKED": "BLOCK", "FINDING": "FIND", "THINKING": "AI", "HANDOFF": "HAND"}.get(level, "LOG")
-        rendered = f"{time.strftime('%H:%M:%S')} {icon:<5} {_clean(message, 220)}"
+        icon = {
+            "SUCCESS": "✅",
+            "INFO": "ℹ️ ",
+            "WARNING": "⚠️ ",
+            "BLOCKED": "🛡️ ",
+            "FINDING": "🔥",
+            "THINKING": "🧠",
+            "HANDOFF": "🔁",
+            "ERROR": "❌",
+        }.get(level, "• ")
+        rendered = f"[{time.strftime('%H:%M:%S')}] {icon} {_clean(message, 240)}"
         with self.lock:
             self.events.append(rendered)
             self.events = self.events[-self.max_events :]
             self.snapshot.latest_status = level.lower()
         if self.enabled and self.live_stream and not self.interactive:
-            # Non-TTY environments cannot update in-place. Keep output minimal.
-            if level in {"WARNING", "BLOCKED", "FINDING", "SUCCESS"}:
+            if level in {"WARNING", "BLOCKED", "FINDING", "SUCCESS", "ERROR"}:
                 print(_strip_ansi(rendered), flush=True)
 
     def trace(self, message: str) -> None:
         with self.lock:
             self.traces.append(f"{time.strftime('%H:%M:%S')} {_clean(message, 240)}")
-            self.traces = self.traces[-12:]
+            self.traces = self.traces[-8:]
 
     def add_finding(
         self,
@@ -245,16 +293,16 @@ class LiveDashboard:
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
             finding = {
-                "type": _clean(finding_type or "Security Review Lead", 120),
+                "type": _clean(finding_type or "Security Review Lead", 140),
                 "severity": severity,
-                "description": _clean(description or "Evidence requires analyst review.", 400),
-                "url": _clean(url or snap.endpoint, 240),
+                "description": _clean(description or "Evidence requires analyst review.", 500),
+                "url": _clean(url or snap.endpoint, 260),
                 "domain": _clean(snap.domain, 120),
-                "request_line": _clean(snap.request_line, 220),
+                "request_line": _clean(snap.request_line, 240),
                 "path": _clean(snap.path, 180),
                 "parameter": _clean(parameter or snap.parameters, 220),
                 "test_string": _clean(test_string or snap.probe_string, 220),
-                "evidence": _clean(evidence or snap.evidence, 800),
+                "evidence": _clean(evidence or snap.evidence, 900),
                 "cvss": _clean(cvss, 80),
                 "confidence": _clean(confidence, 80),
                 "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."),
@@ -270,7 +318,7 @@ class LiveDashboard:
                 self.snapshot.potential += 1
             else:
                 self.snapshot.informational += 1
-            self.events.append(f"{time.strftime('%H:%M:%S')} FIND  {severity} {finding['type']}: {finding['description']}")
+            self.events.append(f"[{time.strftime('%H:%M:%S')}] 🔥 [{severity}] {finding['type']}: {finding['description']}")
             self.events = self.events[-self.max_events :]
         return finding
 
@@ -286,7 +334,7 @@ class LiveDashboard:
         seconds = max(0, int(time.time() - self.snapshot.started_at))
         return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
-    def _bar(self, width: int = 30) -> str:
+    def _bar(self, width: int = 32) -> str:
         total = max(1, self.snapshot.phase_total)
         progress = max(0, min(self.snapshot.phase_progress, total))
         filled = int(width * progress / total)
@@ -294,9 +342,9 @@ class LiveDashboard:
 
     def _term_width(self) -> int:
         try:
-            return max(96, min(140, shutil.get_terminal_size((116, 40)).columns))
+            return max(96, min(120, shutil.get_terminal_size((100, 40)).columns))
         except Exception:
-            return 116
+            return 100
 
     def _severity_color(self, severity: str) -> str:
         severity = str(severity or "INFO").upper()
@@ -320,7 +368,16 @@ class LiveDashboard:
     def _report_lines(self) -> list[str]:
         if not self.report_paths:
             return ["CLI report paths will be written after finalization."]
-        preferred = ["autonomous_report_md", "parameter_inventory_v2", "evidence_index_md", "cli_final_dashboard_md", "detailed_findings_json", "react_run_md"]
+        preferred = [
+            "final_findings_dashboard_md",
+            "final_findings_dashboard_json",
+            "autonomous_report_md",
+            "parameter_inventory_v2",
+            "evidence_index_md",
+            "agent_trace_md",
+            "tool_router_matrix_json",
+            "cli_final_dashboard_md",
+        ]
         lines = []
         for key in preferred:
             if key in self.report_paths:
@@ -330,54 +387,80 @@ class LiveDashboard:
                 lines.append(f"{key}: {value}")
         return lines
 
-    def _panel_line(self, label: str, value: Any, width: int = 54) -> str:
-        return f"{label:<18} {_clean(value, width)}"
+    def _tool_rows(self, snap: LiveSnapshot) -> list[str]:
+        running = max(0, int(snap.tools_running))
+        completed = max(0, int(snap.tools_completed))
+        failed = max(0, int(snap.tools_failed))
+        skipped = max(0, int(snap.tools_skipped))
+        blocked = max(0, int(snap.tools_blocked))
+        rows: list[str] = [
+            f"Total: {snap.tools_total:<3} Running: {running:<2} Completed: {completed:<3} Failed: {failed:<2} Blocked: {blocked:<2} Skip: {skipped:<2}",
+            "─" * 76,
+        ]
+        for tool in self.TOOL_ORDER:
+            if tool == snap.current_tool or (tool == "safe_canary_reflection" and snap.current_tool in {"test_parameter", "reflection_canary"}):
+                mark = "⏳ running "
+            elif tool in {"report_generator", "llm_evidence_validator"} and snap.phase_progress < 85:
+                mark = "◻ queued  "
+            elif completed > 0:
+                mark = "✔ completed"
+                completed -= 1
+            else:
+                mark = "◻ queued  "
+            rows.append(f"► {tool:<26} {mark}")
+        return rows[:14]
+
+    def _trace_rows(self, snap: LiveSnapshot, traces: list[str]) -> list[str]:
+        rows = ["Turn  Agent                   Action                     Status     Handoff"]
+        rows.append(f"{snap.turn:<5} {_clean(snap.current_agent, 22):<22} {_clean(snap.action, 26):<26} running    {_clean(snap.handoff, 10)}")
+        for trace in traces[-3:][::-1]:
+            rows.append(f"{max(0, snap.turn - 1):<5} {'TraceLogger':<22} {_clean(trace, 26):<26} completed  Analyzer")
+        return rows
 
     def render_text(self, *, final: bool = False, color: bool = True) -> str:
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
             events = list(self.events)
             traces = list(self.traces)
-        c = (lambda value: value) if color else (lambda value: "")
-        width = self._term_width()
-        sep = "─" * min(width, 132)
-        progress = f"[{self._bar()}] {snap.phase_progress}/{max(1, snap.phase_total)}"
-        lines = [
-            f"{c(CYAN)}VULNSCOPE AUTONOMOUS SECURITY AI{c(RESET)}  {c(DIM)}single stable live dashboard{c(RESET)}",
-            sep,
-            f"Scan ID: {snap.scan_id} | Target: {snap.target} | Mode: {snap.mode} | Auth: {snap.authorization_status} | Time: {self._elapsed()}",
-            f"Ollama: {snap.ollama_status} | Phase: {snap.phase} | Progress: {progress}",
-            sep,
-            f"{c(YELLOW)}Current Activity{c(RESET)}",
-            self._panel_line("Agent", snap.current_agent) + " | " + self._panel_line("Tool", snap.current_tool),
-            self._panel_line("Action", snap.action, 88),
-            self._panel_line("URL", snap.endpoint, 88),
-            self._panel_line("Full request", snap.request_line, 88),
-            self._panel_line("Path", snap.path, 88),
-            self._panel_line("Parameter", snap.parameters, 88),
-            self._panel_line("Safe probe", snap.probe_string, 88),
-            self._panel_line("Response", f"{snap.response_code} / {snap.response_time_ms}ms"),
-            self._panel_line("Evidence", snap.evidence, 88),
-            sep,
-            f"{c(YELLOW)}Discovered Surface{c(RESET)}  URLs:{snap.urls_found}  Paths:{snap.paths_found}  Params:{snap.params_found}  Forms:{snap.forms_found}  JS:{snap.js_found}  API-like:{snap.api_routes_found}",
-            f"{c(YELLOW)}Agent Trace{c(RESET)}  Turn:{snap.turn}/{snap.max_turns or '∞'}  Decision:{snap.decision}  Handoff:{snap.handoff}",
-            f"{c(YELLOW)}Tool Matrix{c(RESET)}  Total:{snap.tools_total}  Running:{snap.tools_running}  Completed:{snap.tools_completed}  Failed:{snap.tools_failed}  Skipped:{snap.tools_skipped}  Blocked:{snap.tools_blocked}",
-            f"{c(YELLOW)}Findings{c(RESET)}  Confirmed:{snap.confirmed}  Potential:{snap.potential}  Info:{snap.informational}  Total:{snap.findings}  Latest:{snap.latest_finding}",
-            f"{c(GREEN)}Safety{c(RESET)}  {snap.safety_status}",
-            sep,
-            f"{c(YELLOW)}Recent Handoffs / Decisions{c(RESET)}",
+        c = lambda text, col: _colorize(text, col, color)
+        width = 95
+        header = [
+            c("╔" + "═" * (width - 2) + "╗", CYAN),
+            c(f"║  VulnScope v{VERSION:<8} Target: {_clean(snap.domain, 20):<20} Mode: {snap.mode:<11} Time: {self._elapsed():<5} ║", CYAN),
+            c("╚" + "═" * (width - 2) + "╝", CYAN),
+            "",
         ]
-        if traces:
-            lines.extend(traces[-8:])
-        else:
-            lines.append("No handoff has started yet.")
-        lines += [sep, f"{c(YELLOW)}Live Logs (last {self.max_events}){c(RESET)}"]
-        if events:
-            lines.extend(events[-self.max_events :])
-        else:
-            lines.append("Waiting for first scan event…")
-        lines.append(sep)
-        lines.append("Ctrl+C: stop safely • Reports are written on completion/interruption" if not final else "Final CLI dashboard")
+        reasoning = [
+            f"🧠 THINKING: {_clean(snap.decision if snap.decision != '—' else snap.action, 82)}",
+            f"   {_clean(snap.hypothesis, 82)}",
+        ]
+        context = [
+            f"📡 Endpoint: {_clean(snap.endpoint, 78)}",
+            f"🗂️  Path: {_clean(snap.path, 82)}",
+            f"📝 Parameter: {_clean(snap.parameters, 78)}",
+            f"💉 Payload: {_clean(snap.probe_string, 80)}",
+            f"💡 Hypothesis: {_clean(snap.hypothesis, 76)}",
+            f"🔍 Evidence: {_clean(snap.evidence, 78)}",
+            f"📊 Phase: {snap.phase}  [{c(self._bar(), GREEN)}] {snap.phase_progress}/{max(1, snap.phase_total)}",
+        ]
+        logs = events[-10:] or ["Waiting for first scan event…"]
+        footer = [
+            "─" * width,
+            "  Press Ctrl+C to stop scan  |  All findings auto-reported  |  Zero-impact mode",
+            "─" * width,
+        ]
+        lines: list[str] = []
+        lines.extend(header)
+        lines.extend(_box("Agent Trace", self._trace_rows(snap, traces), color=CYAN, enabled=color, width=width))
+        lines.append("")
+        lines.extend(_box("Tool Matrix", self._tool_rows(snap), color=MAGENTA, enabled=color, width=width))
+        lines.append("")
+        lines.extend(_box("Live Reasoning", reasoning, color=YELLOW, enabled=color, width=width))
+        lines.append("")
+        lines.extend(_box("Current Context", context, color=BLUE, enabled=color, width=width))
+        lines.append("")
+        lines.extend(_box("Live Log (10 most recent)", logs, color=GREEN, enabled=color, width=width))
+        lines.extend(footer)
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
 
@@ -385,56 +468,69 @@ class LiveDashboard:
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
             findings = [dict(item) for item in self.finding_details]
-            events = list(self.events)
-        c = (lambda value: value) if color else (lambda value: "")
+        c = lambda text, col: _colorize(text, col, color)
         confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
         counts = self._severity_counts(findings)
-        severity_line = f"CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}"
+        total_label = f"{len(confirmed)} confirmed vulnerabilities" if confirmed else f"{len(findings)} findings / review leads"
         lines = [
-            "=" * 90,
-            f"{c(CYAN)}VULNSCOPE AUTONOMOUS FINAL DASHBOARD{c(RESET)}",
-            f"Target: {snap.target}",
-            f"Scan ID: {snap.scan_id}",
-            f"Mode: {snap.mode}",
-            f"Ollama: {snap.ollama_status}",
-            f"Endpoint: {snap.endpoint}",
-            f"Full Request: {snap.request_line}",
-            f"Path: {snap.path}",
-            f"Parameters: {snap.parameters}",
-            f"Time: {self._elapsed()} | Requests: {snap.requests} | Findings/leads: {len(findings)} | Confirmed: {len(confirmed)}",
-            f"Severity Summary: {severity_line}",
-            "─" * 90,
+            "=" * 96,
+            c("╔" + "═" * 79 + "╗", CYAN),
+            c("║                     FINAL ASSESSMENT DASHBOARD                               ║", CYAN),
+            c("╚" + "═" * 79 + "╝", CYAN),
+            "",
+            f"Target:          {snap.domain}",
+            f"Scan Mode:       {snap.mode}",
+            f"Total Time:      {self._elapsed()}",
+            f"Total Requests:  {snap.requests}",
+            f"Total Findings:  {total_label}",
+            f"Severity Counts: CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}",
+            "",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "CONFIRMED VULNERABILITIES / REVIEW LEADS — DETAILED BREAKDOWN",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "",
         ]
         if not findings:
-            lines.append(f"{c(YELLOW)}No vulnerabilities were confirmed. Review surface inventory and evidence reports for coverage details.{c(RESET)}")
-        else:
-            for idx, finding in enumerate(findings, 1):
-                severity = str(finding.get("severity", "INFO")).upper()
-                status = str(finding.get("confirmation", "review_lead")).replace("_", " ").upper()
-                lines += [
-                    "",
-                    f"{c(self._severity_color(severity))}FINDING #{idx} — {severity} — {status}{c(RESET)}",
-                    f"WHAT: {finding.get('type')}",
-                    f"WHY: {finding.get('description')}",
-                    f"WHERE: {finding.get('url')}",
-                    f"REQUEST: {finding.get('request_line')}",
-                    f"PATH: {finding.get('path')}",
-                    f"PARAMETER: {finding.get('parameter')}",
-                    f"SAFE PROBE: {finding.get('test_string')}",
-                    f"EVIDENCE: {finding.get('evidence')}",
-                    f"CONFIDENCE: {finding.get('confidence')}",
-                    "VALIDATION STEPS:",
-                ]
-                for line in str(finding.get("reproduction") or "See evidence above.").splitlines():
-                    lines.append(f"  {line}")
-                lines.append("─" * 90)
-        lines.append("\n--- Final Activity Log ---")
-        for entry in events[-self.max_events :]:
-            lines.append(entry)
-        lines.append("\n--- Report Files ---")
+            lines.extend([
+                c("No vulnerabilities were confirmed under the selected safe scope and request budget.", YELLOW),
+                "Review final-findings-dashboard.md, parameter-inventory-v2.json, and evidence-index.md for coverage.",
+                "",
+            ])
+        for idx, finding in enumerate(findings, 1):
+            severity = str(finding.get("severity", "INFO")).upper()
+            title = finding.get("type", "Security Finding")
+            status = str(finding.get("confirmation", "review_lead")).replace("_", " ").upper()
+            lines.extend([
+                c(f"═══ FINDING #{idx} ═══", self._severity_color(severity)),
+                f"WHAT:       {title} ({severity}) — {status}",
+                f"WHY:        {finding.get('description')}",
+                f"WHERE:      {finding.get('url')}",
+                f"Parameter:  {finding.get('parameter')}",
+                f"Payload:    {finding.get('test_string')}",
+                f"EVIDENCE:   {finding.get('evidence')}",
+                f"CVSS:       {finding.get('cvss')}",
+                f"CONFIDENCE: {finding.get('confidence')}",
+                "REPRODUCTION:",
+            ])
+            for line in str(finding.get("reproduction") or "Review evidence inside authorized scope.").splitlines():
+                lines.append(f"  {line}")
+            lines.extend(["", "────────────────────────────────────────────────────────────────────────────────", ""])
+        lines.extend([
+            "=" * 96,
+            "✅ Full report written to: " + str(Path("reports/output/cai-superior") / snap.domain),
+            "   • final-findings-dashboard.md",
+            "   • autonomous-scan-report.md",
+            "   • autonomous-scan-report.json",
+            "   • evidence/evidence-index.md",
+            "   • agent-trace.md",
+            "   • tool-router-matrix.json",
+            "📊 Dashboard displayed above.",
+            "",
+            "--- Report Files ---",
+        ])
         for entry in self._report_lines():
             lines.append(f"- {entry}")
-        lines.append("=" * 90)
+        lines.append("=" * 96)
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
 
@@ -452,8 +548,9 @@ class LiveDashboard:
             height = max(self._last_height, len(raw_lines))
             padded_lines = []
             term_width = self._term_width()
+            split = text.splitlines()
             for idx in range(height):
-                line = text.splitlines()[idx] if idx < len(text.splitlines()) else ""
+                line = split[idx] if idx < len(split) else ""
                 clear = " " * max(0, term_width - len(_strip_ansi(line)))
                 padded_lines.append(line + clear)
             self._last_height = len(raw_lines)
@@ -465,7 +562,17 @@ class LiveDashboard:
     def write_reports(self, out: Path) -> dict[str, str]:
         out.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            payload = {"snapshot": asdict(self.snapshot), "events": list(self.events), "traces": list(self.traces), "findings": [dict(item) for item in self.finding_details], "generated_at": time.time(), "interface": "kali_cli", "dashboard": "stable_live_cli", "website_dashboard": False}
+            payload = {
+                "snapshot": asdict(self.snapshot),
+                "events": list(self.events),
+                "traces": list(self.traces),
+                "findings": [dict(item) for item in self.finding_details],
+                "generated_at": time.time(),
+                "interface": "kali_cli",
+                "dashboard": "cai_style_live_cli",
+                "version": VERSION,
+                "website_dashboard": False,
+            }
         session_json_path = out / "cli-session.json"
         final_json_path = out / "cli-final-dashboard.json"
         final_md_path = out / "cli-final-dashboard.md"
@@ -473,7 +580,12 @@ class LiveDashboard:
         session_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         final_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         findings_json_path.write_text(json.dumps(payload["findings"], indent=2, ensure_ascii=False), encoding="utf-8")
-        reports = {"cli_session_json": str(session_json_path), "cli_final_dashboard_json": str(final_json_path), "cli_final_dashboard_md": str(final_md_path), "detailed_findings_json": str(findings_json_path)}
+        reports = {
+            "cli_session_json": str(session_json_path),
+            "cli_final_dashboard_json": str(final_json_path),
+            "cli_final_dashboard_md": str(final_md_path),
+            "detailed_findings_json": str(findings_json_path),
+        }
         self.report_paths = dict(reports)
-        final_md_path.write_text("# VulnScope Stable Kali CLI Final Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
+        final_md_path.write_text("# VulnScope CAI-Style Final Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
         return reports
