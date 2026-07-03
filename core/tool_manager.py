@@ -23,6 +23,8 @@ from core.tool_registry import RegisteredTool, ToolArgument, ToolRegistry, VALID
 
 TOOLS_DIR = Path("tools")
 RUNS_DIR = Path("reports/output/dynamic-tools")
+LOGS_DIR = Path("logs")
+TOOL_INSTALL_LOG = LOGS_DIR / "tool_install.log"
 
 
 @dataclass
@@ -57,6 +59,13 @@ class ToolManager:
         self.registry = registry or ToolRegistry()
         TOOLS_DIR.mkdir(parents=True, exist_ok=True)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _log(self, message: str, *, level: str = "INFO", data: dict[str, Any] | None = None) -> None:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "level": level, "message": message, "data": data or {}}
+        with TOOL_INSTALL_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _slug_from_repo_url(repo_url: str) -> str:
@@ -100,12 +109,18 @@ class ToolManager:
         parser = "plain"
         if (local_path / "requirements.txt").exists():
             install.append("python3 -m pip install -r requirements.txt")
-        if (local_path / "pyproject.toml").exists() or (local_path / "setup.py").exists():
+        if (local_path / "pyproject.toml").exists():
             install.append("python3 -m pip install .")
+        if (local_path / "setup.py").exists():
+            install.append("python3 setup.py install")
         if (local_path / "go.mod").exists():
-            install.append("go build ./...")
+            install.append("go build")
         if (local_path / "package.json").exists():
             install.append("npm install")
+        if (local_path / "install.sh").exists():
+            install.append("bash install.sh")
+        if (local_path / "setup.sh").exists():
+            install.append("bash setup.sh")
         for candidate in ["main.py", "scanner.py", "scan.py", "app.py"]:
             if (local_path / candidate).exists():
                 run = f"python3 {candidate} --target {{target}}"
@@ -156,10 +171,12 @@ class ToolManager:
         slug = self._slug_from_repo_url(repo_url)
         local_path = TOOLS_DIR / slug
         if local_path.exists() and (local_path / ".git").exists():
+            self._log("Updating existing tool repository", data={"url": repo_url, "path": str(local_path)})
             subprocess.run(["git", "-C", str(local_path), "pull", "--ff-only"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
             return local_path
         if local_path.exists() and not (local_path / ".git").exists():
             raise RuntimeError(f"tool path exists but is not a git repo: {local_path}")
+        self._log("Cloning tool repository", data={"url": repo_url, "path": str(local_path)})
         subprocess.run(["git", "clone", "--depth", "1", repo_url, str(local_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240)
         return local_path
 
@@ -179,6 +196,7 @@ class ToolManager:
         if enable:
             tool.enabled = True
         self.registry.upsert(tool)
+        self._log("Registered dynamic tool", data={"tool_id": tool.tool_id, "name": tool.name, "phase": tool.phase, "path": tool.local_path})
         return tool
 
     def install_tool(self, tool_id: str, *, confirm: bool = False, timeout: int = 600) -> list[CommandResult]:
@@ -191,7 +209,82 @@ class ToolManager:
         for command in tool.install:
             results.append(self._run_command(command, cwd=Path(tool.local_path), timeout=timeout, label=f"install_{tool_id}"))
         self.registry.set_installed(tool_id, installed=all(item.status == "completed" for item in results) if results else True)
+        self._log("Install completed", data={"tool_id": tool_id, "results": [item.to_dict() for item in results]})
         return results
+
+    def _read_tool_file(self, file_path: str | Path) -> list[str]:
+        raw = str(file_path).strip()
+        if raw.startswith("-") and not raw.startswith("--"):
+            raw = raw[1:]
+        path = Path(raw)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        urls: list[str] = []
+        for line in lines:
+            item = line.strip()
+            if not item or item.startswith("#"):
+                continue
+            urls.append(item)
+        return urls
+
+    def install_from_file(self, file_path: str | Path, *, confirm_authorization: bool = False, install_timeout: int = 900) -> dict[str, Any]:
+        if not confirm_authorization:
+            answer = input("This will install tools from the list. Do you have authorization to use these tools on your targets? (yes/no): ").strip().lower()
+            if answer not in {"yes", "y"}:
+                self._log("Batch install aborted by user", level="WARNING", data={"file": str(file_path)})
+                return {"status": "aborted", "installed_successfully": 0, "failed": 0, "results": [], "log": str(TOOL_INSTALL_LOG)}
+        urls = self._read_tool_file(file_path)
+        results: list[dict[str, Any]] = []
+        success = 0
+        failed = 0
+        self._log("Batch tool install started", data={"file": str(file_path), "count": len(urls)})
+        for index, url in enumerate(urls, 1):
+            result = self._install_single(url, install_timeout=install_timeout, index=index, total=len(urls))
+            results.append(result)
+            if result.get("ok"):
+                success += 1
+            else:
+                failed += 1
+        summary = {
+            "status": "completed",
+            "installed_successfully": success,
+            "failed": failed,
+            "total": len(urls),
+            "results": results,
+            "registry": str(self.registry.path),
+            "log": str(TOOL_INSTALL_LOG),
+        }
+        summary_path = LOGS_DIR / "tool_install_summary.json"
+        summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._log("Batch tool install completed", data={"success": success, "failed": failed, "total": len(urls), "summary": str(summary_path)})
+        return summary
+
+    def _install_single(self, url: str, *, install_timeout: int = 900, index: int = 1, total: int = 1) -> dict[str, Any]:
+        started = time.time()
+        try:
+            self._log("Installing batch tool", data={"url": url, "index": index, "total": total})
+            tool = self.add_tool(url, approve_install=True, approve_run=True, enable=True)
+            install_results = self.install_tool(tool.tool_id, confirm=True, timeout=install_timeout)
+            tool = self.registry.get(tool.tool_id) or tool
+            ok = all(item.status == "completed" for item in install_results) if install_results else True
+            payload = {
+                "ok": ok,
+                "url": url,
+                "tool_id": tool.tool_id,
+                "name": tool.name,
+                "phase": tool.phase,
+                "local_path": tool.local_path,
+                "installed": tool.installed,
+                "enabled": tool.enabled,
+                "approved_for_run": tool.approved_for_run,
+                "install_results": [item.to_dict() for item in install_results],
+                "elapsed_ms": int((time.time() - started) * 1000),
+            }
+            self._log("Batch tool installed" if ok else "Batch tool install had failures", level="INFO" if ok else "ERROR", data=payload)
+            return payload
+        except Exception as exc:
+            payload = {"ok": False, "url": url, "error": str(exc)[:1000], "elapsed_ms": int((time.time() - started) * 1000)}
+            self._log("Batch tool install failed", level="ERROR", data=payload)
+            return payload
 
     def _format_run_args(self, token: str, context: dict[str, str]) -> str:
         try:
