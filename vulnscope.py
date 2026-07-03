@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.11.0-safe-cai-react-llm"
+VERSION = "1.11.1-final-findings-dashboard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope Ultimate                       ║
-║ Safe CAI ReAct → Ollama Gateway → Tools → Evidence → Report       ║
+║ Safe CAI ReAct → Tools → Evidence → Final Findings Dashboard      ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -82,6 +82,9 @@ def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
         "preflight": "reports/output/vulnscope-main/preflight.md",
+        "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md",
+        "final_findings_dashboard_json": f"reports/output/cai-superior/{host}/final-findings-dashboard.json",
+        "final_findings_dashboard_txt": f"reports/output/cai-superior/{host}/final-findings-dashboard.txt",
         "autonomous_report": f"reports/output/cai-superior/{host}/autonomous-scan-report.md",
         "autonomous_report_json": f"reports/output/cai-superior/{host}/autonomous-scan-report.json",
         "autonomous_state": f"reports/output/cai-superior/{host}/autonomous-scan-state.json",
@@ -94,10 +97,10 @@ def final_summary(target: str, history: list[dict]) -> None:
         "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "safe_cai_react": True, "cai_style_agents": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "safe_cai_react": True, "final_findings_dashboard": True, "cai_style_agents": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Safe CAI ReAct: `true`", "CAI-style agents: `true`", "Stable dashboard: `true`", "Ollama diagnostics/fallback: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Safe CAI ReAct: `true`", "Final Findings Dashboard: `true`", "CAI-style agents: `true`", "Stable dashboard: `true`", "Ollama diagnostics/fallback: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -149,7 +152,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--no-final-dashboard")
         history.append(run("Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.11.0 Safe CAI ReAct LLM", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.11.1 Final Findings Dashboard", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
