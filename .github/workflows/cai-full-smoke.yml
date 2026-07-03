@@ -37,7 +37,7 @@ jobs:
             core/llm_gateway.py core/llm_policy.py core/reasoning_stream.py \
             core/prompt_injection_guard.py core/evidence_validator.py \
             core/llm_memory.py core/tool_router.py core/test_queue.py \
-            core/scan_quality.py core/autonomous_scan_engine.py
+            core/cai_react_controller.py core/scan_quality.py core/autonomous_scan_engine.py
       - name: Test CAI core
         run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py -q
       - name: Test ReAct and dashboard
