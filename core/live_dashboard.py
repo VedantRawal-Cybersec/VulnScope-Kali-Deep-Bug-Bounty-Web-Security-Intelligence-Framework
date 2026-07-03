@@ -25,9 +25,7 @@ RED = "\033[31m"
 WHITE = "\033[37m"
 DIM = "\033[2m"
 
-SENSITIVE_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie)=([^\s&;]+)"),
-]
+SENSITIVE_PATTERNS = [re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie)=([^\s&;]+)")]
 
 
 @dataclass
@@ -112,11 +110,8 @@ def target_components(target: str) -> dict[str, str]:
     domain = (parsed.hostname or parsed.netloc or raw).split(":")[0].lower().strip() or "—"
     path = parsed.path or "/"
     query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
-    endpoint = normalized
-    request_line = f"GET {path}"
-    if parsed.query:
-        request_line += "?" + parsed.query
-    return {"target": normalized, "domain": domain, "endpoint": endpoint, "request_line": request_line, "path": path, "parameters": query, "method": "GET"}
+    request_line = f"GET {path}" + (("?" + parsed.query) if parsed.query else "")
+    return {"target": normalized, "domain": domain, "endpoint": normalized, "request_line": request_line, "path": path, "parameters": query, "method": "GET"}
 
 
 class LiveDashboard:
@@ -292,32 +287,7 @@ class LiveDashboard:
         width = self._term_width()
         sep = "─" * min(width, 132)
         progress = f"[{self._bar()}] {snap.phase_progress}/{max(1, snap.phase_total)}"
-        lines = [
-            f"{c(CYAN)}VULNSCOPE ULTIMATE AUTONOMOUS SECURITY AI{c(RESET)}  {c(DIM)}single stable live dashboard{c(RESET)}",
-            sep,
-            f"Scan ID: {snap.scan_id} | Target: {snap.target} | Mode: {snap.mode} | Auth: {snap.authorization_status} | Time: {self._elapsed()}",
-            f"Ollama: {snap.ollama_status} | Phase: {snap.phase} | Progress: {progress}",
-            sep,
-            f"{c(YELLOW)}Current Activity{c(RESET)}",
-            f"Domain: {snap.domain}",
-            f"Endpoint: {snap.endpoint}",
-            f"Full Request: {snap.request_line}",
-            f"Path: {snap.path}",
-            f"Parameters: {snap.parameters}",
-            f"Safe string under test: {snap.probe_string}",
-            f"Evidence snippet: {snap.evidence}",
-            self._panel_line("Agent", snap.current_agent) + " | " + self._panel_line("Tool", snap.current_tool),
-            self._panel_line("Action", snap.action, 88),
-            self._panel_line("Response", f"{snap.response_code} / {snap.response_time_ms}ms"),
-            sep,
-            f"{c(YELLOW)}Discovered Surface{c(RESET)}  URLs:{snap.urls_found}  Paths:{snap.paths_found}  Params:{snap.params_found}  Forms:{snap.forms_found}  JS:{snap.js_found}  API-like:{snap.api_routes_found}",
-            f"{c(YELLOW)}Agent Trace{c(RESET)}  Turn:{snap.turn}/{snap.max_turns or '∞'}  Decision:{snap.decision}  Handoff:{snap.handoff}",
-            f"{c(YELLOW)}Tool Matrix{c(RESET)}  Total:{snap.tools_total}  Running:{snap.tools_running}  Completed:{snap.tools_completed}  Failed:{snap.tools_failed}  Skipped:{snap.tools_skipped}  Blocked:{snap.tools_blocked}",
-            f"{c(YELLOW)}Findings{c(RESET)}  Confirmed:{snap.confirmed}  Potential:{snap.potential}  Info:{snap.informational}  Total:{snap.findings}  Latest:{snap.latest_finding}",
-            f"{c(GREEN)}Safety{c(RESET)}  {snap.safety_status}",
-            sep,
-            f"{c(YELLOW)}Recent Handoffs / Decisions{c(RESET)}",
-        ]
+        lines = [f"{c(CYAN)}VULNSCOPE ULTIMATE AUTONOMOUS SECURITY AI{c(RESET)}  {c(DIM)}single stable live dashboard{c(RESET)}", sep, f"Scan ID: {snap.scan_id} | Target: {snap.target} | Mode: {snap.mode} | Auth: {snap.authorization_status} | Time: {self._elapsed()}", f"Ollama: {snap.ollama_status} | Phase: {snap.phase} | Progress: {progress}", sep, f"{c(YELLOW)}Current Activity{c(RESET)}", f"Domain: {snap.domain}", f"Endpoint: {snap.endpoint}", f"Full Request: {snap.request_line}", f"Path: {snap.path}", f"Parameters: {snap.parameters}", f"Safe string under test: {snap.probe_string}", f"Evidence snippet: {snap.evidence}", self._panel_line("Agent", snap.current_agent) + " | " + self._panel_line("Tool", snap.current_tool), self._panel_line("Action", snap.action, 88), self._panel_line("Response", f"{snap.response_code} / {snap.response_time_ms}ms"), sep, f"{c(YELLOW)}Discovered Surface{c(RESET)}  URLs:{snap.urls_found}  Paths:{snap.paths_found}  Params:{snap.params_found}  Forms:{snap.forms_found}  JS:{snap.js_found}  API-like:{snap.api_routes_found}", f"{c(YELLOW)}Agent Trace{c(RESET)}  Turn:{snap.turn}/{snap.max_turns or '∞'}  Decision:{snap.decision}  Handoff:{snap.handoff}", f"{c(YELLOW)}Tool Matrix{c(RESET)}  Total:{snap.tools_total}  Running:{snap.tools_running}  Completed:{snap.tools_completed}  Failed:{snap.tools_failed}  Skipped:{snap.tools_skipped}  Blocked:{snap.tools_blocked}", f"{c(YELLOW)}Findings{c(RESET)}  Confirmed:{snap.confirmed}  Potential:{snap.potential}  Info:{snap.informational}  Total:{snap.findings}  Latest:{snap.latest_finding}", f"{c(GREEN)}Safety{c(RESET)}  {snap.safety_status}", sep, f"{c(YELLOW)}Recent Handoffs / Decisions{c(RESET)}"]
         lines.extend(traces[-8:] if traces else ["No handoff has started yet."])
         lines += [sep, f"{c(YELLOW)}Live Logs (last {self.max_events}){c(RESET)}"]
         lines.extend(events[-self.max_events :] if events else ["Waiting for first scan event…"])
@@ -335,43 +305,14 @@ class LiveDashboard:
         confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
         counts = self._severity_counts(findings)
         severity_line = f"CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}"
-        lines = [
-            "=" * 90,
-            f"{c(CYAN)}VULNSCOPE ULTIMATE FINAL KALI CLI DASHBOARD{c(RESET)}",
-            f"Target: {snap.target}",
-            f"Scan ID: {snap.scan_id}",
-            f"Mode: {snap.mode}",
-            f"Ollama: {snap.ollama_status}",
-            f"Endpoint: {snap.endpoint}",
-            f"Full Request: {snap.request_line}",
-            f"Path: {snap.path}",
-            f"Parameters: {snap.parameters}",
-            f"Time: {self._elapsed()} | Requests: {snap.requests} | Findings/leads: {len(findings)} | Confirmed: {len(confirmed)}",
-            f"Severity Summary: {severity_line}",
-            f"Confirmed Findings: {len(confirmed)}",
-            "─" * 90,
-        ]
+        lines = ["=" * 90, f"{c(CYAN)}VULNSCOPE ULTIMATE FINAL KALI CLI DASHBOARD{c(RESET)}", f"Target: {snap.target}", f"Scan ID: {snap.scan_id}", f"Mode: {snap.mode}", f"Ollama: {snap.ollama_status}", f"Endpoint: {snap.endpoint}", f"Full Request: {snap.request_line}", f"Path: {snap.path}", f"Parameters: {snap.parameters}", f"Evidence snippet: {snap.evidence}", f"Time: {self._elapsed()} | Requests: {snap.requests} | Findings/leads: {len(findings)} | Confirmed: {len(confirmed)}", f"Severity Summary: {severity_line}", f"Confirmed Findings: {len(confirmed)}", "─" * 90]
         if not findings:
             lines.append(f"{c(YELLOW)}No vulnerabilities were confirmed. Review surface inventory and evidence reports for coverage details.{c(RESET)}")
         else:
             for idx, finding in enumerate(findings, 1):
                 severity = str(finding.get("severity", "INFO")).upper()
                 status = str(finding.get("confirmation", "review_lead")).replace("_", " ").upper()
-                lines += [
-                    "",
-                    f"{c(self._severity_color(severity))}FINDING #{idx} — {severity} — {status}{c(RESET)}",
-                    f"WHAT: {finding.get('type')}",
-                    f"WHY: {finding.get('description')}",
-                    f"WHERE: {finding.get('url')}",
-                    f"REQUEST: {finding.get('request_line')}",
-                    f"PATH: {finding.get('path')}",
-                    f"PARAMETER: {finding.get('parameter')}",
-                    f"SAFE PROBE: {finding.get('test_string')}",
-                    f"TESTED EVIDENCE: {finding.get('test_string')}",
-                    f"EVIDENCE: {finding.get('evidence')}",
-                    f"CONFIDENCE: {finding.get('confidence')}",
-                    "REPRODUCTION / VALIDATION STEPS:",
-                ]
+                lines += ["", f"{c(self._severity_color(severity))}FINDING #{idx} — {severity} — {status}{c(RESET)}", f"WHAT: {finding.get('type')}", f"WHY: {finding.get('description')}", f"WHERE: {finding.get('url')}", f"REQUEST: {finding.get('request_line')}", f"PATH: {finding.get('path')}", f"PARAMETER: {finding.get('parameter')}", f"SAFE PROBE: {finding.get('test_string')}", f"TESTED EVIDENCE: {finding.get('test_string')}", f"EVIDENCE: {finding.get('evidence')}", f"CONFIDENCE: {finding.get('confidence')}", "REPRODUCTION / VALIDATION STEPS:"]
                 for line in str(finding.get("reproduction") or "See evidence above.").splitlines():
                     lines.append(f"  {line}")
                 lines.append("─" * 90)
