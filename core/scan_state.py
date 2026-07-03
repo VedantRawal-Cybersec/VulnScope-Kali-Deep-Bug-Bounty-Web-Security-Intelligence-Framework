@@ -90,10 +90,25 @@ class ScanState:
             self.add_url(self.target, depth=0, source="seed")
             self.save()
 
-    def add_event(self, level: str, message: str, **data: Any) -> None:
-        self.events.append({"time": time.time(), "level": level, "message": message, **data})
-        self.events = self.events[-1000:]
-        self.updated_at = time.time()
+    def add_event(self, level: str, event_message: str = "", **data: Any) -> None:
+        """Append a durable scan event without allowing telemetry-key collisions to crash the scan.
+
+        Older call sites sometimes pass a second positional message and also include
+        a keyword named ``message`` in the metadata. Python used to raise
+        ``TypeError: got multiple values for argument 'message'`` before this method
+        could run. The public field remains ``message`` while colliding metadata is
+        preserved under ``detail_message``.
+        """
+        try:
+            safe_data = dict(data or {})
+            if "message" in safe_data:
+                safe_data["detail_message"] = safe_data.pop("message")
+            self.events.append({"time": time.time(), "level": str(level), "message": str(event_message), **safe_data})
+            self.events = self.events[-1000:]
+            self.updated_at = time.time()
+        except Exception:
+            # Event logging must never terminate an otherwise valid scan.
+            self.updated_at = time.time()
 
     def add_url(self, url: str, *, depth: int = 0, source: str = "link") -> UrlRecord:
         if url not in self.urls:
@@ -189,6 +204,6 @@ class ScanState:
             "## Top parameters",
         ]
         for item in sorted(self.params.values(), key=lambda p: p.risk_score, reverse=True)[:50]:
-            lines.append(f"- `{item.name}` kind=`{item.kind}` risk=`{item.risk_score}` status=`{item.status}` url=`{item.url}`")
+            lines.append(f"- `{item.name}` kind=`{item.kind}` risk=`{item.risk_score}` status=`{item.status}` tested=`{','.join(item.tested)}` url=`{item.url}`")
         path.write_text("\n".join(lines), encoding="utf-8")
         return path
