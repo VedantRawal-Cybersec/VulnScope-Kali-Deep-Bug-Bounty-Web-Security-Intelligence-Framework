@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.10.1-cai-llm-runtime-merged"
+VERSION = "1.11.0-execution-pipeline-quality-gate"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope Ultimate                       ║
-║ Agents → Ollama Gateway → Reasoning Stream → Evidence → Report    ║
+║ Surface → Parameters → Test Queue → Evidence → Quality → Report   ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -81,18 +81,17 @@ def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
         "preflight": "reports/output/vulnscope-main/preflight.md",
+        "scan_quality": f"reports/output/cai-superior/{host}/scan-quality.md",
         "autonomous_report": f"reports/output/cai-superior/{host}/autonomous-scan-report.md",
         "autonomous_report_json": f"reports/output/cai-superior/{host}/autonomous-scan-report.json",
         "autonomous_state": f"reports/output/cai-superior/{host}/autonomous-scan-state.json",
         "parameter_inventory_v2": f"reports/output/cai-superior/{host}/parameter-inventory-v2.json",
         "evidence_index": f"reports/output/cai-superior/{host}/evidence/evidence-index.md",
         "agent_trace": f"reports/output/cai-superior/{host}/agent-trace.md",
-        "agent_registry": f"reports/output/cai-superior/{host}/agent-registry.md",
         "reasoning_stream": f"reports/output/cai-superior/{host}/reasoning-stream.md",
         "llm_memory": f"reports/output/cai-superior/{host}/llm-memory.md",
         "modern_scan": f"reports/output/cai-superior/{host}/modern-scan-run.md",
         "safe_results": f"reports/output/cai-superior/{host}/safe-vulnerability-results.md",
-        "tool_matrix": f"reports/output/cai-superior/{host}/tool-matrix.md",
         "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
         "authorization": str(AUTH),
     }
@@ -102,12 +101,11 @@ def final_summary(target: str, history: list[dict]) -> None:
         "history": history,
         "reports": reports,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "cai_style_agents": True,
+        "strict_execution_pipeline": True,
+        "split_budget": True,
+        "quality_gate": True,
+        "test_queue_builder": True,
         "ollama_gateway": True,
-        "public_reasoning_stream": True,
-        "llm_memory": True,
-        "evidence_validator": True,
-        "browser_crawler": True,
         "zero_impact_default": True,
     }
     OUT.mkdir(parents=True, exist_ok=True)
@@ -157,6 +155,10 @@ def run_autonomous_engine(target: str, args: argparse.Namespace) -> dict:
         args.ollama_url,
         "--ollama-model",
         args.ollama_model,
+        "--ollama-timeout",
+        str(args.ollama_timeout),
+        "--llm-health-mode",
+        args.llm_health_mode,
     ]
     if args.include_subdomains:
         cmd.append("--include-subdomains")
@@ -167,32 +169,11 @@ def run_autonomous_engine(target: str, args: argparse.Namespace) -> dict:
     if args.no_live_dashboard:
         cmd.append("--no-live-dashboard")
     append_headers(cmd, args.header)
-    return run("CAI LLM Reasoning Scan Engine", cmd, timeout=7200)
+    return run("CAI Quality-Gated Scan Engine", cmd, timeout=7200)
 
 
 def run_modern_react_engine(target: str, args: argparse.Namespace) -> dict:
-    cmd = [
-        sys.executable,
-        "-m",
-        "core.react_loop",
-        "--modern-scan",
-        "--target",
-        target,
-        "--scan-mode",
-        "safe-active" if args.scan_mode == "lab" else args.scan_mode,
-        "--max-pages",
-        str(args.max_pages),
-        "--min-pages-goal",
-        str(args.min_pages_goal),
-        "--max-depth",
-        str(args.max_depth),
-        "--threads",
-        str(args.threads),
-        "--request-timeout",
-        str(args.request_timeout),
-        "--delay",
-        str(args.delay),
-    ]
+    cmd = [sys.executable, "-m", "core.react_loop", "--modern-scan", "--target", target, "--scan-mode", "safe-active" if args.scan_mode == "lab" else args.scan_mode, "--max-pages", str(args.max_pages), "--min-pages-goal", str(args.min_pages_goal), "--max-depth", str(args.max_depth), "--threads", str(args.threads), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay)]
     if args.render_js or args.browser:
         cmd.append("--render-js")
     if args.include_subdomains:
@@ -207,13 +188,12 @@ def run_modern_react_engine(target: str, args: argparse.Namespace) -> dict:
 def run_agentic(target: str, args: argparse.Namespace) -> dict:
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
+    os.environ["VULNSCOPE_OLLAMA_TIMEOUT"] = str(args.ollama_timeout)
+    os.environ["VULNSCOPE_LLM_HEALTH_MODE"] = args.llm_health_mode
     os.environ["VULNSCOPE_USE_OLLAMA_PLANNER"] = "0" if args.no_ai_planner else "1"
     os.environ["VULNSCOPE_LLM_ENABLED"] = "0" if args.no_llm else "1"
     history: list[dict] = []
-    if args.modern_react:
-        history.append(run_modern_react_engine(target, args))
-    else:
-        history.append(run_autonomous_engine(target, args))
+    history.append(run_modern_react_engine(target, args) if args.modern_react else run_autonomous_engine(target, args))
     if args.run_100_tools and not args.skip_100_tools:
         orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", args.scan_mode, "--criticality", args.criticality, "--tool-timeout", str(args.tool_timeout)]
         if args.include_subdomains:
@@ -222,7 +202,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             orch_cmd.append("--no-live-dashboard")
         history.append(run("Live 100-Tool Safe Orchestrator", orch_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.10.1 CAI LLM Pipeline", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.11 Quality-Gated Pipeline", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -269,6 +249,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ai-planner", dest="ai_planner", action="store_true", default=True, help="Enable Ollama advisory planning. Enabled by default.")
     parser.add_argument("--no-ai-planner", dest="no_ai_planner", action="store_true", help="Disable Ollama advisory planning while keeping deterministic scanning.")
     parser.add_argument("--no-llm", action="store_true", help="Disable LLM calls completely. Deterministic scanner still runs.")
+    parser.add_argument("--ollama-timeout", type=int, default=int(os.getenv("VULNSCOPE_OLLAMA_TIMEOUT", "60")))
+    parser.add_argument("--llm-health-mode", choices=["tags-only", "full", "disabled"], default=os.getenv("VULNSCOPE_LLM_HEALTH_MODE", "tags-only"))
     parser.add_argument("--run-100-tools", action="store_true", help="Run the legacy 100-tool orchestrator after the primary engine.")
     parser.add_argument("--skip-100-tools", action="store_true", help="Compatibility flag. The 100-tool orchestrator is skipped unless --run-100-tools is provided.")
     parser.add_argument("--tool-timeout", type=int, default=20)
