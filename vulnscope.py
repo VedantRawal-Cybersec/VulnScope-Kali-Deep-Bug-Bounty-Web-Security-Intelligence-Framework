@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.10.1-dashboard-counters-fixed"
+VERSION = "1.11.0-safe-cai-react-llm"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
 BANNER = """
 ╔════════════════════════════════════════════════════════════════════╗
 ║                         VulnScope Ultimate                       ║
-║ Agents → Ollama Gateway → Reasoning Stream → Evidence → Report    ║
+║ Safe CAI ReAct → Ollama Gateway → Tools → Evidence → Report       ║
 ╚════════════════════════════════════════════════════════════════════╝
 """
 
@@ -86,17 +86,18 @@ def final_summary(target: str, history: list[dict]) -> None:
         "autonomous_report_json": f"reports/output/cai-superior/{host}/autonomous-scan-report.json",
         "autonomous_state": f"reports/output/cai-superior/{host}/autonomous-scan-state.json",
         "parameter_inventory_v2": f"reports/output/cai-superior/{host}/parameter-inventory-v2.json",
+        "cai_react_summary": f"reports/output/cai-superior/{host}/cai-react-summary.json",
+        "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json",
         "evidence_index": f"reports/output/cai-superior/{host}/evidence/evidence-index.md",
         "agent_trace": f"reports/output/cai-superior/{host}/agent-trace.md",
         "agent_registry": f"reports/output/cai-superior/{host}/agent-registry.md",
-        "tool_matrix": f"reports/output/cai-superior/{host}/tool-matrix.md",
         "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "cai_style_agents": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "safe_cai_react": True, "cai_style_agents": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "CAI-style agents: `true`", "Stable dashboard: `true`", "Ollama diagnostics/fallback: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Safe CAI ReAct: `true`", "CAI-style agents: `true`", "Stable dashboard: `true`", "Ollama diagnostics/fallback: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -128,7 +129,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     if args.no_live_dashboard:
         engine_cmd.append("--no-live-dashboard")
     append_headers(engine_cmd, args.header)
-    history.append(run("CAI-Style Autonomous Scan Engine", engine_cmd, timeout=3600))
+    history.append(run("Safe CAI ReAct Autonomous Engine", engine_cmd, timeout=3600))
     if not args.skip_100_tools:
         orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", args.scan_mode, "--criticality", args.criticality, "--tool-timeout", str(args.tool_timeout)]
         if args.include_subdomains:
@@ -146,9 +147,9 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--live-dashboard")
         if args.no_final_dashboard:
             cmd.append("--no-final-dashboard")
-        history.append(run("Live Autonomous ReAct Loop", cmd, timeout=3600))
+        history.append(run("Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.10.1 Dashboard Counter Fix", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.11.0 Safe CAI ReAct LLM", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
