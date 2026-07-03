@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.15.0-dynamic-tool-registry"
+VERSION = "1.15.1-simple-tool-wizard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -24,7 +24,7 @@ RED = "\033[31m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║       Dynamic Tool Registry → Phase Router → Deep Discovery → Evidence       ║
+║       Simple Tool Import → Phase Router → Deep Discovery → Evidence          ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -112,10 +112,10 @@ def final_summary(target: str, history: list[dict]) -> None:
         "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION, "dynamic_tool_registry": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION, "simple_tool_import": True, "dynamic_tool_registry": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Dynamic tool registry: `true`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Simple tool import: `true`", "Dynamic tool registry: `true`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -157,7 +157,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     append_headers(engine_cmd, args.header)
     history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope 1.15.0 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope 1.15.1 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -174,6 +174,7 @@ def run_preflight_step(args: argparse.Namespace) -> dict:
 
 
 def handle_tool_registry(args: argparse.Namespace) -> int | None:
+    from core.tool_import_wizard import PROMPT_TOKEN, run_import_wizard
     from core.tool_manager import ToolManager
     manager = ToolManager()
     if args.list_tools:
@@ -183,14 +184,8 @@ def handle_tool_registry(args: argparse.Namespace) -> int | None:
         tool = manager.registry.approve(args.approve_tool, install=args.approve_tool_install, run=args.approve_tool_run, enable=args.enable_tool)
         print(json.dumps({"approved": tool.to_dict()}, indent=2, ensure_ascii=False))
         return 0
-    if args.add_tool:
-        tool = manager.add_tool(args.add_tool, approve_install=args.approve_tool_install, approve_run=args.approve_tool_run, enable=args.enable_tool)
-        print(json.dumps({"registered_tool": tool.to_dict(), "registry": "tools/registry.json"}, indent=2, ensure_ascii=False))
-        if not tool.run:
-            print("\nNo manifest run command was detected. Add tool.yaml/tool.json to the repo, then re-add or edit tools/registry.json.")
-        if not tool.approved_for_run:
-            print("\nTool is registered but not approved for execution. Use --approve-tool <id> --approve-tool-run --enable-tool after review.")
-        return 0
+    if args.add_tool is not None:
+        return run_import_wizard(args.add_tool if args.add_tool else PROMPT_TOKEN, yes=args.yes)
     return None
 
 
@@ -201,7 +196,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["deps", "cai", "agentic", "bugbounty"], default="agentic")
     parser.add_argument("--lab-mode", action="store_true")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
-    parser.add_argument("--add-tool", default="", help="Clone and register a GitHub repository as a dynamic tool.")
+    parser.add_argument("--add-tool", nargs="?", const="__prompt__", default=None, help="Simple tool import. Without a value, prompts: Enter tool GitHub URL.")
     parser.add_argument("--list-tools", action="store_true", help="List dynamic tools registered in tools/registry.json.")
     parser.add_argument("--approve-tool", default="", help="Approve an existing dynamic tool by id.")
     parser.add_argument("--approve-tool-install", action="store_true")
