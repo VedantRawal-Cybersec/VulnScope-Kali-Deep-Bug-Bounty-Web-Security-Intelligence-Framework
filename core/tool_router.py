@@ -5,9 +5,18 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from core.tool_registry import ToolRegistry
+
 
 STATUS_VALUES = {"queued", "running", "completed", "failed", "skipped", "blocked_by_scope", "blocked_by_safety", "timed_out"}
 MODE_RANK = {"passive": 0, "safe-active": 1, "lab": 2}
+PHASE_CATEGORY = {
+    "recon": "Reconnaissance",
+    "discovery": "Discovery",
+    "validation": "Validation",
+    "exploitation": "Lab Validation",
+    "reporting": "Reporting",
+}
 
 
 @dataclass
@@ -29,10 +38,12 @@ class RoutedTool:
 
 
 class ToolRouter:
-    """Selects eligible tools based on scan mode, available inputs, and safety."""
+    """Selects eligible core and dynamic tools based on scan mode, inputs, and safety."""
 
-    def __init__(self, tools: list[RoutedTool] | None = None) -> None:
+    def __init__(self, tools: list[RoutedTool] | None = None, *, load_dynamic: bool = True) -> None:
         self.tools = tools or self.default_tools()
+        if load_dynamic:
+            self.tools.extend(self.dynamic_tools())
 
     @staticmethod
     def default_tools() -> list[RoutedTool]:
@@ -54,6 +65,27 @@ class ToolRouter:
             RoutedTool("llm_public_reasoning", "LLM Public Reasoning", "OllamaReasoningAgent", "Reasoning", "passive", "passive", ["state_summary"], False),
             RoutedTool("llm_evidence_validator", "LLM Evidence Validator", "FindingValidationAgent", "Validation", "passive", "passive", ["ambiguous_evidence"], False),
         ]
+
+    @staticmethod
+    def dynamic_tools() -> list[RoutedTool]:
+        registry = ToolRegistry()
+        routed: list[RoutedTool] = []
+        for tool in registry.list(enabled_only=True):
+            routed.append(
+                RoutedTool(
+                    tool_id="dynamic:" + tool.tool_id,
+                    tool_name=tool.name,
+                    agent_owner="DynamicToolScheduler",
+                    category=PHASE_CATEGORY.get(tool.phase, "Discovery"),
+                    required_scan_mode="lab" if tool.phase == "exploitation" else "safe-active",
+                    safety_level="dynamic_approval_gated",
+                    required_inputs=["target"],
+                    finding_capability=True,
+                    status="queued" if tool.approved_for_run else "blocked_by_safety",
+                    reason="registered dynamic tool" if tool.approved_for_run else "requires run approval",
+                )
+            )
+        return routed
 
     def select(self, *, phase: str, scan_mode: str, available_inputs: set[str], limit: int = 10) -> list[RoutedTool]:
         selected: list[RoutedTool] = []
