@@ -1,0 +1,23 @@
+# VulnScope external tool list
+# One GitHub repository URL per line. Review each license and behavior before installation.
+https://github.com/usestrix/strix.git
+https://github.com/raptor-framework/raptor.git
+https://github.com/vikramrajkumarmajji/AI-VAPT.git
+https://github.com/santhosh-ceo/Hexstrike-AI.git
+https://github.com/Yenn503/villager-hexstrike-AI.git
+https://github.com/ZeroDayZeus/AutoPentestFramework.git
+https://github.com/manishmitra017/Pentest-google-adk-agent.git
+https://github.com/Zuk4r1/lethal.git
+https://github.com/Matador-og/huntbot.git
+https://github.com/Mikacr1138/claude-bug-bounty.git
+https://github.com/codebytaki/bug-hunter-toolkit.git
+https://github.com/a1k-ghaz1/ZeroHuntAI-WEBSITE-VULNERABILITY-SQLI-XSS-SCANNER-2025.git
+https://github.com/daik0000/CVE-Hunter.git
+https://github.com/d3x1er/DeepSubs.git
+https://github.com/samogod/samoscout.git
+https://github.com/BountyOS/ghsubs.git
+https://github.com/valllabh/domain-scan.git
+https://github.com/FlinnZee/webstrike-framework.git
+https://github.com/Largo-m/SecuSploitX.git
+https://github.com/techenthusiast167/Master-OSINT-Toolkit-.git
+https://github.com/gitfive/gitfive.git
