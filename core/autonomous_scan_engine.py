@@ -28,7 +28,7 @@ from core.scan_state import ScanState
 from core.test_engine import TestEngine
 from core.tool_router import ToolRouter
 
-VERSION = "1.10.0-cai-llm-reasoning-runtime"
+VERSION = "1.10.1-dashboard-counters-fixed"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -44,6 +44,28 @@ def parse_headers(values: list[str]) -> dict[str, str]:
 
 class AutonomousScanEngine:
     """CAI-style defensive scan coordinator with Ollama gateway, public reasoning, memory, and tool routing."""
+
+    TOOL_ALIASES = {
+        "bootstrap": "llm_public_reasoning",
+        "scope_guard": "llm_public_reasoning",
+        "availability_checker": "metadata_checker",
+        "passive_analyzers": "header_analyzer",
+        "header_analyzer": "header_analyzer",
+        "cookie_analyzer": "cookie_analyzer",
+        "metadata_checker": "metadata_checker",
+        "safe_crawler": "crawler_v2",
+        "crawler_v2": "crawler_v2",
+        "browser_crawler": "browser_crawler",
+        "parameter_inventory": "parameter_inventory",
+        "ai_planner": "llm_public_reasoning",
+        "safe_canary_tester": "safe_canary_reflection",
+        "reflection_canary": "safe_canary_reflection",
+        "redirect_review": "safe_canary_reflection",
+        "classification_review": "classification_review",
+        "report_generator": "report_generator",
+        "llm_gateway.health_check": "llm_public_reasoning",
+        "llm_gateway.plan_actions": "llm_public_reasoning",
+    }
 
     def __init__(
         self,
@@ -95,9 +117,11 @@ class AutonomousScanEngine:
         self.reasoning = ReasoningStream(self.target, dashboard=self.dashboard, trace=self.trace)
         self.memory = LLMMemory(self.target)
         self.tool_router = ToolRouter()
+        self.current_router_tool: str | None = None
         self.agent_runtime = AgentRuntime(target=self.target, dashboard=self.dashboard, trace=self.trace, reasoning=self.reasoning)
         self.extra_reports: dict[str, str] = {}
         self.ollama_status: dict[str, Any] = {}
+        self._sync_dashboard_matrix("llm_public_reasoning", status="queued")
 
     def _surface(self) -> dict[str, int]:
         paths = {urlparse(item.url).path or "/" for item in self.state.urls.values()}
@@ -115,13 +139,48 @@ class AutonomousScanEngine:
         cov = self.state.coverage()
         return f"urls={cov['urls_done']}/{cov['urls_total']} params={cov['params_done']}/{cov['params_total']} tests={cov['tests_done']}/{cov['tests_total']} req={cov['requests']} findings={cov['findings']} timeouts={cov['timeouts']}"
 
+    def _sync_dashboard_matrix(self, tool: str, *, status: str = "running") -> dict[str, int]:
+        router_ids = {item.tool_id for item in self.tool_router.tools}
+        tool_id = self.TOOL_ALIASES.get(tool, tool)
+        if self.current_router_tool and self.current_router_tool != tool_id and self.current_router_tool in router_ids:
+            self.tool_router.mark(self.current_router_tool, "completed", "completed before next phase")
+        if tool_id in router_ids:
+            self.tool_router.mark(tool_id, status, "current autonomous phase")
+            self.current_router_tool = tool_id
+        matrix = self.tool_router.matrix()
+        counts = matrix.get("counts", {})
+        running = int(counts.get("running", 0))
+        completed = int(counts.get("completed", 0))
+        failed = int(counts.get("failed", 0)) + int(counts.get("timed_out", 0))
+        skipped = int(counts.get("skipped", 0))
+        blocked = int(counts.get("blocked_by_scope", 0)) + int(counts.get("blocked_by_safety", 0))
+        return {
+            "tools_total": int(matrix.get("total", 0)),
+            "tools_running": running,
+            "tools_completed": completed,
+            "tools_failed": failed,
+            "tools_skipped": skipped,
+            "tools_blocked": blocked,
+        }
+
+    def _turn_count(self) -> int:
+        runtime_turns = 0
+        try:
+            runtime_turns = int(self.agent_runtime.summary().get("turns", 0))
+        except Exception:
+            runtime_turns = 0
+        return max(int(self.turns.index), len(self.trace.events), runtime_turns)
+
     def _dashboard(self, phase: str, action: str, *, progress: int = 0, evidence: str = "", agent: str = "SupervisorAgent", tool: str = "autonomous_engine", decision: str = "—", url: str | None = None, parameter: str = "") -> None:
         current_url = url or self.target
         parsed = urlparse(current_url)
         query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
+        matrix_counts = self._sync_dashboard_matrix(tool, status="running")
         self.dashboard.update(
             phase=phase,
             phase_progress=progress,
+            turn=self._turn_count(),
+            max_turns=self.max_actions,
             requests=self.state.stats.get("requests", 0),
             findings=len(self.state.findings),
             current_agent=agent,
@@ -137,6 +196,7 @@ class AutonomousScanEngine:
             evidence=evidence or self._coverage_text(),
             safety_status="same-scope • GET/HEAD only • request budget • resumable state • no target data modification",
             **self._surface(),
+            **matrix_counts,
         )
         self.dashboard.event("INFO", action)
 
@@ -147,7 +207,7 @@ class AutonomousScanEngine:
         self.ollama_status = health.to_dict()
         planner_mode = "advisory-enabled" if os.getenv("VULNSCOPE_USE_OLLAMA_PLANNER", "1") == "1" else "deterministic-only"
         label = f"Connected • {health.fast_model} • {planner_mode}" if health.ok else f"Fallback • {health.fast_model} • {health.error or 'unreachable'}"
-        self.dashboard.update(ollama_status=label)
+        self.dashboard.update(ollama_status=label, turn=self._turn_count(), **self._sync_dashboard_matrix("llm_public_reasoning"))
         self.reasoning.publish(
             turn_id=turn_id,
             agent="OllamaReasoningAgent",
@@ -280,6 +340,7 @@ class AutonomousScanEngine:
                 self.trace.log(turn_id=turn_id, agent_name="SafeCanaryTestingAgent", tool_name=test_name, phase="Safe Testing", status="running", target_url=param.url, path=urlparse(param.url).path or "/", parameter=param.name, message="executing safe parameter test", progress_percent=progress)
                 outcome = self.tester.run_test(param, test_name)
                 self.trace.log(turn_id=turn_id, agent_name="FindingValidationAgent", tool_name=test_name, phase="Validation", status=outcome.status, target_url=param.url, path=urlparse(param.url).path or "/", parameter=param.name, message=outcome.message, evidence_summary=str(outcome.evidence_id or ""), progress_percent=progress)
+                self._dashboard("Validation", f"{test_name} finished: {outcome.status}", progress=progress, agent="FindingValidationAgent", tool=test_name, decision=outcome.status, url=param.url, parameter=param.name)
                 continue
             if decision.action in {"write_reports", "stop"}:
                 break
@@ -289,6 +350,9 @@ class AutonomousScanEngine:
 
     def write_reports(self) -> dict[str, str]:
         self.handoffs.handoff("RiskScoringAgent", "ReportAgent", phase="Reporting", message="writing evidence-based reports", progress_percent=92)
+        if self.current_router_tool:
+            self.tool_router.mark(self.current_router_tool, "completed", "completed before report generation")
+        self.tool_router.mark("report_generator", "running", "writing final reports")
         self.extra_reports["evidence_index_md"] = str(self.evidence.write_markdown_index())
         self.extra_reports.update(self.agent_registry.write_reports(self.target))
         self.extra_reports.update(self.trace.write_reports())
@@ -296,6 +360,7 @@ class AutonomousScanEngine:
         self.extra_reports.update(self.memory.write_reports())
         self.extra_reports["tool_router_matrix"] = json.dumps(self.tool_router.matrix(), ensure_ascii=False)
         reports = ReportingV2(state=self.state, extra_reports=self.extra_reports).write_all()
+        self.tool_router.mark("report_generator", "completed", "reports written")
         self.dashboard.report_paths.update(reports)
         return reports
 
@@ -307,7 +372,7 @@ class AutonomousScanEngine:
             self.run_planned_tests()
             reports = self.write_reports()
             self._dashboard("Final Dashboard", "Autonomous scan completed", progress=100, evidence=self._coverage_text(), agent="ReportAgent", tool="report_generator")
-            return {"status": "completed", "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "runtime_ms": int((time.time() - started) * 1000), "coverage": self.state.coverage(), "ollama": self.ollama_status, "llm_policy": self.llm_policy.as_dict(), "agent_runtime": self.agent_runtime.summary(), "reports": reports, "safety": {"same_scope_only": True, "transparent_user_agent": True, "request_budget": True, "adaptive_backoff": True, "resume_supported": True, "hidden_routing": False, "target_data_modification": False}}
+            return {"status": "completed", "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "runtime_ms": int((time.time() - started) * 1000), "coverage": self.state.coverage(), "ollama": self.ollama_status, "llm_policy": self.llm_policy.as_dict(), "agent_runtime": self.agent_runtime.summary(), "tool_router": self.tool_router.matrix(), "reports": reports, "safety": {"same_scope_only": True, "transparent_user_agent": True, "request_budget": True, "adaptive_backoff": True, "resume_supported": True, "hidden_routing": False, "target_data_modification": False}}
         except KeyboardInterrupt:
             self.state.add_event("WARNING", "interrupted by user")
             reports = self.write_reports()
