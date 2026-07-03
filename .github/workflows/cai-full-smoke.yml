@@ -35,5 +35,6 @@ jobs:
             core/safe_analyzers.py core/colab_backend_api.py core/ollama_diagnostics.py \
             core/llm_gateway.py core/llm_policy.py core/reasoning_stream.py \
             core/prompt_injection_guard.py core/evidence_validator.py \
-            core/llm_memory.py core/tool_router.py core/autonomous_scan_engine.py
-      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py tests/test_live_dashboard.py tests/test_tool_orchestrator.py tests/test_autonomous_scan_engine.py tests/test_llm_reasoning_runtime.py -q
+            core/llm_memory.py core/tool_router.py core/test_queue.py \
+            core/scan_quality.py core/autonomous_scan_engine.py
+      - run: python -m pytest tests/test_cai_superior_layer01.py tests/test_cai_confidence_policy.py tests/test_safe_react_loop.py tests/test_live_dashboard.py tests/test_tool_orchestrator.py tests/test_autonomous_scan_engine.py tests/test_llm_reasoning_runtime.py tests/test_pipeline_quality.py -q
