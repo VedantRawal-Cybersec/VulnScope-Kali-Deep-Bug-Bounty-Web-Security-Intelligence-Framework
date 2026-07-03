@@ -14,12 +14,14 @@ from core.agentic_framework import AgentRegistry, HandoffManager, TraceLogger, T
 from core.browser_crawler import BrowserCrawler
 from core.cai_react_engine import SafeCAIReactAgent
 from core.crawler_v2 import CrawlerV2
+from core.deep_asset_discovery import DeepAssetDiscovery
 from core.evidence_store import EvidenceStore
 from core.http_client_v2 import SafeHttpClientV2
 from core.live_dashboard import LiveDashboard
 from core.llm_gateway import LLMGateway
 from core.llm_memory import LLMMemory
 from core.llm_policy import LLMPolicy
+from core.phase_runner import PhaseRunner
 from core.reasoning_stream import ReasoningStream
 from core.reporting_v2 import ReportingV2
 from core.safe_analyzers import PassiveAnalyzers
@@ -27,7 +29,7 @@ from core.scan_state import ScanState
 from core.test_engine import TestEngine
 from core.tool_router import ToolRouter
 
-VERSION = "1.11.0-safe-cai-react-llm"
+VERSION = "1.14.0-phase-stable-deep-discovery"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -42,7 +44,7 @@ def parse_headers(values: list[str]) -> dict[str, str]:
 
 
 class AutonomousScanEngine:
-    """CAI-style defensive scan coordinator with Ollama ReAct planning, tool execution, tracing, and guardrails."""
+    """CAI-style defensive scan coordinator with crash-safe phases and dynamic telemetry."""
 
     TOOL_ALIASES = {
         "bootstrap": "llm_public_reasoning",
@@ -52,6 +54,7 @@ class AutonomousScanEngine:
         "header_analyzer": "header_analyzer",
         "cookie_analyzer": "cookie_analyzer",
         "metadata_checker": "metadata_checker",
+        "deep_asset_discovery": "parameter_inventory",
         "safe_crawler": "crawler_v2",
         "crawler_v2": "crawler_v2",
         "crawl": "crawler_v2",
@@ -88,6 +91,8 @@ class AutonomousScanEngine:
         resume: bool = False,
         browser: bool = False,
         live_dashboard: bool = True,
+        deep_assets: bool = True,
+        asset_doc_limit: int = 40,
         ollama_url: str | None = None,
         ollama_model: str | None = None,
     ) -> None:
@@ -99,6 +104,8 @@ class AutonomousScanEngine:
         self.max_params = max(1, int(max_params))
         self.max_actions = max(1, int(max_actions))
         self.browser = browser
+        self.deep_assets = bool(deep_assets)
+        self.asset_doc_limit = max(1, int(asset_doc_limit))
         self.ollama_url = ollama_url or os.getenv("VULNSCOPE_OLLAMA_URL", "http://localhost:11434/api/chat")
         self.ollama_model = ollama_model or os.getenv("VULNSCOPE_OLLAMA_MODEL", "qwen2.5:3b")
         self.dashboard = LiveDashboard(self.target, max_turns=max_actions, enabled=True, live_stream=live_dashboard)
@@ -106,6 +113,7 @@ class AutonomousScanEngine:
         self.state = ScanState(self.target, resume=resume)
         self.state.stats["max_pages"] = self.max_pages
         self.state.stats["max_depth"] = self.max_depth
+        self.state.stats["engine_version"] = VERSION
         self.evidence = EvidenceStore(self.target)
         self.client = SafeHttpClientV2(state=self.state, evidence=self.evidence, headers=headers or {}, timeout=request_timeout, delay=delay, request_budget=request_budget)
         self.crawler = CrawlerV2(state=self.state, client=self.client, max_pages=max_pages, max_depth=max_depth, include_subdomains=include_subdomains, dashboard=self.dashboard)
@@ -122,6 +130,7 @@ class AutonomousScanEngine:
         self.tool_router = ToolRouter()
         self.current_router_tool: str | None = None
         self.agent_runtime = AgentRuntime(target=self.target, dashboard=self.dashboard, trace=self.trace, reasoning=self.reasoning)
+        self.phase_runner = PhaseRunner(state=self.state, dashboard=self.dashboard, trace=self.trace)
         self.extra_reports: dict[str, str] = {}
         self.ollama_status: dict[str, Any] = {}
         self.react_summary: dict[str, Any] = {}
@@ -191,7 +200,7 @@ class AutonomousScanEngine:
             path=parsed.path or "/",
             parameters=parameter or query,
             probe_string="safe-cai-react",
-            hypothesis="LLM ReAct planner chooses the next safe tool; deterministic guardrails enforce scope and zero-impact execution",
+            hypothesis="phase-stable autonomous scanner advances through explicit phases; crawler/tester emit current endpoint telemetry",
             evidence=evidence or self._coverage_text(),
             safety_status="same-scope • GET/HEAD only • request budget • no credentials/exploit payloads/destructive actions",
             **self._surface(),
@@ -199,7 +208,7 @@ class AutonomousScanEngine:
         )
         self.dashboard.event("INFO", action)
 
-    def run_ollama_check(self) -> None:
+    def run_ollama_check(self) -> dict[str, Any]:
         turn_id = self.turns.next_turn()
         self.handoffs.handoff("SupervisorAgent", "OllamaReasoningAgent", phase="Diagnostics", message="checking Ollama gateway and deterministic fallback", progress_percent=2)
         health = self.llm.health_check(force=True)
@@ -218,11 +227,12 @@ class AutonomousScanEngine:
             next_action="continue with scope and recon",
             progress_percent=3,
         )
+        return self.ollama_status
 
-    def _llm_surface_summary(self, *, progress: int) -> None:
+    def _llm_surface_summary(self, *, progress: int) -> dict[str, Any]:
         allowed, reason = self.llm_policy.allow("public_reasoning", force=True)
         if not allowed:
-            return
+            return {"ok": False, "reason": reason}
         context = {"coverage": self.state.coverage(), "surface": self._surface(), "memory": self.memory.llm_summary(limit=30), "policy_reason": reason}
         response = self.llm.plan_actions(context, model_role="fast")
         if response.ok and response.public_reasoning:
@@ -249,45 +259,77 @@ class AutonomousScanEngine:
                 next_action="enter deterministic safe CAI ReAct loop",
                 progress_percent=progress,
             )
+        return response.to_dict() if hasattr(response, "to_dict") else {"ok": bool(getattr(response, "ok", False))}
 
-    def bootstrap(self) -> None:
-        self._dashboard("Bootstrap", "Starting safe CAI ReAct autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
-        self.agent_runtime.run_turn(agent="SupervisorAgent", observation="scan requested for authorized target", decision="start scope validation", selected_tool="scope_guard", phase="Bootstrap", handoff_to="ScopeAgent", progress_percent=1)
-        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="safe-cai-react")
-        self.run_ollama_check()
+    def _availability_and_passive(self) -> dict[str, Any]:
         self.handoffs.handoff("SupervisorAgent", "ScopeAgent", phase="Scope", message="target normalized and authorization confirmed", target_url=self.target, path=urlparse(self.target).path or "/", progress_percent=4)
         root = self.client.get(self.target, purpose="target-availability")
         self.trace.log(turn_id=self.turns.next_turn(), agent_name="ScopeAgent", tool_name="availability_checker", phase="Scope", status="completed" if root.ok else "failed", target_url=root.url, path=urlparse(root.url).path or "/", message=f"HTTP {root.status_code}" if root.ok else root.error, evidence_summary=root.response_id, progress_percent=6)
-        self.handoffs.handoff("ScopeAgent", "ReconAgent", phase="Passive Analysis", message="running availability/header/cookie/metadata analyzers", target_url=root.url, path=urlparse(root.url).path or "/", progress_percent=7)
+        self._dashboard("Scope", "Availability check completed", progress=8, evidence=f"HTTP {root.status_code} {root.error}", agent="ScopeAgent", tool="availability_checker", url=root.url)
+        if not root.ok:
+            return {"root_ok": False, "status_code": root.status_code, "error": root.error}
+        self.handoffs.handoff("ScopeAgent", "ReconAgent", phase="Passive Analysis", message="running availability/header/cookie/metadata analyzers", target_url=root.url, path=urlparse(root.url).path or "/", progress_percent=9)
         analyzer_summary = self.analyzers.run_all(root)
         self.state.add_event("INFO", "passive analyzers completed", **analyzer_summary.__dict__)
-        self.agent_runtime.run_turn(agent="ReconAgent", observation="availability and passive metadata collected", decision="handoff to crawler", selected_tool="passive_analyzers", phase="Passive Analysis", handoff_to="CrawlerAgent", evidence_summary=str(analyzer_summary.__dict__), progress_percent=16)
-        self.handoffs.handoff("ReconAgent", "CrawlerAgent", phase="Crawler v2", message="discovering URLs, paths, forms, scripts, and route hints", target_url=self.target, progress_percent=18)
+        self.agent_runtime.run_turn(agent="ReconAgent", observation="availability and passive metadata collected", decision="handoff to asset discovery", selected_tool="passive_analyzers", phase="Passive Analysis", handoff_to="AssetDiscoveryAgent", evidence_summary=str(analyzer_summary.__dict__), progress_percent=16)
+        return {"root_ok": True, "status_code": root.status_code, "analyzers": analyzer_summary.__dict__}
+
+    def _deep_asset_discovery(self) -> dict[str, Any]:
+        if not self.deep_assets:
+            return {"skipped": True, "reason": "disabled"}
+        result = DeepAssetDiscovery(state=self.state, client=self.client, include_subdomains=self.include_subdomains, dashboard=self.dashboard, max_docs=self.asset_doc_limit).run()
+        self.state.add_event("INFO", "deep asset discovery completed", **result.__dict__)
+        return result.__dict__
+
+    def _initial_crawl(self) -> dict[str, Any]:
+        self.handoffs.handoff("AssetDiscoveryAgent", "CrawlerAgent", phase="Crawler v2", message="discovering URLs, paths, forms, scripts, and route hints", target_url=self.target, progress_percent=26)
         crawl_result = self.crawler.crawl()
         self.state.stats["forms"] = crawl_result.forms
         self.state.stats["scripts"] = crawl_result.scripts
         self.state.add_event("INFO", "crawler completed", **crawl_result.__dict__)
-        self._dashboard("Crawler v2", "Initial crawl completed", progress=32, evidence=self._coverage_text(), agent="CrawlerAgent", tool="safe_crawler")
-        self.handoffs.handoff("CrawlerAgent", "JSExposureAgent", phase="JavaScript Route Review", message="extracting script route hints", progress_percent=34)
-        js_routes = self.crawler.analyze_scripts(limit=80)
+        self._dashboard("Crawler v2", "Initial crawl completed", progress=40, evidence=self._coverage_text(), agent="CrawlerAgent", tool="safe_crawler")
+        return crawl_result.__dict__
+
+    def _javascript_review(self) -> dict[str, Any]:
+        self.handoffs.handoff("CrawlerAgent", "JSExposureAgent", phase="JavaScript Route Review", message="extracting script route hints", progress_percent=42)
+        js_routes = self.crawler.analyze_scripts(limit=max(80, min(250, self.max_pages * 2)))
         self.state.add_event("INFO", "script route review completed", routes=js_routes)
-        if self.browser:
-            self.handoffs.handoff("JSExposureAgent", "CrawlerAgent", phase="Browser route discovery", message="optional transparent browser discovery", progress_percent=38)
-            browser_result = BrowserCrawler(state=self.state, include_subdomains=self.include_subdomains, dashboard=self.dashboard, max_routes=max(250, self.max_pages)).run()
-            self.state.add_event("INFO", "browser route discovery finished", **browser_result.__dict__)
-            if browser_result.routes_added:
-                self.handoffs.handoff("CrawlerAgent", "CrawlerAgent", phase="Crawler v2", message="processing browser-discovered queued URLs", progress_percent=39)
-                post_browser = self.crawler.crawl()
-                self.state.add_event("INFO", "post-browser crawl completed", **post_browser.__dict__)
+        return {"routes_added": js_routes, "scripts_seen": int(self.state.stats.get("scripts", 0))}
+
+    def _browser_discovery(self) -> dict[str, Any]:
+        if not self.browser:
+            return {"skipped": True, "reason": "browser flag not enabled"}
+        self.handoffs.handoff("JSExposureAgent", "CrawlerAgent", phase="Browser Route Discovery", message="transparent browser discovery of rendered routes", progress_percent=50)
+        browser_result = BrowserCrawler(state=self.state, include_subdomains=self.include_subdomains, dashboard=self.dashboard, max_routes=max(250, self.max_pages)).run()
+        self.state.add_event("INFO", "browser route discovery finished", **browser_result.__dict__)
+        return browser_result.__dict__
+
+    def _post_discovery_crawl(self) -> dict[str, Any]:
+        self.handoffs.handoff("CrawlerAgent", "CrawlerAgent", phase="Post-Discovery Crawl", message="processing deep/browser/JS-discovered queued URLs", progress_percent=56)
+        post_result = self.crawler.crawl()
+        self.state.add_event("INFO", "post-discovery crawl completed", **post_result.__dict__)
+        return post_result.__dict__
+
+    def bootstrap(self) -> None:
+        self._dashboard("Bootstrap", "Starting phase-stable safe CAI ReAct autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
+        self.agent_runtime.run_turn(agent="SupervisorAgent", observation="scan requested for authorized target", decision="start scope validation", selected_tool="scope_guard", phase="Bootstrap", handoff_to="ScopeAgent", progress_percent=1)
+        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="safe-cai-react", version=VERSION)
+        self.phase_runner.run("01 Diagnostics", self.run_ollama_check, progress_start=2, progress_end=5, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.health_check")
+        self.phase_runner.run("02 Scope + Passive Analysis", self._availability_and_passive, progress_start=6, progress_end=18, url=self.target, agent="ReconAgent", tool="passive_analyzers")
+        self.phase_runner.run("03 Deep Asset Discovery", self._deep_asset_discovery, progress_start=19, progress_end=26, url=self.target, agent="AssetDiscoveryAgent", tool="deep_asset_discovery")
+        self.phase_runner.run("04 Primary Crawl", self._initial_crawl, progress_start=27, progress_end=40, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
+        self.phase_runner.run("05 JavaScript Endpoint Extraction", self._javascript_review, progress_start=41, progress_end=50, url=self.target, agent="JSExposureAgent", tool="review_scripts")
+        self.phase_runner.run("06 Browser Route Discovery", self._browser_discovery, progress_start=51, progress_end=56, url=self.target, agent="BrowserCrawlerAgent", tool="browser_crawler")
+        self.phase_runner.run("07 Post-Discovery Crawl", self._post_discovery_crawl, progress_start=57, progress_end=64, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
         self.memory.update_from_state(self.state)
-        self._llm_surface_summary(progress=40)
-        self.handoffs.handoff("CrawlerAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="starting LLM-driven safe tool loop", progress_percent=40)
+        self.phase_runner.run("08 LLM Surface Review", lambda: self._llm_surface_summary(progress=66), progress_start=65, progress_end=68, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.plan_actions")
+        self.handoffs.handoff("CrawlerAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="starting safe parameter and endpoint review loop", progress_percent=68)
         if not self.state.params:
-            self._dashboard("Parameter Discovery", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=40, evidence=self._coverage_text(), agent="ParameterDiscoveryAgent", tool="parameter_inventory")
+            self._dashboard("Parameter Discovery", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=68, evidence=self._coverage_text(), agent="ParameterDiscoveryAgent", tool="parameter_inventory")
         self.state.save()
 
     def run_planned_tests(self) -> None:
-        self.handoffs.handoff("ParameterDiscoveryAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="building ReAct decisions from current scan state", progress_percent=42)
+        self.handoffs.handoff("ParameterDiscoveryAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="building ReAct decisions from current scan state", progress_percent=70)
         if self.client.budget_remaining() <= 0:
             self.state.add_event("WARNING", "request budget exhausted before ReAct loop")
             return
@@ -324,6 +366,9 @@ class AutonomousScanEngine:
         react_path = self.state.out_dir / "cai-react-summary.json"
         react_path.write_text(json.dumps(self.react_summary, indent=2, ensure_ascii=False), encoding="utf-8")
         self.extra_reports["cai_react_summary_json"] = str(react_path)
+        phase_path = self.state.out_dir / "phase-runner-summary.json"
+        phase_path.write_text(json.dumps(self.phase_runner.summary(), indent=2, ensure_ascii=False), encoding="utf-8")
+        self.extra_reports["phase_runner_summary_json"] = str(phase_path)
         matrix_path = self.state.out_dir / "tool-router-matrix.json"
         matrix_path.write_text(json.dumps(self.tool_router.matrix(), indent=2, ensure_ascii=False), encoding="utf-8")
         self.extra_reports["tool_router_matrix_json"] = str(matrix_path)
@@ -335,46 +380,57 @@ class AutonomousScanEngine:
     def run(self) -> dict[str, Any]:
         started = time.time()
         self.dashboard.start()
+        status = "completed"
+        reports: dict[str, str] = {}
         try:
             self.bootstrap()
-            self.run_planned_tests()
-            reports = self.write_reports()
+            self.phase_runner.run("09 Safe Parameter + Endpoint Review", self.run_planned_tests, progress_start=70, progress_end=90, url=self.target, agent="CAIReActPlannerAgent", tool="test_parameter")
+            reports = self.phase_runner.run("10 Reporting", self.write_reports, progress_start=91, progress_end=98, url=self.target, agent="ReportAgent", tool="report_generator").data or {}
             self._dashboard("Final Dashboard", "Safe CAI ReAct scan completed", progress=100, evidence=self._coverage_text(), agent="ReportAgent", tool="report_generator")
-            return {
-                "status": "completed",
-                "version": VERSION,
-                "target": self.target,
-                "scan_mode": self.scan_mode,
-                "runtime_ms": int((time.time() - started) * 1000),
-                "coverage": self.state.coverage(),
-                "surface": self._surface(),
-                "ollama": self.ollama_status,
-                "llm_policy": self.llm_policy.as_dict(),
-                "agent_runtime": self.agent_runtime.summary(),
-                "cai_react": self.react_summary,
-                "tool_router": self.tool_router.matrix(),
-                "reports": reports,
-                "safety": {
-                    "same_scope_only": True,
-                    "transparent_user_agent": True,
-                    "request_budget": True,
-                    "adaptive_backoff": True,
-                    "resume_supported": True,
-                    "allowed_tools_only": True,
-                    "hidden_routing": False,
-                    "credential_testing": False,
-                    "exploit_payloads": False,
-                    "target_data_modification": False,
-                    "destructive_actions": False,
-                },
-            }
         except KeyboardInterrupt:
+            status = "interrupted"
             self.state.add_event("WARNING", "interrupted by user")
             reports = self.write_reports()
-            return {"status": "interrupted", "version": VERSION, "target": self.target, "coverage": self.state.coverage(), "cai_react": self.react_summary, "reports": reports}
+        except Exception as exc:
+            status = "completed_partial"
+            self.state.add_event("ERROR", "top-level scan exception converted to partial completion", error=str(exc)[:1000])
+            try:
+                reports = self.write_reports()
+            except Exception as report_exc:
+                self.state.add_event("ERROR", "report generation failed after top-level exception", error=str(report_exc)[:1000])
+                reports = {}
         finally:
             self.dashboard.stop(final=True)
             self.state.save()
+        return {
+            "status": status,
+            "version": VERSION,
+            "target": self.target,
+            "scan_mode": self.scan_mode,
+            "runtime_ms": int((time.time() - started) * 1000),
+            "coverage": self.state.coverage(),
+            "surface": self._surface(),
+            "phase_runner": self.phase_runner.summary(),
+            "ollama": self.ollama_status,
+            "llm_policy": self.llm_policy.as_dict(),
+            "agent_runtime": self.agent_runtime.summary(),
+            "cai_react": self.react_summary,
+            "tool_router": self.tool_router.matrix(),
+            "reports": reports,
+            "safety": {
+                "same_scope_only": True,
+                "transparent_user_agent": True,
+                "request_budget": True,
+                "adaptive_backoff": True,
+                "resume_supported": True,
+                "allowed_tools_only": True,
+                "hidden_routing": False,
+                "credential_testing": False,
+                "exploit_payloads": False,
+                "target_data_modification": False,
+                "destructive_actions": False,
+            },
+        }
 
 
 def main() -> int:
@@ -393,13 +449,34 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--no-live-dashboard", action="store_true")
+    parser.add_argument("--no-deep-assets", action="store_true")
+    parser.add_argument("--asset-doc-limit", type=int, default=40)
     parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", "http://localhost:11434/api/chat"))
     parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", "qwen2.5:3b"))
     args = parser.parse_args()
-    engine = AutonomousScanEngine(args.target, scan_mode=args.scan_mode, include_subdomains=args.include_subdomains, headers=parse_headers(args.header), max_pages=args.max_pages, max_depth=args.max_depth, max_params=args.max_params, request_timeout=args.request_timeout, delay=args.delay, request_budget=args.request_budget, max_actions=args.max_actions, resume=args.resume, browser=args.browser, live_dashboard=not args.no_live_dashboard, ollama_url=args.ollama_url, ollama_model=args.ollama_model)
+    engine = AutonomousScanEngine(
+        args.target,
+        scan_mode=args.scan_mode,
+        include_subdomains=args.include_subdomains,
+        headers=parse_headers(args.header),
+        max_pages=args.max_pages,
+        max_depth=args.max_depth,
+        max_params=args.max_params,
+        request_timeout=args.request_timeout,
+        delay=args.delay,
+        request_budget=args.request_budget,
+        max_actions=args.max_actions,
+        resume=args.resume,
+        browser=args.browser,
+        live_dashboard=not args.no_live_dashboard,
+        deep_assets=not args.no_deep_assets,
+        asset_doc_limit=args.asset_doc_limit,
+        ollama_url=args.ollama_url,
+        ollama_model=args.ollama_model,
+    )
     payload = engine.run()
     print(json.dumps(payload, indent=2, ensure_ascii=False))
-    return 0 if payload.get("status") in {"completed", "interrupted"} else 1
+    return 0 if payload.get("status") in {"completed", "completed_partial", "interrupted"} else 1
 
 
 if __name__ == "__main__":
