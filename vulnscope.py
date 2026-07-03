@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.14.0-phase-stable-deep-discovery"
+VERSION = "1.14.1-lab-review-mode"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -25,7 +25,7 @@ RED = "\033[31m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║         Phase Runner → Deep Assets → Dynamic Crawling → Parameters → Evidence║
+║     Phase Runner → Deep Assets → Dynamic Crawling → Lab Review → Evidence    ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -47,6 +47,14 @@ def host_from_target(target: str) -> str:
     if not host:
         raise ValueError("invalid target")
     return host
+
+
+def effective_scan_mode(args: argparse.Namespace) -> str:
+    if getattr(args, "lab_mode", False):
+        return "lab"
+    if getattr(args, "mode", "") == "bugbounty" and args.scan_mode == "passive":
+        return "safe-active"
+    return args.scan_mode
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
@@ -74,19 +82,19 @@ def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = F
     print(c("\n[Authorization] Confirmed for: " + target, GREEN))
     if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
         print("\nRules:")
-        print("- You own this target or have explicit written authorization.")
+        print("- You own this target, are using a local/intentionally vulnerable lab, or have explicit written authorization.")
         print("- VulnScope runs evidence-first defensive checks only.")
         print("- Production data modification is not allowed.")
         answer = input("\nType YES to confirm authorization: ").strip()
         if answer != "YES":
             raise SystemExit("Authorization not confirmed.")
-    if scan_mode == "safe-active" and not yes and os.getenv("VULNSCOPE_SAFE_ACTIVE_OK", "0") != "1":
-        answer = input("\nSafe Active Mode sends harmless canary values to safe GET parameters. Type CONTINUE to proceed: ").strip()
+    if scan_mode in {"safe-active", "lab"} and not yes and os.getenv("VULNSCOPE_SAFE_ACTIVE_OK", "0") != "1":
+        answer = input(f"\n{scan_mode} mode sends harmless canary/check values to safe GET parameters. Type CONTINUE to proceed: ").strip()
         if answer != "CONTINUE":
-            raise SystemExit("Safe Active Mode not confirmed.")
+            raise SystemExit(f"{scan_mode} mode not confirmed.")
     scope_text = f"Scope locked to {host}" + (" and subdomains." if include_subdomains else ".")
     print(c(f"  ℹ️  {scope_text}", CYAN))
-    print(c("  ℹ️  Zero-impact mode: passive + safe-active only.", CYAN))
+    print(c(f"  ℹ️  Mode: {scan_mode}. No destructive actions, credential attacks, OOB callbacks, or service disruption.", CYAN))
     AUTH.parent.mkdir(parents=True, exist_ok=True)
     AUTH.write_text(json.dumps({"target": target, "host": host, "scan_mode": scan_mode, "include_subdomains": include_subdomains, "confirmed_authorization": True, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
 
@@ -111,10 +119,10 @@ def final_summary(target: str, history: list[dict]) -> None:
         "agent_trace": f"reports/output/cai-superior/{host}/agent-trace.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "phase_runner": True, "deep_asset_discovery": True, "single_default_engine": True, "legacy_modules_default": False, "safe_cai_react": True, "llm_pacing": True, "parameter_test_progression": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "lab_mode_supported": True, "bugbounty_mode_supported": True, "phase_runner": True, "deep_asset_discovery": True, "single_default_engine": True, "legacy_modules_default": False, "safe_cai_react": True, "llm_pacing": True, "parameter_test_progression": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Phase runner: `true`", "Deep asset discovery: `true`", "Single default engine: `true`", "Legacy modules default: `false`", "LLM pacing: `true`", "Parameter test progression: `true`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Lab mode supported: `true`", "Bug bounty mode supported: `true`", "Phase runner: `true`", "Deep asset discovery: `true`", "Single default engine: `true`", "Legacy modules default: `false`", "LLM pacing: `true`", "Parameter test progression: `true`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -133,14 +141,16 @@ def append_headers(cmd: list[str], headers: list[str]) -> None:
 
 
 def run_agentic(target: str, args: argparse.Namespace) -> dict:
+    mode = effective_scan_mode(args)
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
     os.environ["VULNSCOPE_LLM_DECISION_INTERVAL"] = str(args.llm_decision_interval)
     os.environ["VULNSCOPE_LLM_DECISION_TIMEOUT"] = str(args.llm_decision_timeout)
+    os.environ["VULNSCOPE_SCAN_MODE"] = mode
     if args.no_llm_planner:
         os.environ["VULNSCOPE_DISABLE_LLM_PLANNER"] = "1"
     history: list[dict] = []
-    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--asset-doc-limit", str(args.asset_doc_limit), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
+    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--asset-doc-limit", str(args.asset_doc_limit), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
     if args.include_subdomains:
         engine_cmd.append("--include-subdomains")
     if args.resume:
@@ -152,9 +162,9 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     if args.no_deep_assets:
         engine_cmd.append("--no-deep-assets")
     append_headers(engine_cmd, args.header)
-    history.append(run("Safe CAI ReAct Autonomous Engine", engine_cmd, timeout=3600))
+    history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     if args.with_100_tools and not args.skip_100_tools:
-        orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", args.scan_mode, "--criticality", args.criticality, "--tool-timeout", str(args.tool_timeout)]
+        orch_cmd = [sys.executable, "-m", "core.tool_orchestrator", "--target", target, "--scan-mode", mode, "--criticality", args.criticality, "--tool-timeout", str(args.tool_timeout)]
         if args.include_subdomains:
             orch_cmd.append("--include-subdomains")
         if args.no_live_dashboard:
@@ -172,7 +182,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--no-final-dashboard")
         history.append(run("Optional Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.14.0 Phase-Stable Deep Discovery", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope 1.14.1 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -192,7 +202,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VulnScope CAI-style autonomous safe scanner")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
-    parser.add_argument("--mode", choices=["deps", "cai", "agentic"], default="agentic")
+    parser.add_argument("--mode", choices=["deps", "cai", "agentic", "bugbounty"], default="agentic")
+    parser.add_argument("--lab-mode", action="store_true", help="Shortcut for --scan-mode lab with stronger lab review leads. Intended for local/intentionally vulnerable labs only.")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
     parser.add_argument("--header", action="append", default=[])
     parser.add_argument("--max-pages", type=int, default=120)
@@ -250,8 +261,9 @@ def main() -> int:
     if args.mode == "deps":
         return 0 if all(x.get("ok") for x in history) else 2
     target = normalize_target(args.target or input("\nTarget URL/domain: ").strip())
-    confirm(target, args.yes, args.scan_mode, include_subdomains=args.include_subdomains)
-    print(c("\n🚀 Starting phase-stable autonomous scan... (Ctrl+C to stop)", GREEN))
+    mode = effective_scan_mode(args)
+    confirm(target, args.yes, mode, include_subdomains=args.include_subdomains)
+    print(c(f"\n🚀 Starting phase-stable autonomous scan in {mode} mode... (Ctrl+C to stop)", GREEN))
     history.append(run_cai(target, args) if args.mode == "cai" else run_agentic(target, args))
     final_summary(target, history)
     return 0 if all(x.get("ok") for x in history) else 1
