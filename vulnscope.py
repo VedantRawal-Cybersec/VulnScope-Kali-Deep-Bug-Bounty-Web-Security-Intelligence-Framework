@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.15.1-simple-tool-wizard"
+VERSION = "1.15.2-batch-tool-installer"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -24,7 +24,7 @@ RED = "\033[31m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║       Simple Tool Import → Phase Router → Deep Discovery → Evidence          ║
+║        Batch Tool Installer → Phase Router → Deep Discovery → Evidence       ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -54,6 +54,28 @@ def effective_scan_mode(args: argparse.Namespace) -> str:
     if getattr(args, "mode", "") == "bugbounty" and args.scan_mode == "passive":
         return "safe-active"
     return args.scan_mode
+
+
+def preprocess_argv(argv: list[str]) -> list[str]:
+    """Make `--add-tool -tools.txt` work with argparse.
+
+    A value beginning with '-' normally looks like an option to argparse. For this
+    project, a single-dash value after --add-tool means a batch file path.
+    `-tools.txt` becomes `--add-tool-file tools.txt` before parsing.
+    """
+    rewritten: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--add-tool" and index + 1 < len(argv):
+            nxt = argv[index + 1]
+            if nxt.startswith("-") and not nxt.startswith("--"):
+                rewritten.extend(["--add-tool-file", nxt[1:]])
+                index += 2
+                continue
+        rewritten.append(item)
+        index += 1
+    return rewritten
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
@@ -102,7 +124,9 @@ def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
     reports = {
         "dynamic_tool_registry": "tools/registry.json",
-        "dynamic_tool_phase_summary": "reports/output/dynamic-tools/dynamic-tool-phase-summary.json",
+        "dynamic_tool_phase_summary": f"reports/output/cai-superior/{host}/dynamic-tool-phase-summary.json",
+        "batch_tool_install_log": "logs/tool_install.log",
+        "batch_tool_install_summary": "logs/tool_install_summary.json",
         "phase_runner_summary": f"reports/output/cai-superior/{host}/phase-runner-summary.json",
         "owasp_coverage": f"reports/output/cai-superior/{host}/owasp-coverage-report.md",
         "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md",
@@ -112,10 +136,10 @@ def final_summary(target: str, history: list[dict]) -> None:
         "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION, "simple_tool_import": True, "dynamic_tool_registry": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION, "batch_tool_installer": True, "dynamic_tool_registry": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Simple tool import: `true`", "Dynamic tool registry: `true`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Batch tool installer: `true`", "Dynamic tool registry: `true`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -154,10 +178,12 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         engine_cmd.append("--no-live-dashboard")
     if args.no_deep_assets:
         engine_cmd.append("--no-deep-assets")
+    if args.no_dynamic_tools:
+        engine_cmd.append("--no-dynamic-tools")
     append_headers(engine_cmd, args.header)
     history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope 1.15.1 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope 1.15.2 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -184,24 +210,32 @@ def handle_tool_registry(args: argparse.Namespace) -> int | None:
         tool = manager.registry.approve(args.approve_tool, install=args.approve_tool_install, run=args.approve_tool_run, enable=args.enable_tool)
         print(json.dumps({"approved": tool.to_dict()}, indent=2, ensure_ascii=False))
         return 0
+    if args.add_tool_file:
+        summary = manager.install_from_file(args.add_tool_file, confirm_authorization=args.yes, install_timeout=args.tool_install_timeout)
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        print(f"\n{summary.get('installed_successfully', 0)} tools installed successfully, {summary.get('failed', 0)} failed.")
+        return 0 if summary.get("status") == "completed" else 2
     if args.add_tool is not None:
         return run_import_wizard(args.add_tool if args.add_tool else PROMPT_TOKEN, yes=args.yes)
     return None
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VulnScope CAI-style autonomous safe scanner")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["deps", "cai", "agentic", "bugbounty"], default="agentic")
     parser.add_argument("--lab-mode", action="store_true")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
-    parser.add_argument("--add-tool", nargs="?", const="__prompt__", default=None, help="Simple tool import. Without a value, prompts: Enter tool GitHub URL.")
+    parser.add_argument("--add-tool", nargs="?", const="__prompt__", default=None, help="Simple tool import. Use --add-tool -tools.txt for batch file import.")
+    parser.add_argument("--add-tool-file", default="", help="Batch install GitHub tool URLs from a file. Usually produced by --add-tool -tools.txt.")
     parser.add_argument("--list-tools", action="store_true", help="List dynamic tools registered in tools/registry.json.")
     parser.add_argument("--approve-tool", default="", help="Approve an existing dynamic tool by id.")
     parser.add_argument("--approve-tool-install", action="store_true")
     parser.add_argument("--approve-tool-run", action="store_true")
     parser.add_argument("--enable-tool", action="store_true")
+    parser.add_argument("--tool-install-timeout", type=int, default=900)
+    parser.add_argument("--no-dynamic-tools", action="store_true")
     parser.add_argument("--header", action="append", default=[])
     parser.add_argument("--max-pages", type=int, default=120)
     parser.add_argument("--max-depth", type=int, default=3)
@@ -239,11 +273,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-final-dashboard", action="store_true")
     parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", DEFAULT_OLLAMA_URL))
     parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL))
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> int:
-    args = parse_args()
+    args = parse_args(preprocess_argv(sys.argv[1:]))
     if args.version:
         print(VERSION)
         return 0
