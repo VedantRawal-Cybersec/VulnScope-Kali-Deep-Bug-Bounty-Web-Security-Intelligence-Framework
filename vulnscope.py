@@ -12,16 +12,28 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.11.1-final-findings-dashboard"
+VERSION = "1.12.0"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
-BANNER = """
-╔════════════════════════════════════════════════════════════════════╗
-║                         VulnScope Ultimate                       ║
-║ Safe CAI ReAct → Tools → Evidence → Final Findings Dashboard      ║
-╚════════════════════════════════════════════════════════════════════╝
+RESET = "\033[0m"
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+DIM = "\033[2m"
+
+BANNER = f"""
+{CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
+║                          VulnScope Ultimate v{VERSION:<7}                       ║
+║                Agents → Ollama Gateway → Reasoning → Evidence → Report       ║
+╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
+
+
+def c(text: str, color: str) -> str:
+    return f"{color}{text}{RESET}" if sys.stdout.isatty() else text
 
 
 def normalize_target(raw: str) -> str:
@@ -40,7 +52,7 @@ def host_from_target(target: str) -> str:
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
-    print(f"\n[{label}]", flush=True)
+    print(f"\n{c('[' + label + ']', CYAN)}", flush=True)
     print("$ " + " ".join(command), flush=True)
     started = datetime.now(timezone.utc)
     env = os.environ.copy()
@@ -59,9 +71,9 @@ def run(label: str, command: list[str], timeout: int = 3600) -> dict:
         return {"label": label, "ok": False, "error": str(exc), "command": command, "started_at": started.isoformat()}
 
 
-def confirm(target: str, yes: bool, scan_mode: str) -> None:
-    print("\nAuthorized use only. Scope is locked to the target you provide.")
-    print(f"Target: {target}")
+def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = False) -> None:
+    host = host_from_target(target)
+    print(c("\n[Authorization] Confirmed for: " + target, GREEN))
     if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
         print("\nRules:")
         print("- You own this target or have explicit written authorization.")
@@ -74,8 +86,11 @@ def confirm(target: str, yes: bool, scan_mode: str) -> None:
         answer = input("\nSafe Active Mode sends harmless canary values to safe GET parameters. Type CONTINUE to proceed: ").strip()
         if answer != "CONTINUE":
             raise SystemExit("Safe Active Mode not confirmed.")
+    scope_text = f"Scope locked to {host}" + (" and subdomains." if include_subdomains else ".")
+    print(c(f"  ℹ️  {scope_text}", CYAN))
+    print(c("  ℹ️  Zero-impact mode: passive + safe-active only.", CYAN))
     AUTH.parent.mkdir(parents=True, exist_ok=True)
-    AUTH.write_text(json.dumps({"target": target, "host": host_from_target(target), "scan_mode": scan_mode, "confirmed_authorization": True, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
+    AUTH.write_text(json.dumps({"target": target, "host": host, "scan_mode": scan_mode, "include_subdomains": include_subdomains, "confirmed_authorization": True, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
 
 
 def final_summary(target: str, history: list[dict]) -> None:
@@ -97,19 +112,19 @@ def final_summary(target: str, history: list[dict]) -> None:
         "cli_final_dashboard": f"reports/output/cai-superior/{host}/cli-final-dashboard.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "safe_cai_react": True, "final_findings_dashboard": True, "cai_style_agents": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "safe_cai_react": True, "final_findings_dashboard": True, "cai_style_live_dashboard": True, "stable_dashboard": True, "ollama_diagnostics": True, "resume_supported": True, "evidence_store": True, "request_budget": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", "Safe CAI ReAct: `true`", "Final Findings Dashboard: `true`", "CAI-style agents: `true`", "Stable dashboard: `true`", "Ollama diagnostics/fallback: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "CAI-style live dashboard: `true`", "Final Findings Dashboard: `true`", "Evidence store: `true`", "Request budget: `true`", "Website dashboard: `false`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
     for name, path in reports.items():
         lines.append(f"- `{name}`: `{path}`")
     (OUT / "final-summary.md").write_text("\n".join(lines), encoding="utf-8")
-    print("\nOpen reports:")
+    print(c("\n✅ Full report written to: reports/output/cai-superior/" + host + "/", GREEN))
     for path in reports.values():
-        print("- " + path)
+        print("   • " + path)
 
 
 def append_headers(cmd: list[str], headers: list[str]) -> None:
@@ -152,7 +167,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--no-final-dashboard")
         history.append(run("Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.11.1 Final Findings Dashboard", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.12.0 CAI-Style Live Dashboard", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -182,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--delay", type=float, default=0.6)
     parser.add_argument("--request-budget", type=int, default=500)
     parser.add_argument("--max-actions", type=int, default=160)
+    parser.add_argument("--threads", type=int, default=4, help="Worker hint for supported discovery stages; kept bounded for safe scanning.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--tool-timeout", type=int, default=20)
@@ -217,12 +233,13 @@ def main() -> int:
         preflight = run_preflight_step(args)
         history.append(preflight)
         if not preflight.get("ok"):
-            print("\nPreflight blocked launch because required local dependencies are missing. Fix the blocking items above, then run again.")
+            print(c("\nPreflight blocked launch because required local dependencies are missing. Fix the blocking items above, then run again.", RED))
             return 2
     if args.mode == "deps":
         return 0 if all(x.get("ok") for x in history) else 2
     target = normalize_target(args.target or input("\nTarget URL/domain: ").strip())
-    confirm(target, args.yes, args.scan_mode)
+    confirm(target, args.yes, args.scan_mode, include_subdomains=args.include_subdomains)
+    print(c("\n🚀 Starting autonomous scan... (Ctrl+C to stop)", GREEN))
     history.append(run_cai(target, args) if args.mode == "cai" else run_agentic(target, args))
     final_summary(target, history)
     return 0 if all(x.get("ok") for x in history) else 1
