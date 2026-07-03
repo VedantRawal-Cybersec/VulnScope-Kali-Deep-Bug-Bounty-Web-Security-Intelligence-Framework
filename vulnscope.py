@@ -137,7 +137,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
     history: list[dict] = []
-    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--threads", str(args.threads), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
+    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
     if args.include_subdomains:
         engine_cmd.append("--include-subdomains")
     if args.resume:
