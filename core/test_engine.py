@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from html import escape
 from urllib.parse import urljoin
 
 from core.evidence_store import body_hash
+from core.evidence_validator import EvidenceValidator
 from core.http_client_v2 import ResponseRecord, SafeHttpClientV2
 from core.parameter_inventory import replace_param
 from core.scan_state import ParamRecord, ScanState, TestRecord
@@ -34,6 +34,7 @@ class TestEngine:
         self.state = state
         self.client = client
         self.dashboard = dashboard
+        self.validator = EvidenceValidator()
 
     def _dash(self, message: str, *, param: ParamRecord | None = None, probe: str = "—", evidence: str = "", progress: int = 0) -> None:
         url = param.url if param else self.state.target
@@ -77,11 +78,14 @@ class TestEngine:
             "safe_probe": probe,
             "reproduction_steps": steps or [f"Review {url} inside the authorized scope.", "Validate with approved low-impact methods only."],
         }
+        finding = self.validator.normalize_finding(finding)
         finding_id = self.client.evidence.record_finding(finding)
         finding["id"] = finding_id
         self.state.add_finding(finding)
         if self.dashboard is not None and hasattr(self.dashboard, "add_finding"):
-            self.dashboard.add_finding(title, impact, severity, url=url, parameter=parameter or "—", test_string=probe or "safe-observation", evidence=evidence, confidence=f"{confidence}%", reproduction="\n".join(finding["reproduction_steps"]), confirmation="confirmed" if status.lower() == "confirmed" else "review_lead")
+            normalized_status = str(finding.get("status") or "Potential").lower()
+            confirmation = "confirmed" if normalized_status == "confirmed" else ("informational" if normalized_status == "informational" else "review_lead")
+            self.dashboard.add_finding(finding["title"], finding["impact"], finding["severity"], url=url, parameter=parameter or "—", test_string=probe or "safe-observation", evidence=finding["evidence"], confidence=f"{finding['confidence']}%", reproduction="\n".join(finding["reproduction_steps"]), confirmation=confirmation)
         return finding
 
     def compare(self, baseline: ResponseRecord, test: ResponseRecord, probe: str | None = None) -> dict:
@@ -195,7 +199,7 @@ class TestEngine:
         if response.status_code in {301, 302, 303, 307, 308}:
             location = response.headers.get("Location", "")
             absolute = urljoin(response.url, location)
-            same_site = (absolute.startswith("/") or absolute.startswith(self.state.target.rsplit("/", 1)[0]))
+            same_site = absolute.startswith("/") or absolute.startswith(self.state.target.rsplit("/", 1)[0])
             finding = self._finding(
                 title="Redirect Parameter Behavior Observed",
                 status="Confirmed" if same_site else "Manual Review Lead",

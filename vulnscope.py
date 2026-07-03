@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.9.0-cai-agentic-stable-dashboard"
+VERSION = "1.9.1-scope-crawl-ollama-fallback"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -117,13 +117,14 @@ def append_headers(cmd: list[str], headers: list[str]) -> None:
 def run_agentic(target: str, args: argparse.Namespace) -> dict:
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
+    os.environ["VULNSCOPE_USE_OLLAMA_PLANNER"] = "1" if args.ai_planner else "0"
     history: list[dict] = []
     engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
     if args.include_subdomains:
         engine_cmd.append("--include-subdomains")
     if args.resume:
         engine_cmd.append("--resume")
-    if args.browser:
+    if args.browser or args.render_js:
         engine_cmd.append("--browser")
     if args.no_live_dashboard:
         engine_cmd.append("--no-live-dashboard")
@@ -148,7 +149,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--no-final-dashboard")
         history.append(run("Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.9 CAI-Style Pipeline", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.9.1 Pipeline", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -180,9 +181,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-actions", type=int, default=160)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--render-js", action="store_true", help="Alias for --browser. Enables transparent Playwright route discovery if Playwright is installed.")
+    parser.add_argument("--ai-planner", action="store_true", help="Allow Ollama to advise parameter prioritization. Scanner remains deterministic if Ollama fails.")
     parser.add_argument("--tool-timeout", type=int, default=20)
     parser.add_argument("--skip-100-tools", action="store_true")
-    parser.add_argument("--skip-react", action="store_true")
+    parser.add_argument("--skip-react", action="store_true", default=True)
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--include-subdomains", action="store_true")
     parser.add_argument("--criticality", choices=["low", "normal", "high", "critical"], default="normal")
