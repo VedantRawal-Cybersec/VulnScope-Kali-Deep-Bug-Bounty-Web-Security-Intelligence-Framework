@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.13.0-autonomy-core"
+VERSION = "1.14.0-phase-stable-deep-discovery"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -25,7 +25,7 @@ RED = "\033[31m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║             Safe CAI ReAct → LLM Pacing → Parameter Tests → Evidence         ║
+║         Phase Runner → Deep Assets → Dynamic Crawling → Parameters → Evidence║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -96,6 +96,8 @@ def final_summary(target: str, history: list[dict]) -> None:
     reports = {
         "main_objective": "docs/VULNSCOPE_MAIN_OBJECTIVE.md",
         "architecture_audit": "docs/ARCHITECTURE_AUDIT.md",
+        "phase_runner_summary": f"reports/output/cai-superior/{host}/phase-runner-summary.json",
+        "owasp_coverage": f"reports/output/cai-superior/{host}/owasp-coverage-report.md",
         "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md",
         "final_findings_dashboard_json": f"reports/output/cai-superior/{host}/final-findings-dashboard.json",
         "final_findings_dashboard_txt": f"reports/output/cai-superior/{host}/final-findings-dashboard.txt",
@@ -109,10 +111,10 @@ def final_summary(target: str, history: list[dict]) -> None:
         "agent_trace": f"reports/output/cai-superior/{host}/agent-trace.md",
         "authorization": str(AUTH),
     }
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "single_default_engine": True, "legacy_modules_default": False, "safe_cai_react": True, "llm_pacing": True, "parameter_test_progression": True, "website_dashboard": False}
+    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "interface": "kali_cli", "version": VERSION, "phase_runner": True, "deep_asset_discovery": True, "single_default_engine": True, "legacy_modules_default": False, "safe_cai_react": True, "llm_pacing": True, "parameter_test_progression": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Single default engine: `true`", "Legacy modules default: `false`", "LLM pacing: `true`", "Parameter test progression: `true`", "", "## Steps"]
+    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Phase runner: `true`", "Deep asset discovery: `true`", "Single default engine: `true`", "Legacy modules default: `false`", "LLM pacing: `true`", "Parameter test progression: `true`", "", "## Steps"]
     for item in history:
         lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
     lines += ["", "## Reports"]
@@ -138,7 +140,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     if args.no_llm_planner:
         os.environ["VULNSCOPE_DISABLE_LLM_PLANNER"] = "1"
     history: list[dict] = []
-    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
+    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", args.scan_mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--asset-doc-limit", str(args.asset_doc_limit), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
     if args.include_subdomains:
         engine_cmd.append("--include-subdomains")
     if args.resume:
@@ -147,6 +149,8 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         engine_cmd.append("--browser")
     if args.no_live_dashboard:
         engine_cmd.append("--no-live-dashboard")
+    if args.no_deep_assets:
+        engine_cmd.append("--no-deep-assets")
     append_headers(engine_cmd, args.header)
     history.append(run("Safe CAI ReAct Autonomous Engine", engine_cmd, timeout=3600))
     if args.with_100_tools and not args.skip_100_tools:
@@ -168,7 +172,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
             cmd.append("--no-final-dashboard")
         history.append(run("Optional Legacy Live Autonomous ReAct Loop", cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": "VulnScope 1.13.0 Autonomy Core", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": "VulnScope 1.14.0 Phase-Stable Deep Discovery", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -199,6 +203,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-budget", type=int, default=500)
     parser.add_argument("--max-actions", type=int, default=160)
     parser.add_argument("--threads", type=int, default=4, help="Worker hint for supported discovery stages; kept bounded for safe scanning.")
+    parser.add_argument("--asset-doc-limit", type=int, default=40, help="Number of public discovery documents to check in deep asset discovery.")
+    parser.add_argument("--no-deep-assets", action="store_true", help="Disable deep public asset discovery.")
     parser.add_argument("--llm-decision-interval", type=int, default=4, help="Use LLM planner every N ReAct decisions instead of every turn.")
     parser.add_argument("--llm-decision-timeout", type=int, default=6, help="Max seconds to wait for one LLM planner decision.")
     parser.add_argument("--no-llm-planner", action="store_true", help="Use deterministic autonomous scheduling while keeping reports/evidence intact.")
@@ -245,7 +251,7 @@ def main() -> int:
         return 0 if all(x.get("ok") for x in history) else 2
     target = normalize_target(args.target or input("\nTarget URL/domain: ").strip())
     confirm(target, args.yes, args.scan_mode, include_subdomains=args.include_subdomains)
-    print(c("\n🚀 Starting autonomous scan... (Ctrl+C to stop)", GREEN))
+    print(c("\n🚀 Starting phase-stable autonomous scan... (Ctrl+C to stop)", GREEN))
     history.append(run_cai(target, args) if args.mode == "cai" else run_agentic(target, args))
     final_summary(target, history)
     return 0 if all(x.get("ok") for x in history) else 1
