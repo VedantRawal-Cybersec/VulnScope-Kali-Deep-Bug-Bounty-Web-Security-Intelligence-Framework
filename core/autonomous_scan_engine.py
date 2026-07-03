@@ -23,7 +23,7 @@ from core.safe_analyzers import PassiveAnalyzers
 from core.scan_state import ScanState
 from core.test_engine import TestEngine
 
-VERSION = "1.9.0-cai-agentic-stable-dashboard"
+VERSION = "1.9.1-scope-crawl-ollama-fallback"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -73,6 +73,8 @@ class AutonomousScanEngine:
         self.dashboard = LiveDashboard(self.target, max_turns=max_actions, enabled=True, live_stream=live_dashboard)
         self.dashboard.update(mode=self.scan_mode, authorization_status="confirmed")
         self.state = ScanState(self.target, resume=resume)
+        self.state.stats["max_pages"] = self.max_pages
+        self.state.stats["max_depth"] = self.max_depth
         self.evidence = EvidenceStore(self.target)
         self.client = SafeHttpClientV2(state=self.state, evidence=self.evidence, headers=headers or {}, timeout=request_timeout, delay=delay, request_budget=request_budget)
         self.crawler = CrawlerV2(state=self.state, client=self.client, max_pages=max_pages, max_depth=max_depth, include_subdomains=include_subdomains, dashboard=self.dashboard)
@@ -93,7 +95,7 @@ class AutonomousScanEngine:
             "urls_found": len(self.state.urls),
             "paths_found": len(paths),
             "params_found": len(self.state.params),
-            "forms_found": int(self.state.stats.get("forms", 0)),
+            "forms_found": int(self.state.stats.get("forms", 0)) + int(self.state.stats.get("browser_forms", 0)),
             "js_found": int(self.state.stats.get("scripts", 0)),
             "api_routes_found": len(api_like) + int(self.state.stats.get("javascript_routes", 0)),
         }
@@ -136,7 +138,8 @@ class AutonomousScanEngine:
         except Exception as exc:
             status = {"ok": False, "service": "error", "model": self.ollama_model, "error": str(exc)[:500]}
         self.ollama_status = status
-        label = f"Connected • {self.ollama_model} • AI reasoning enabled" if status.get("ok") else f"Fallback • {self.ollama_model} • {status.get('service', 'unreachable')}"
+        planner_mode = "advisory-enabled" if os.getenv("VULNSCOPE_USE_OLLAMA_PLANNER", "0") == "1" else "deterministic-fallback"
+        label = f"Connected • {self.ollama_model} • {planner_mode}" if status.get("ok") else f"Fallback • {self.ollama_model} • {status.get('service', 'unreachable')}"
         self.dashboard.update(ollama_status=label)
         self.trace.log(turn_id=turn_id, agent_name="OllamaReasoningAgent", tool_name="ollama_diagnostics", phase="Diagnostics", status="completed" if status.get("ok") else "fallback", target_url=self.target, message=label, evidence_summary=json.dumps(status, ensure_ascii=False)[:600], progress_percent=3)
 
@@ -157,12 +160,16 @@ class AutonomousScanEngine:
         self.state.add_event("INFO", "crawler completed", **crawl_result.__dict__)
         self._dashboard("Crawler v2", "Crawl completed", progress=32, evidence=self._coverage_text(), agent="CrawlerAgent", tool="safe_crawler")
         self.handoffs.handoff("CrawlerAgent", "JSExposureAgent", phase="JavaScript Route Review", message="extracting script route hints", progress_percent=34)
-        js_routes = self.crawler.analyze_scripts(limit=30)
+        js_routes = self.crawler.analyze_scripts(limit=80)
         self.state.add_event("INFO", "script route review completed", routes=js_routes)
         if self.browser:
             self.handoffs.handoff("JSExposureAgent", "CrawlerAgent", phase="Browser route discovery", message="optional transparent browser discovery", progress_percent=38)
-            browser_result = BrowserCrawler(state=self.state, include_subdomains=self.include_subdomains, dashboard=self.dashboard).run()
+            browser_result = BrowserCrawler(state=self.state, include_subdomains=self.include_subdomains, dashboard=self.dashboard, max_routes=max(250, self.max_pages)).run()
             self.state.add_event("INFO", "browser route discovery finished", **browser_result.__dict__)
+            if browser_result.routes_added:
+                self.handoffs.handoff("CrawlerAgent", "CrawlerAgent", phase="Crawler v2", message="processing browser-discovered queued URLs", progress_percent=39)
+                post_browser = self.crawler.crawl()
+                self.state.add_event("INFO", "post-browser crawl completed", **post_browser.__dict__)
         self.handoffs.handoff("CrawlerAgent", "ParameterDiscoveryAgent", phase="Parameter Discovery", message="parameter inventory ready" if self.state.params else "no safe GET/query parameters discovered", progress_percent=40)
         if not self.state.params:
             self._dashboard("Parameter Discovery", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=40, evidence=self._coverage_text(), agent="ParameterDiscoveryAgent", tool="parameter_inventory")
@@ -193,11 +200,11 @@ class AutonomousScanEngine:
             if decision.action == "crawl":
                 self.handoffs.handoff("PlannerAgent", "CrawlerAgent", phase="Crawler v2", message="continuing crawl from queued URLs", progress_percent=progress)
                 self.crawler.crawl()
-                self.crawler.analyze_scripts(limit=10)
+                self.crawler.analyze_scripts(limit=20)
                 continue
             if decision.action == "review_scripts":
                 self.handoffs.handoff("PlannerAgent", "JSExposureAgent", phase="JavaScript Route Review", message="reviewing script route hints", progress_percent=progress)
-                self.crawler.analyze_scripts(limit=30)
+                self.crawler.analyze_scripts(limit=80)
                 continue
             if decision.action == "test_parameter":
                 param = AIPlanner.find_param(self.state, decision.url, decision.parameter)
