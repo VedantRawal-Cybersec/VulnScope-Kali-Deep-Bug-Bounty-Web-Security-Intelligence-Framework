@@ -30,8 +30,7 @@ class PhaseScheduler:
     """Runs enabled dynamic tools in phase order.
 
     Dynamic tools are optional and approval-gated. The scheduler never overrides
-    the ToolManager safety gates; if a tool is disabled or not approved, it is
-    recorded as skipped/failed by the manager path.
+    the ToolManager safety gates. A tool must be enabled and approved_for_run.
     """
 
     def __init__(self, *, registry: ToolRegistry | None = None, manager: ToolManager | None = None, dashboard: object | None = None, report_dir: Path | None = None) -> None:
@@ -67,6 +66,12 @@ class PhaseScheduler:
         results: list[ScheduledToolRun] = []
         for tool in tools:
             started = time.time()
+            if not tool.approved_for_run:
+                run = ScheduledToolRun(tool_id=tool.tool_id, phase=phase, status="skipped", started_at=started, finished_at=time.time(), elapsed_ms=0, error="tool is enabled but not approved_for_run")
+                self.runs.append(run)
+                results.append(run)
+                self._dash(phase=phase, tool_id=tool.tool_id, status="skipped", target=target, message=f"Skipping dynamic tool {tool.name}: not approved for run")
+                continue
             self._dash(phase=phase, tool_id=tool.tool_id, status="running", target=target, message=f"Running dynamic tool {tool.name}")
             try:
                 payload = self.manager.run_tool(tool.tool_id, target=target, confirm=confirm, timeout=timeout)
