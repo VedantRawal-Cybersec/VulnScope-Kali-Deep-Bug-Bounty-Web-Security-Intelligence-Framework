@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.15.3-batch-tools-lab-alias"
+VERSION = "1.16.0-unified-research-orchestration"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 TOOLS_TXT = Path("tools.txt")
@@ -182,7 +182,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     append_headers(engine_cmd, args.header)
     history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope 1.15.3 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope 1.16.0 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
