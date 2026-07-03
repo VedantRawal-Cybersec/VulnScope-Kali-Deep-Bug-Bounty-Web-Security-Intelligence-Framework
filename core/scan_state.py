@@ -91,14 +91,7 @@ class ScanState:
             self.save()
 
     def add_event(self, level: str, event_message: str = "", **data: Any) -> None:
-        """Append a durable scan event without allowing telemetry-key collisions to crash the scan.
-
-        Older call sites sometimes pass a second positional message and also include
-        a keyword named ``message`` in the metadata. Python used to raise
-        ``TypeError: got multiple values for argument 'message'`` before this method
-        could run. The public field remains ``message`` while colliding metadata is
-        preserved under ``detail_message``.
-        """
+        """Append a durable scan event without allowing telemetry-key collisions to crash the scan."""
         try:
             safe_data = dict(data or {})
             if "message" in safe_data:
@@ -107,7 +100,6 @@ class ScanState:
             self.events = self.events[-1000:]
             self.updated_at = time.time()
         except Exception:
-            # Event logging must never terminate an otherwise valid scan.
             self.updated_at = time.time()
 
     def add_url(self, url: str, *, depth: int = 0, source: str = "link") -> UrlRecord:
@@ -206,4 +198,9 @@ class ScanState:
         for item in sorted(self.params.values(), key=lambda p: p.risk_score, reverse=True)[:50]:
             lines.append(f"- `{item.name}` kind=`{item.kind}` risk=`{item.risk_score}` status=`{item.status}` tested=`{','.join(item.tested)}` url=`{item.url}`")
         path.write_text("\n".join(lines), encoding="utf-8")
+        try:
+            from core.owasp_coverage import OWASPCoverageReporter
+            OWASPCoverageReporter(self).write_all()
+        except Exception as exc:
+            self.add_event("WARNING", "owasp coverage report failed", error=str(exc)[:300])
         return path
