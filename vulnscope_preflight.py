@@ -18,6 +18,14 @@ OUT = Path("reports/output/vulnscope-main")
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
 
+RESET = "\033[0m"
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+DIM = "\033[2m"
+
 PYTHON_PACKAGES = [
     ("requests", "requests"),
     ("beautifulsoup4", "bs4"),
@@ -30,6 +38,11 @@ PYTHON_PACKAGES = [
 ]
 
 CORE_TOOLS = ["git", "curl", "python3"]
+OPTIONAL_DISCOVERY_TOOLS = ["nmap", "dirsearch", "subfinder"]
+
+
+def color(text: str, code: str) -> str:
+    return f"{code}{text}{RESET}" if sys.stdout.isatty() else text
 
 
 def _now() -> float:
@@ -111,12 +124,20 @@ def install_python_packages() -> dict[str, Any]:
     return _run([sys.executable, "-m", "pip", "install", "--upgrade", *packages], timeout=600)
 
 
-def check_core_tools() -> list[dict[str, Any]]:
+def check_tools(tools: list[str]) -> list[dict[str, Any]]:
     rows = []
-    for tool in CORE_TOOLS:
+    for tool in tools:
         path = shutil.which(tool)
         rows.append({"tool": tool, "status": "available" if path else "missing", "path": path or ""})
     return rows
+
+
+def check_core_tools() -> list[dict[str, Any]]:
+    return check_tools(CORE_TOOLS)
+
+
+def check_optional_tools() -> list[dict[str, Any]]:
+    return check_tools(OPTIONAL_DISCOVERY_TOOLS)
 
 
 def run_safe_tool_setup(enabled: bool = True) -> dict[str, Any]:
@@ -143,6 +164,7 @@ def start_ollama_if_possible() -> dict[str, Any]:
 
 
 def check_ollama(*, generate_url: str, model: str, auto_pull_model: bool = True) -> dict[str, Any]:
+    started = _now()
     binary = shutil.which("ollama")
     tags_url = _ollama_tags_url(generate_url)
     service_ok, service_payload = _json_get(tags_url, timeout=8)
@@ -182,6 +204,7 @@ def check_ollama(*, generate_url: str, model: str, auto_pull_model: bool = True)
         "model": model,
         "models": models,
         "model_present": model_present,
+        "latency_ms": int((_now() - started) * 1000),
         "pull_attempt": pull_result,
         "ok": bool(binary and service_ok and model_present),
         "install_hint": "Install Ollama and run: ollama pull " + model if not binary else "",
@@ -208,6 +231,9 @@ def render_report(payload: dict[str, Any]) -> None:
     lines += ["", "## Core Tools"]
     for row in payload.get("core_tools", []):
         lines.append(f"- `{row.get('tool')}` status=`{row.get('status')}` path=`{row.get('path')}`")
+    lines += ["", "## Optional Discovery Tools"]
+    for row in payload.get("optional_tools", []):
+        lines.append(f"- `{row.get('tool')}` status=`{row.get('status')}` path=`{row.get('path')}`")
     lines += ["", "## Tool Setup", "```json", json.dumps(payload.get("safe_tool_setup", {}), indent=2, ensure_ascii=False)[:3000], "```", "", "## Ollama", "```json", json.dumps(payload.get("ollama", {}), indent=2, ensure_ascii=False)[:3000], "```"]
     if payload.get("blocking_issues"):
         lines += ["", "## Blocking Issues"]
@@ -230,6 +256,7 @@ def run_preflight(
     ollama_model = ollama_model or os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
 
     core_tools = check_core_tools()
+    optional_tools = check_optional_tools()
     py_before = check_python_packages()
     missing_py = [x for x in py_before if x.get("status") != "installed"]
     python_install_result: dict[str, Any] = {}
@@ -238,7 +265,7 @@ def run_preflight(
     py_after = check_python_packages()
 
     safe_tool_setup = run_safe_tool_setup(enabled=run_tool_setup_flag)
-    ollama = check_ollama(generate_url=ollama_url, model=ollama_model, auto_pull_model=auto_pull_model) if check_ollama_flag else {"ok": True, "status": "skipped"}
+    ollama = check_ollama(generate_url=ollama_url, model=ollama_model, auto_pull_model=auto_pull_model) if check_ollama_flag else {"ok": True, "status": "skipped", "latency_ms": 0}
 
     missing_after = [x.get("package") for x in py_after if x.get("status") != "installed"]
     missing_core = [x.get("tool") for x in core_tools if x.get("status") != "available"]
@@ -257,16 +284,21 @@ def run_preflight(
         "ok": not blocking,
         "blocking_issues": blocking,
         "summary": {
+            "python_version": ".".join(map(str, sys.version_info[:3])),
             "python_missing": len(missing_after),
             "core_tools_missing": len(missing_core),
+            "optional_tools_available": sum(1 for x in optional_tools if x.get("status") == "available"),
             "safe_tool_setup": safe_tool_setup.get("status"),
             "ollama_ready": bool(ollama.get("ok")),
             "ollama_model": ollama_model,
             "ollama_url": ollama_url,
+            "ollama_latency_ms": ollama.get("latency_ms", 0),
+            "workspace": str(Path.cwd() / "reports/output"),
         },
         "python_packages": py_after,
         "python_install": python_install_result,
         "core_tools": core_tools,
+        "optional_tools": optional_tools,
         "safe_tool_setup": safe_tool_setup,
         "ollama": ollama,
         "reports": {"json": str(OUT / "preflight.json"), "markdown": str(OUT / "preflight.md")},
@@ -277,16 +309,26 @@ def run_preflight(
 
 def print_preflight_status(payload: dict[str, Any]) -> None:
     status = "READY" if payload.get("ok") else "ACTION REQUIRED"
-    print(f"\n[VulnScope Preflight] {status}")
+    print(color(f"\n[Preflight] {status}", GREEN if payload.get("ok") else RED))
     summary = payload.get("summary", {})
-    print(f"- Python missing     : {summary.get('python_missing')}")
-    print(f"- Core tools missing : {summary.get('core_tools_missing')}")
-    print(f"- Safe tool setup    : {summary.get('safe_tool_setup')}")
-    print(f"- Ollama ready       : {summary.get('ollama_ready')}")
-    print(f"- Ollama model       : {summary.get('ollama_model')}")
-    print("- Report             : reports/output/vulnscope-main/preflight.md")
+    py_version = summary.get("python_version") or f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    core = ", ".join(row.get("tool", "") for row in payload.get("core_tools", []) if row.get("status") == "available") or "none"
+    optional = ", ".join(row.get("tool", "") for row in payload.get("optional_tools", []) if row.get("status") == "available")
+    if optional:
+        core_display = core + ", " + optional
+    else:
+        core_display = core
+    print(color(f"  ✅ Python {py_version}", GREEN))
+    print(color(f"  ✅ Core tools: {core_display}", GREEN))
+    setup = summary.get("safe_tool_setup")
+    print(color(f"  ✅ Safe tool setup: {setup}", GREEN) if setup in {"ok", "skipped"} else color(f"  ⚠️  Safe tool setup: {setup}", YELLOW))
+    if summary.get("ollama_ready"):
+        print(color(f"  ✅ Ollama ready: {summary.get('ollama_model')} (latency {summary.get('ollama_latency_ms', 0)}ms)", GREEN))
+    else:
+        print(color(f"  ⚠️  Ollama fallback mode: {summary.get('ollama_model')}", YELLOW))
+    print(color(f"  ✅ Workspace: {summary.get('workspace')}", GREEN))
     for issue in payload.get("blocking_issues", []):
-        print(f"[BLOCKING] {issue}")
+        print(color(f"[BLOCKING] {issue}", RED))
 
 
 def main() -> int:
