@@ -6,9 +6,15 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from cai_scope_guard import cai_output_dir, normalize_target
+
+
+def canonical_state_url(url: str) -> str:
+    parsed = urlparse(normalize_target(url))
+    path = parsed.path or "/"
+    return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", parsed.query, ""))
 
 
 @dataclass
@@ -64,7 +70,7 @@ class ScanState:
     """Small durable state store for large scans and resume support."""
 
     def __init__(self, target: str, *, resume: bool = False) -> None:
-        self.target = normalize_target(target)
+        self.target = canonical_state_url(target)
         self.host = (urlparse(self.target).hostname or "target").lower()
         self.out_dir = cai_output_dir(self.target)
         self.path = self.out_dir / "autonomous-scan-state.json"
@@ -75,14 +81,7 @@ class ScanState:
         self.tests: dict[str, TestRecord] = {}
         self.findings: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
-        self.stats: dict[str, Any] = {
-            "requests": 0,
-            "timeouts": 0,
-            "backoffs": 0,
-            "skipped": 0,
-            "resumed": False,
-            "browser_routes": 0,
-        }
+        self.stats: dict[str, Any] = {"requests": 0, "timeouts": 0, "backoffs": 0, "skipped": 0, "resumed": False, "browser_routes": 0}
         if resume and self.path.exists():
             self.load()
             self.stats["resumed"] = True
@@ -96,6 +95,7 @@ class ScanState:
         self.updated_at = time.time()
 
     def add_url(self, url: str, *, depth: int = 0, source: str = "link") -> UrlRecord:
+        url = canonical_state_url(url)
         if url not in self.urls:
             self.urls[url] = UrlRecord(url=url, depth=depth, source=source)
         else:
@@ -103,6 +103,7 @@ class ScanState:
         return self.urls[url]
 
     def add_param(self, record: ParamRecord) -> ParamRecord:
+        record.url = canonical_state_url(record.url)
         existing = self.params.get(record.key)
         if existing:
             if record.source not in existing.source:
@@ -113,6 +114,7 @@ class ScanState:
         return record
 
     def add_test(self, record: TestRecord) -> TestRecord:
+        record.url = canonical_state_url(record.url)
         self.tests[record.test_id] = record
         return record
 
@@ -139,11 +141,7 @@ class ScanState:
                 informational += 1
             else:
                 potential += 1
-        return {
-            "confirmed_vulnerabilities": confirmed,
-            "potential_review_leads": potential,
-            "informational_observations": informational,
-        }
+        return {"confirmed_vulnerabilities": confirmed, "potential_review_leads": potential, "informational_observations": informational}
 
     def coverage(self) -> dict[str, int]:
         buckets = self.finding_buckets()
@@ -162,19 +160,7 @@ class ScanState:
         }
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "target": self.target,
-            "host": self.host,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "urls": {key: asdict(value) for key, value in self.urls.items()},
-            "params": {key: asdict(value) for key, value in self.params.items()},
-            "tests": {key: asdict(value) for key, value in self.tests.items()},
-            "findings": self.findings,
-            "events": self.events,
-            "stats": self.stats,
-            "coverage": self.coverage(),
-        }
+        return {"target": self.target, "host": self.host, "created_at": self.created_at, "updated_at": self.updated_at, "urls": {key: asdict(value) for key, value in self.urls.items()}, "params": {key: asdict(value) for key, value in self.params.items()}, "tests": {key: asdict(value) for key, value in self.tests.items()}, "findings": self.findings, "events": self.events, "stats": self.stats, "coverage": self.coverage()}
 
     def save(self) -> None:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -195,21 +181,7 @@ class ScanState:
     def write_markdown_summary(self) -> Path:
         path = self.out_dir / "autonomous-scan-state.md"
         cov = self.coverage()
-        lines = [
-            "# VulnScope Autonomous Scan State",
-            "",
-            f"Target: `{self.target}`",
-            f"URLs: `{cov['urls_done']}/{cov['urls_total']}`",
-            f"Parameters: `{cov['params_done']}/{cov['params_total']}`",
-            f"Tests: `{cov['tests_done']}/{cov['tests_total']}`",
-            f"Confirmed vulnerabilities: `{cov['confirmed_vulnerabilities']}`",
-            f"Potential review leads: `{cov['potential_review_leads']}`",
-            f"Informational observations: `{cov['informational_observations']}`",
-            f"Requests: `{cov['requests']}`",
-            f"Timeouts: `{cov['timeouts']}`",
-            "",
-            "## Top parameters",
-        ]
+        lines = ["# VulnScope Autonomous Scan State", "", f"Target: `{self.target}`", f"URLs: `{cov['urls_done']}/{cov['urls_total']}`", f"Parameters: `{cov['params_done']}/{cov['params_total']}`", f"Tests: `{cov['tests_done']}/{cov['tests_total']}`", f"Confirmed vulnerabilities: `{cov['confirmed_vulnerabilities']}`", f"Potential review leads: `{cov['potential_review_leads']}`", f"Informational observations: `{cov['informational_observations']}`", f"Requests: `{cov['requests']}`", f"Timeouts: `{cov['timeouts']}`", "", "## Top parameters"]
         for item in sorted(self.params.values(), key=lambda p: p.risk_score, reverse=True)[:50]:
             lines.append(f"- `{item.name}` kind=`{item.kind}` risk=`{item.risk_score}` status=`{item.status}` url=`{item.url}`")
         path.write_text("\n".join(lines), encoding="utf-8")
