@@ -38,7 +38,7 @@ class RoutedTool:
 
 
 class ToolRouter:
-    """Selects eligible core and dynamic tools based on scan mode, inputs, and safety."""
+    """Selects eligible core, native research, and dynamic tools."""
 
     def __init__(self, tools: list[RoutedTool] | None = None, *, load_dynamic: bool = True) -> None:
         self.tools = tools or self.default_tools()
@@ -52,6 +52,7 @@ class ToolRouter:
             RoutedTool("browser_crawler", "Transparent Browser Crawler", "CrawlerAgent", "Discovery", "passive", "passive", ["target"], False),
             RoutedTool("parameter_inventory", "Parameter Inventory", "ParameterDiscoveryAgent", "Discovery", "passive", "passive", ["urls"], False),
             RoutedTool("deep_asset_discovery", "Deep Public Asset Discovery", "AssetDiscoveryAgent", "Discovery", "passive", "passive", ["target"], False),
+            RoutedTool("unified_research_orchestrator", "Unified Research Orchestrator", "UnifiedResearchOrchestrator", "Reasoning", "passive", "decision_layer", ["state"], False),
             RoutedTool("header_analyzer", "Header Analyzer", "HeaderAnalysisAgent", "Passive Analysis", "passive", "passive", ["root_response"], False),
             RoutedTool("cookie_analyzer", "Cookie Analyzer", "CookieAnalysisAgent", "Passive Analysis", "passive", "passive", ["root_response"], False),
             RoutedTool("metadata_checker", "robots/sitemap Metadata Checker", "ReconAgent", "Passive Analysis", "passive", "passive", ["target"], False),
