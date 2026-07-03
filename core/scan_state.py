@@ -127,7 +127,26 @@ class ScanState:
         items = [p for p in self.params.values() if p.status in {"queued", "review"}]
         return sorted(items, key=lambda p: p.risk_score, reverse=True)[:limit]
 
+    def finding_buckets(self) -> dict[str, int]:
+        confirmed = 0
+        potential = 0
+        informational = 0
+        for finding in self.findings:
+            status = str(finding.get("status") or "Potential").lower()
+            if status == "confirmed":
+                confirmed += 1
+            elif status.startswith("info"):
+                informational += 1
+            else:
+                potential += 1
+        return {
+            "confirmed_vulnerabilities": confirmed,
+            "potential_review_leads": potential,
+            "informational_observations": informational,
+        }
+
     def coverage(self) -> dict[str, int]:
+        buckets = self.finding_buckets()
         return {
             "urls_total": len(self.urls),
             "urls_done": sum(1 for item in self.urls.values() if item.status in {"done", "skipped", "failed"}),
@@ -136,6 +155,7 @@ class ScanState:
             "tests_total": len(self.tests),
             "tests_done": sum(1 for item in self.tests.values() if item.status in {"done", "skipped", "failed"}),
             "findings": len(self.findings),
+            **buckets,
             "requests": int(self.stats.get("requests", 0)),
             "timeouts": int(self.stats.get("timeouts", 0)),
             "skipped": int(self.stats.get("skipped", 0)),
@@ -182,7 +202,9 @@ class ScanState:
             f"URLs: `{cov['urls_done']}/{cov['urls_total']}`",
             f"Parameters: `{cov['params_done']}/{cov['params_total']}`",
             f"Tests: `{cov['tests_done']}/{cov['tests_total']}`",
-            f"Findings/leads: `{cov['findings']}`",
+            f"Confirmed vulnerabilities: `{cov['confirmed_vulnerabilities']}`",
+            f"Potential review leads: `{cov['potential_review_leads']}`",
+            f"Informational observations: `{cov['informational_observations']}`",
             f"Requests: `{cov['requests']}`",
             f"Timeouts: `{cov['timeouts']}`",
             "",
