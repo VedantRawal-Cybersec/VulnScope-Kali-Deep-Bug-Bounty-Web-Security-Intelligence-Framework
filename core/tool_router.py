@@ -38,7 +38,7 @@ class RoutedTool:
 
 
 class ToolRouter:
-    """Selects eligible core, native research, and dynamic tools."""
+    """Selects eligible core, native research, and installed tools."""
 
     def __init__(self, tools: list[RoutedTool] | None = None, *, load_dynamic: bool = True) -> None:
         self.tools = tools or self.default_tools()
@@ -69,9 +69,17 @@ class ToolRouter:
 
     @staticmethod
     def dynamic_tools() -> list[RoutedTool]:
-        registry = ToolRegistry()
+        try:
+            from core.tool_manager import ToolManager
+            manager = ToolManager()
+            manager.reconcile_installed_tools(approve_known=True, enable=True)
+            registry = manager.registry
+        except Exception:
+            registry = ToolRegistry()
         routed: list[RoutedTool] = []
-        for tool in registry.list(enabled_only=True):
+        for tool in registry.list(enabled_only=False):
+            has_command = bool(tool.run)
+            ready = bool(tool.enabled and tool.approved_for_run and has_command)
             routed.append(
                 RoutedTool(
                     tool_id="dynamic:" + tool.tool_id,
@@ -79,11 +87,11 @@ class ToolRouter:
                     agent_owner="DynamicToolScheduler",
                     category=PHASE_CATEGORY.get(tool.phase, "Discovery"),
                     required_scan_mode="lab" if tool.phase == "exploitation" else "safe-active",
-                    safety_level="dynamic_approval_gated",
+                    safety_level="approval_gated_installed_tool",
                     required_inputs=["target"],
                     finding_capability=True,
-                    status="queued" if tool.approved_for_run else "blocked_by_safety",
-                    reason="registered dynamic tool" if tool.approved_for_run else "requires run approval",
+                    status="queued" if ready else "skipped",
+                    reason="ready" if ready else ("missing run command" if not has_command else "not enabled or not approved"),
                 )
             )
         return routed
@@ -119,7 +127,7 @@ class ToolRouter:
     def mark(self, tool_id: str, status: str, reason: str = "") -> None:
         status = status if status in STATUS_VALUES else "failed"
         for tool in self.tools:
-            if tool.tool_id == tool_id:
+            if tool.tool_id == tool_id or tool.tool_id == "dynamic:" + tool_id:
                 tool.status = status
                 tool.reason = reason
                 tool.last_run_timestamp = time.time()
