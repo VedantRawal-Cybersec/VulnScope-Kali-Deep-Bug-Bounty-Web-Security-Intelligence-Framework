@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 from cai_scope_guard import normalize_target
 from core.agent_runtime import AgentRuntime
 from core.agentic_framework import AgentRegistry, HandoffManager, TraceLogger, TurnManager
-from core.ai_planner import AIPlanner
 from core.browser_crawler import BrowserCrawler
+from core.cai_react_engine import SafeCAIReactAgent
 from core.crawler_v2 import CrawlerV2
 from core.evidence_store import EvidenceStore
 from core.http_client_v2 import SafeHttpClientV2
@@ -20,7 +20,6 @@ from core.live_dashboard import LiveDashboard
 from core.llm_gateway import LLMGateway
 from core.llm_memory import LLMMemory
 from core.llm_policy import LLMPolicy
-from core.parameter_inventory import dedupe_by_cluster
 from core.reasoning_stream import ReasoningStream
 from core.reporting_v2 import ReportingV2
 from core.safe_analyzers import PassiveAnalyzers
@@ -28,7 +27,7 @@ from core.scan_state import ScanState
 from core.test_engine import TestEngine
 from core.tool_router import ToolRouter
 
-VERSION = "1.10.1-dashboard-counters-fixed"
+VERSION = "1.11.0-safe-cai-react-llm"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -43,7 +42,7 @@ def parse_headers(values: list[str]) -> dict[str, str]:
 
 
 class AutonomousScanEngine:
-    """CAI-style defensive scan coordinator with Ollama gateway, public reasoning, memory, and tool routing."""
+    """CAI-style defensive scan coordinator with Ollama ReAct planning, tool execution, tracing, and guardrails."""
 
     TOOL_ALIASES = {
         "bootstrap": "llm_public_reasoning",
@@ -55,14 +54,19 @@ class AutonomousScanEngine:
         "metadata_checker": "metadata_checker",
         "safe_crawler": "crawler_v2",
         "crawler_v2": "crawler_v2",
+        "crawl": "crawler_v2",
         "browser_crawler": "browser_crawler",
         "parameter_inventory": "parameter_inventory",
-        "ai_planner": "llm_public_reasoning",
+        "cai_react_planner": "llm_public_reasoning",
+        "summarize_surface": "llm_public_reasoning",
+        "review_scripts": "js_route_review",
         "safe_canary_tester": "safe_canary_reflection",
+        "test_parameter": "safe_canary_reflection",
         "reflection_canary": "safe_canary_reflection",
         "redirect_review": "safe_canary_reflection",
         "classification_review": "classification_review",
         "report_generator": "report_generator",
+        "write_reports": "report_generator",
         "llm_gateway.health_check": "llm_public_reasoning",
         "llm_gateway.plan_actions": "llm_public_reasoning",
     }
@@ -107,7 +111,6 @@ class AutonomousScanEngine:
         self.crawler = CrawlerV2(state=self.state, client=self.client, max_pages=max_pages, max_depth=max_depth, include_subdomains=include_subdomains, dashboard=self.dashboard)
         self.tester = TestEngine(state=self.state, client=self.client, dashboard=self.dashboard)
         self.analyzers = PassiveAnalyzers(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard)
-        self.planner = AIPlanner(ollama_url=self.ollama_url, model=self.ollama_model)
         self.agent_registry = AgentRegistry()
         self.trace = TraceLogger(self.target, scan_id=self.dashboard.snapshot.scan_id)
         self.handoffs = HandoffManager(self.trace, self.dashboard)
@@ -121,6 +124,7 @@ class AutonomousScanEngine:
         self.agent_runtime = AgentRuntime(target=self.target, dashboard=self.dashboard, trace=self.trace, reasoning=self.reasoning)
         self.extra_reports: dict[str, str] = {}
         self.ollama_status: dict[str, Any] = {}
+        self.react_summary: dict[str, Any] = {}
         self._sync_dashboard_matrix("llm_public_reasoning", status="queued")
 
     def _surface(self) -> dict[str, int]:
@@ -149,18 +153,13 @@ class AutonomousScanEngine:
             self.current_router_tool = tool_id
         matrix = self.tool_router.matrix()
         counts = matrix.get("counts", {})
-        running = int(counts.get("running", 0))
-        completed = int(counts.get("completed", 0))
-        failed = int(counts.get("failed", 0)) + int(counts.get("timed_out", 0))
-        skipped = int(counts.get("skipped", 0))
-        blocked = int(counts.get("blocked_by_scope", 0)) + int(counts.get("blocked_by_safety", 0))
         return {
             "tools_total": int(matrix.get("total", 0)),
-            "tools_running": running,
-            "tools_completed": completed,
-            "tools_failed": failed,
-            "tools_skipped": skipped,
-            "tools_blocked": blocked,
+            "tools_running": int(counts.get("running", 0)),
+            "tools_completed": int(counts.get("completed", 0)),
+            "tools_failed": int(counts.get("failed", 0)) + int(counts.get("timed_out", 0)),
+            "tools_skipped": int(counts.get("skipped", 0)),
+            "tools_blocked": int(counts.get("blocked_by_scope", 0)) + int(counts.get("blocked_by_safety", 0)),
         }
 
     def _turn_count(self) -> int:
@@ -169,9 +168,9 @@ class AutonomousScanEngine:
             runtime_turns = int(self.agent_runtime.summary().get("turns", 0))
         except Exception:
             runtime_turns = 0
-        return max(int(self.turns.index), len(self.trace.events), runtime_turns)
+        return max(int(self.turns.index), len(self.trace.events), runtime_turns, int(self.react_summary.get("turns", 0) or 0))
 
-    def _dashboard(self, phase: str, action: str, *, progress: int = 0, evidence: str = "", agent: str = "SupervisorAgent", tool: str = "autonomous_engine", decision: str = "—", url: str | None = None, parameter: str = "") -> None:
+    def _dashboard(self, phase: str, action: str, *, progress: int = 0, evidence: str = "", agent: str = "SupervisorAgent", tool: str = "autonomous_engine", decision: str = "-", url: str | None = None, parameter: str = "") -> None:
         current_url = url or self.target
         parsed = urlparse(current_url)
         query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
@@ -191,10 +190,10 @@ class AutonomousScanEngine:
             request_line="GET " + (parsed.path or "/") + (("?" + parsed.query) if parsed.query else ""),
             path=parsed.path or "/",
             parameters=parameter or query,
-            probe_string="autonomous-engine",
-            hypothesis="agents coordinate scope, recon, crawl, parameter discovery, safe tests, validation, scoring, and reporting",
+            probe_string="safe-cai-react",
+            hypothesis="LLM ReAct planner chooses the next safe tool; deterministic guardrails enforce scope and zero-impact execution",
             evidence=evidence or self._coverage_text(),
-            safety_status="same-scope • GET/HEAD only • request budget • resumable state • no target data modification",
+            safety_status="same-scope • GET/HEAD only • request budget • no credentials/exploit payloads/destructive actions",
             **self._surface(),
             **matrix_counts,
         )
@@ -202,17 +201,16 @@ class AutonomousScanEngine:
 
     def run_ollama_check(self) -> None:
         turn_id = self.turns.next_turn()
-        self.handoffs.handoff("SupervisorAgent", "OllamaReasoningAgent", phase="Diagnostics", message="checking Ollama gateway and fallback", progress_percent=2)
+        self.handoffs.handoff("SupervisorAgent", "OllamaReasoningAgent", phase="Diagnostics", message="checking Ollama gateway and deterministic fallback", progress_percent=2)
         health = self.llm.health_check(force=True)
         self.ollama_status = health.to_dict()
-        planner_mode = "advisory-enabled" if os.getenv("VULNSCOPE_USE_OLLAMA_PLANNER", "1") == "1" else "deterministic-only"
-        label = f"Connected • {health.fast_model} • {planner_mode}" if health.ok else f"Fallback • {health.fast_model} • {health.error or 'unreachable'}"
+        label = f"Connected • {health.fast_model} • safe-cai-react" if health.ok else f"Fallback • {health.fast_model} • {health.error or 'unreachable'}"
         self.dashboard.update(ollama_status=label, turn=self._turn_count(), **self._sync_dashboard_matrix("llm_public_reasoning"))
         self.reasoning.publish(
             turn_id=turn_id,
             agent="OllamaReasoningAgent",
             observation=f"Ollama health ok={health.ok}; model_available={health.model_available}",
-            hypothesis="LLM is advisory and deterministic scanning remains authoritative",
+            hypothesis="LLM is advisory; SafeCAIReactAgent validates every tool decision before execution",
             decision=label,
             selected_tool="llm_gateway.health_check",
             safety="LLM failure cannot block crawling, extraction, testing, or reporting",
@@ -232,30 +230,30 @@ class AutonomousScanEngine:
                 self.reasoning.publish(
                     agent="OllamaReasoningAgent",
                     observation="LLM reviewed sanitized scan surface",
-                    hypothesis="model can prioritize but cannot execute without guardrails",
+                    hypothesis="model can prioritize, but SafeCAIReactAgent and ToolRouter enforce execution",
                     decision=item,
                     selected_tool="llm_gateway.plan_actions",
-                    safety="advisory only; deterministic planner and scope guard enforce execution",
+                    safety="advisory only; same-scope safe tools only",
                     evidence_summary=json.dumps(self._surface(), ensure_ascii=False),
-                    next_action="continue deterministic scan loop",
+                    next_action="enter safe CAI ReAct loop",
                     progress_percent=progress,
                 )
         elif not response.ok:
             self.reasoning.publish(
                 agent="OllamaReasoningAgent",
                 observation="LLM surface summary unavailable",
-                hypothesis="fallback mode is sufficient for scan progress",
+                hypothesis="fallback ReAct decisions are sufficient for scan progress",
                 decision=response.error or "LLM unavailable",
                 selected_tool="llm_gateway.plan_actions",
                 safety="fallback deterministic scan continues",
-                next_action="continue deterministic scan loop",
+                next_action="enter deterministic safe CAI ReAct loop",
                 progress_percent=progress,
             )
 
     def bootstrap(self) -> None:
-        self._dashboard("Bootstrap", "Starting autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
+        self._dashboard("Bootstrap", "Starting safe CAI ReAct autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
         self.agent_runtime.run_turn(agent="SupervisorAgent", observation="scan requested for authorized target", decision="start scope validation", selected_tool="scope_guard", phase="Bootstrap", handoff_to="ScopeAgent", progress_percent=1)
-        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode)
+        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="safe-cai-react")
         self.run_ollama_check()
         self.handoffs.handoff("SupervisorAgent", "ScopeAgent", phase="Scope", message="target normalized and authorization confirmed", target_url=self.target, path=urlparse(self.target).path or "/", progress_percent=4)
         root = self.client.get(self.target, purpose="target-availability")
@@ -269,7 +267,7 @@ class AutonomousScanEngine:
         self.state.stats["forms"] = crawl_result.forms
         self.state.stats["scripts"] = crawl_result.scripts
         self.state.add_event("INFO", "crawler completed", **crawl_result.__dict__)
-        self._dashboard("Crawler v2", "Crawl completed", progress=32, evidence=self._coverage_text(), agent="CrawlerAgent", tool="safe_crawler")
+        self._dashboard("Crawler v2", "Initial crawl completed", progress=32, evidence=self._coverage_text(), agent="CrawlerAgent", tool="safe_crawler")
         self.handoffs.handoff("CrawlerAgent", "JSExposureAgent", phase="JavaScript Route Review", message="extracting script route hints", progress_percent=34)
         js_routes = self.crawler.analyze_scripts(limit=80)
         self.state.add_event("INFO", "script route review completed", routes=js_routes)
@@ -283,68 +281,33 @@ class AutonomousScanEngine:
                 self.state.add_event("INFO", "post-browser crawl completed", **post_browser.__dict__)
         self.memory.update_from_state(self.state)
         self._llm_surface_summary(progress=40)
-        self.handoffs.handoff("CrawlerAgent", "ParameterDiscoveryAgent", phase="Parameter Discovery", message="parameter inventory ready" if self.state.params else "no safe GET/query parameters discovered", progress_percent=40)
+        self.handoffs.handoff("CrawlerAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="starting LLM-driven safe tool loop", progress_percent=40)
         if not self.state.params:
             self._dashboard("Parameter Discovery", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=40, evidence=self._coverage_text(), agent="ParameterDiscoveryAgent", tool="parameter_inventory")
         self.state.save()
 
-    def next_test_name(self, param_kind: str, proposed: str) -> str:
-        if self.scan_mode == "passive":
-            return "classification_review"
-        if proposed in {"reflection_canary", "error_behavior", "redirect_review", "classification_review"}:
-            if proposed == "redirect_review" and param_kind not in {"route-like", "reference-like"}:
-                return "reflection_canary"
-            return proposed
-        if param_kind in {"route-like", "reference-like"}:
-            return "redirect_review"
-        return "reflection_canary"
-
     def run_planned_tests(self) -> None:
-        actions = 0
-        self.handoffs.handoff("ParameterDiscoveryAgent", "PlannerAgent", phase="AI Planning", message="building turn-by-turn safe test queue", progress_percent=42)
-        while actions < self.max_actions and self.client.budget_remaining() > 0:
-            actions += 1
-            turn_id = self.turns.next_turn()
-            progress = 42 + int(actions * 45 / max(1, self.max_actions))
-            decision = self.planner.decide(self.state)
-            self.state.add_event("INFO", "planner decision", **decision.__dict__)
-            self.trace.log(turn_id=turn_id, agent_name="PlannerAgent", tool_name="ai_planner", phase="AI Planning", status="completed", target_url=decision.url or self.target, parameter=decision.parameter, message=decision.reason, progress_percent=progress)
-            self.reasoning.publish(agent="PlannerAgent", observation=self._coverage_text(), hypothesis="select the next safe deterministic action", decision=f"{decision.action}: {decision.reason}", selected_tool="ai_planner", safety="action must be same-scope and safe-mode eligible", evidence_summary=f"source={decision.source} confidence={decision.confidence}", next_action=decision.action, turn_id=turn_id, progress_percent=progress)
-            self._dashboard("AI Planning", f"Decision: {decision.action} — {decision.reason}", progress=progress, agent="PlannerAgent", tool="ai_planner", decision=decision.action, url=decision.url or self.target, parameter=decision.parameter)
-            if decision.action == "crawl":
-                self.handoffs.handoff("PlannerAgent", "CrawlerAgent", phase="Crawler v2", message="continuing crawl from queued URLs", progress_percent=progress)
-                self.crawler.crawl()
-                self.crawler.analyze_scripts(limit=20)
-                continue
-            if decision.action == "review_scripts":
-                self.handoffs.handoff("PlannerAgent", "JSExposureAgent", phase="JavaScript Route Review", message="reviewing script route hints", progress_percent=progress)
-                self.crawler.analyze_scripts(limit=80)
-                continue
-            if decision.action == "test_parameter":
-                param = AIPlanner.find_param(self.state, decision.url, decision.parameter)
-                if param is None:
-                    queued = dedupe_by_cluster(self.state.queued_params(limit=self.max_params), max_per_cluster=2)
-                    param = queued[0] if queued else None
-                if param is None:
-                    self.state.add_event("INFO", "no parameter available for testing")
-                    self._dashboard("Safe Testing", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=progress, agent="SafeCanaryTestingAgent", tool="safe_canary_tester")
-                    break
-                if len(param.tested) >= 3:
-                    param.status = "done"
-                    self.state.save()
-                    continue
-                test_name = self.next_test_name(param.kind, decision.test_name)
-                if test_name in param.tested:
-                    test_name = "classification_review" if "classification_review" not in param.tested else "baseline"
-                self.handoffs.handoff("PlannerAgent", "SafeCanaryTestingAgent", phase="Safe Testing", message=f"running {test_name} for {param.name}", target_url=param.url, path=urlparse(param.url).path or "/", parameter=param.name, progress_percent=progress)
-                self.trace.log(turn_id=turn_id, agent_name="SafeCanaryTestingAgent", tool_name=test_name, phase="Safe Testing", status="running", target_url=param.url, path=urlparse(param.url).path or "/", parameter=param.name, message="executing safe parameter test", progress_percent=progress)
-                outcome = self.tester.run_test(param, test_name)
-                self.trace.log(turn_id=turn_id, agent_name="FindingValidationAgent", tool_name=test_name, phase="Validation", status=outcome.status, target_url=param.url, path=urlparse(param.url).path or "/", parameter=param.name, message=outcome.message, evidence_summary=str(outcome.evidence_id or ""), progress_percent=progress)
-                self._dashboard("Validation", f"{test_name} finished: {outcome.status}", progress=progress, agent="FindingValidationAgent", tool=test_name, decision=outcome.status, url=param.url, parameter=param.name)
-                continue
-            if decision.action in {"write_reports", "stop"}:
-                break
-        self.state.stats["planner_actions"] = actions
+        self.handoffs.handoff("ParameterDiscoveryAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="building ReAct decisions from current scan state", progress_percent=42)
+        if self.client.budget_remaining() <= 0:
+            self.state.add_event("WARNING", "request budget exhausted before ReAct loop")
+            return
+        agent = SafeCAIReactAgent(
+            target=self.target,
+            scan_mode=self.scan_mode,
+            state=self.state,
+            crawler=self.crawler,
+            tester=self.tester,
+            llm=self.llm,
+            dashboard=self.dashboard,
+            trace=self.trace,
+            turns=self.turns,
+            tool_router=self.tool_router,
+            max_turns=self.max_actions,
+            max_params=self.max_params,
+        )
+        self.react_summary = agent.run()
+        self.state.stats["react_turns"] = int(self.react_summary.get("turns", 0))
+        self.state.add_event("INFO", "safe CAI ReAct loop completed", turns=self.state.stats["react_turns"])
         self.memory.update_from_state(self.state)
         self.state.save()
 
@@ -358,7 +321,12 @@ class AutonomousScanEngine:
         self.extra_reports.update(self.trace.write_reports())
         self.extra_reports.update(self.reasoning.write_reports())
         self.extra_reports.update(self.memory.write_reports())
-        self.extra_reports["tool_router_matrix"] = json.dumps(self.tool_router.matrix(), ensure_ascii=False)
+        react_path = self.state.out_dir / "cai-react-summary.json"
+        react_path.write_text(json.dumps(self.react_summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.extra_reports["cai_react_summary_json"] = str(react_path)
+        matrix_path = self.state.out_dir / "tool-router-matrix.json"
+        matrix_path.write_text(json.dumps(self.tool_router.matrix(), indent=2, ensure_ascii=False), encoding="utf-8")
+        self.extra_reports["tool_router_matrix_json"] = str(matrix_path)
         reports = ReportingV2(state=self.state, extra_reports=self.extra_reports).write_all()
         self.tool_router.mark("report_generator", "completed", "reports written")
         self.dashboard.report_paths.update(reports)
@@ -371,19 +339,46 @@ class AutonomousScanEngine:
             self.bootstrap()
             self.run_planned_tests()
             reports = self.write_reports()
-            self._dashboard("Final Dashboard", "Autonomous scan completed", progress=100, evidence=self._coverage_text(), agent="ReportAgent", tool="report_generator")
-            return {"status": "completed", "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "runtime_ms": int((time.time() - started) * 1000), "coverage": self.state.coverage(), "ollama": self.ollama_status, "llm_policy": self.llm_policy.as_dict(), "agent_runtime": self.agent_runtime.summary(), "tool_router": self.tool_router.matrix(), "reports": reports, "safety": {"same_scope_only": True, "transparent_user_agent": True, "request_budget": True, "adaptive_backoff": True, "resume_supported": True, "hidden_routing": False, "target_data_modification": False}}
+            self._dashboard("Final Dashboard", "Safe CAI ReAct scan completed", progress=100, evidence=self._coverage_text(), agent="ReportAgent", tool="report_generator")
+            return {
+                "status": "completed",
+                "version": VERSION,
+                "target": self.target,
+                "scan_mode": self.scan_mode,
+                "runtime_ms": int((time.time() - started) * 1000),
+                "coverage": self.state.coverage(),
+                "surface": self._surface(),
+                "ollama": self.ollama_status,
+                "llm_policy": self.llm_policy.as_dict(),
+                "agent_runtime": self.agent_runtime.summary(),
+                "cai_react": self.react_summary,
+                "tool_router": self.tool_router.matrix(),
+                "reports": reports,
+                "safety": {
+                    "same_scope_only": True,
+                    "transparent_user_agent": True,
+                    "request_budget": True,
+                    "adaptive_backoff": True,
+                    "resume_supported": True,
+                    "allowed_tools_only": True,
+                    "hidden_routing": False,
+                    "credential_testing": False,
+                    "exploit_payloads": False,
+                    "target_data_modification": False,
+                    "destructive_actions": False,
+                },
+            }
         except KeyboardInterrupt:
             self.state.add_event("WARNING", "interrupted by user")
             reports = self.write_reports()
-            return {"status": "interrupted", "version": VERSION, "target": self.target, "coverage": self.state.coverage(), "reports": reports}
+            return {"status": "interrupted", "version": VERSION, "target": self.target, "coverage": self.state.coverage(), "cai_react": self.react_summary, "reports": reports}
         finally:
-            self.dashboard.stop(final=False)
+            self.dashboard.stop(final=True)
             self.state.save()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VulnScope autonomous safe scan engine")
+    parser = argparse.ArgumentParser(description="VulnScope safe CAI-style autonomous scan engine")
     parser.add_argument("--target", required=True)
     parser.add_argument("--scan-mode", default="passive", choices=["passive", "safe-active", "lab"])
     parser.add_argument("--include-subdomains", action="store_true")
