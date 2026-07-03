@@ -14,8 +14,10 @@ class _LLMResponse:
 class _FakeLLM:
     def __init__(self, parsed):
         self.parsed = parsed
+        self.calls = 0
 
     def chat_json(self, **kwargs):
+        self.calls += 1
         return _LLMResponse(self.parsed)
 
 
@@ -76,10 +78,29 @@ def test_ai_planner_fallback_prefers_parameter_testing(monkeypatch, tmp_path):
     assert decision.action in {"test_parameter", "review_scripts", "write_reports"}
 
 
+def _agent(state, llm=None, scan_mode="safe-active", monkeypatch=None):
+    if monkeypatch is not None:
+        monkeypatch.setenv("VULNSCOPE_DISABLE_LLM_PLANNER", "1")
+    return SafeCAIReactAgent(
+        target="https://example.com",
+        scan_mode=scan_mode,
+        state=state,
+        crawler=object(),
+        tester=_FakeTester(),
+        llm=llm or _FakeLLM({"tool": "summarize_surface", "arguments": {}, "confidence": 70}),
+        dashboard=None,
+        trace=None,
+        turns=None,
+        tool_router=None,
+        max_turns=5,
+        max_params=20,
+    )
+
+
 def test_cai_react_decision_rejects_unsupported_tools():
     decision = ReactDecision(
-        reasoning="try unsupported external exploit tool",
-        tool="sqlmap_test",
+        reasoning="try unsupported external tool",
+        tool="unsupported_external_tool",
         arguments={"url": "https://example.com/search?q=x"},
         confidence=90,
         source="ollama",
@@ -112,6 +133,48 @@ def test_cai_react_binds_llm_parameter_request_to_discovered_input(monkeypatch, 
             "confidence": 99,
         }
     )
+    agent = _agent(state, llm=llm, monkeypatch=monkeypatch)
+    monkeypatch.delenv("VULNSCOPE_DISABLE_LLM_PLANNER", raising=False)
+    decision = agent.decide()
+    assert decision.tool == "test_parameter"
+    assert decision.arguments["url"] == "https://example.com/search?q=x"
+    assert decision.arguments["parameter"] == "q"
+
+
+def test_parameter_progression_does_not_repeat_reflection(monkeypatch, tmp_path):
+    state = ScanState("https://example.com", resume=False)
+    state.urls["https://example.com/"].status = "done"
+    param = ParamRecord(url="https://example.com/search?q=x", name="q", value="x", kind="search-like", risk_score=80)
+    state.add_param(param)
+    agent = _agent(state, monkeypatch=monkeypatch)
+    first = agent.decide()
+    assert first.arguments["test_name"] == "reflection_canary"
+    param.tested.append("reflection_canary")
+    param.status = "review"
+    second = agent.decide()
+    assert second.tool == "test_parameter"
+    assert second.arguments["test_name"] == "classification_review"
+    param.tested.append("classification_review")
+    third = agent.decide()
+    assert third.tool == "write_reports"
+
+
+def test_object_like_parameters_get_classification_only(monkeypatch, tmp_path):
+    state = ScanState("https://example.com", resume=False)
+    state.urls["https://example.com/"].status = "done"
+    state.add_param(ParamRecord(url="https://example.com/api/user?id=1", name="id", value="1", kind="object-like", risk_score=90))
+    agent = _agent(state, monkeypatch=monkeypatch)
+    decision = agent.decide()
+    assert decision.tool == "test_parameter"
+    assert decision.arguments["test_name"] == "classification_review"
+
+
+def test_llm_is_paced_not_called_every_turn(monkeypatch, tmp_path):
+    monkeypatch.setenv("VULNSCOPE_LLM_DECISION_INTERVAL", "3")
+    state = ScanState("https://example.com", resume=False)
+    state.urls["https://example.com/"].status = "done"
+    state.add_param(ParamRecord(url="https://example.com/search?q=x", name="q", value="x", kind="search-like", risk_score=80))
+    llm = _FakeLLM({"tool": "test_parameter", "arguments": {"url": "https://example.com/search?q=x", "parameter": "q", "test_name": "reflection_canary"}, "confidence": 90})
     agent = SafeCAIReactAgent(
         target="https://example.com",
         scan_mode="safe-active",
@@ -126,7 +189,6 @@ def test_cai_react_binds_llm_parameter_request_to_discovered_input(monkeypatch, 
         max_turns=5,
         max_params=20,
     )
-    decision = agent.decide()
-    assert decision.tool == "test_parameter"
-    assert decision.arguments["url"] == "https://example.com/search?q=x"
-    assert decision.arguments["parameter"] == "q"
+    agent.decide()
+    agent.decide()
+    assert llm.calls == 1
