@@ -31,7 +31,7 @@ from core.scan_state import ScanState
 from core.test_engine import TestEngine
 from core.tool_router import ToolRouter
 
-VERSION = "1.16.0-unified-research-orchestration"
+VERSION = "1.16.1-external-tool-repair"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -46,7 +46,7 @@ def parse_headers(values: list[str]) -> dict[str, str]:
 
 
 class AutonomousScanEngine:
-    """Phase-stable defensive scan coordinator with native research orchestration."""
+    """Phase-stable defensive scan coordinator with repaired external tool integration."""
 
     TOOL_ALIASES = {
         "bootstrap": "llm_public_reasoning",
@@ -130,7 +130,7 @@ class AutonomousScanEngine:
         self.current_router_tool: str | None = None
         self.agent_runtime = AgentRuntime(target=self.target, dashboard=self.dashboard, trace=self.trace, reasoning=self.reasoning)
         self.phase_runner = PhaseRunner(state=self.state, dashboard=self.dashboard, trace=self.trace)
-        self.dynamic_scheduler = PhaseScheduler(dashboard=self.dashboard, report_dir=self.state.out_dir)
+        self.dynamic_scheduler = PhaseScheduler(dashboard=self.dashboard, report_dir=self.state.out_dir, state=self.state, scan_mode=self.scan_mode)
         self.research_orchestrator = UnifiedResearchOrchestrator(state=self.state, dashboard=self.dashboard)
         self.extra_reports: dict[str, str] = {}
         self.ollama_status: dict[str, Any] = {}
@@ -366,25 +366,7 @@ class AutonomousScanEngine:
         finally:
             self.dashboard.stop(final=True)
             self.state.save()
-        return {
-            "status": status,
-            "version": VERSION,
-            "target": self.target,
-            "scan_mode": self.scan_mode,
-            "runtime_ms": int((time.time() - started) * 1000),
-            "coverage": self.state.coverage(),
-            "surface": self._surface(),
-            "phase_runner": self.phase_runner.summary(),
-            "research_orchestration": self.research_summary,
-            "dynamic_tools": self.dynamic_tool_summary,
-            "ollama": self.ollama_status,
-            "llm_policy": self.llm_policy.as_dict(),
-            "agent_runtime": self.agent_runtime.summary(),
-            "cai_react": self.react_summary,
-            "tool_router": self.tool_router.matrix(),
-            "reports": reports,
-            "safety": {"same_scope_only": True, "request_budget": True, "approval_gated_dynamic_tools": True, "copied_offensive_code": False, "embedded_attack_payloads": False, "credential_testing": False, "target_data_modification": False, "destructive_actions": False},
-        }
+        return {"status": status, "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "runtime_ms": int((time.time() - started) * 1000), "coverage": self.state.coverage(), "surface": self._surface(), "phase_runner": self.phase_runner.summary(), "research_orchestration": self.research_summary, "dynamic_tools": self.dynamic_tool_summary, "ollama": self.ollama_status, "llm_policy": self.llm_policy.as_dict(), "agent_runtime": self.agent_runtime.summary(), "cai_react": self.react_summary, "tool_router": self.tool_router.matrix(), "reports": reports, "safety": {"same_scope_only": True, "request_budget": True, "approval_gated_dynamic_tools": True, "copied_offensive_code": False, "embedded_attack_payloads": False, "credential_testing": False, "target_data_modification": False, "destructive_actions": False}}
 
 
 def main() -> int:
