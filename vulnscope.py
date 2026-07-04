@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
 
-VERSION = "1.16.1-external-tool-repair"
+VERSION = "1.17.2-ai-tool-auto-configurator"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 TOOLS_TXT = Path("tools.txt")
@@ -26,7 +26,7 @@ YELLOW = "\033[33m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║        Batch Tool Installer → Phase Router → Deep Discovery → Evidence       ║
+║        AI Tool Configurator → Phase Router → Deep Discovery → Evidence       ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -121,20 +121,7 @@ def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = F
 
 def final_summary(target: str, history: list[dict]) -> None:
     host = host_from_target(target)
-    reports = {
-        "dynamic_tool_registry": "tools/registry.json",
-        "dynamic_tool_phase_summary": f"reports/output/cai-superior/{host}/dynamic-tool-phase-summary.json",
-        "batch_tool_install_log": "logs/tool_install.log",
-        "vulnscope_log": "logs/vulnscope.log",
-        "phase_runner_summary": f"reports/output/cai-superior/{host}/phase-runner-summary.json",
-        "owasp_coverage": f"reports/output/cai-superior/{host}/owasp-coverage-report.md",
-        "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md",
-        "autonomous_report": f"reports/output/cai-superior/{host}/autonomous-scan-report.md",
-        "autonomous_state": f"reports/output/cai-superior/{host}/autonomous-scan-state.json",
-        "parameter_inventory_v2": f"reports/output/cai-superior/{host}/parameter-inventory-v2.json",
-        "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json",
-        "authorization": str(AUTH),
-    }
+    reports = {"dynamic_tool_registry": "tools/registry.json", "dynamic_tool_phase_summary": f"reports/output/cai-superior/{host}/dynamic-tool-phase-summary.json", "batch_tool_install_log": "logs/tool_install.log", "vulnscope_log": "logs/vulnscope.log", "phase_runner_summary": f"reports/output/cai-superior/{host}/phase-runner-summary.json", "owasp_coverage": f"reports/output/cai-superior/{host}/owasp-coverage-report.md", "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md", "autonomous_report": f"reports/output/cai-superior/{host}/autonomous-scan-report.md", "autonomous_state": f"reports/output/cai-superior/{host}/autonomous-scan-state.json", "parameter_inventory_v2": f"reports/output/cai-superior/{host}/parameter-inventory-v2.json", "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json", "authorization": str(AUTH)}
     payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION, "batch_tool_installer": True, "dynamic_tool_registry": True, "website_dashboard": False}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -182,7 +169,7 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
     append_headers(engine_cmd, args.header)
     history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
     ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope 1.16.1 {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return {"label": f"VulnScope {VERSION} {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
 
 
 def run_cai(target: str, args: argparse.Namespace) -> dict:
@@ -215,6 +202,21 @@ def handle_tool_registry(args: argparse.Namespace) -> int | None:
     manager = ToolManager()
     if args.edit_tools:
         return edit_tools_file()
+    if args.ai_analyze_tool:
+        from core.ai_tool_auto_configurator import AIToolAutoConfigurator
+        payload = AIToolAutoConfigurator(timeout=args.ai_tool_probe_timeout, use_llm=not args.no_ai_tool_llm).configure(args.ai_analyze_tool, install=False, approve_install=False, approve_run=False, enable=False)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if payload.get("status") not in {"BLOCKED"} else 2
+    if args.ai_add_tool:
+        from core.ai_tool_auto_configurator import AIToolAutoConfigurator
+        payload = AIToolAutoConfigurator(timeout=args.ai_tool_probe_timeout, use_llm=not args.no_ai_tool_llm).configure(args.ai_add_tool, install=args.ai_tool_install, approve_install=args.ai_tool_install, approve_run=args.ai_tool_approve_run, enable=not args.ai_tool_disable)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if payload.get("status") in {"READY", "REGISTERED_REQUIRES_APPROVAL", "NEEDS_MANUAL_REVIEW"} else 2
+    if args.ai_add_tool_file:
+        from core.ai_tool_auto_configurator import AIToolAutoConfigurator
+        payload = AIToolAutoConfigurator(timeout=args.ai_tool_probe_timeout, use_llm=not args.no_ai_tool_llm).configure_file(args.ai_add_tool_file, install=args.ai_tool_install, approve_install=args.ai_tool_install, approve_run=args.ai_tool_approve_run, enable=not args.ai_tool_disable)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
     if args.list_tools:
         print(json.dumps({"tools": manager.list_tools()}, indent=2, ensure_ascii=False))
         return 0
@@ -241,6 +243,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
     parser.add_argument("--add-tool", nargs="?", const="__prompt__", default=None, help="Simple tool import. Use --add-tool -tools.txt for batch file import.")
     parser.add_argument("--add-tool-file", default="", help="Batch install GitHub tool URLs from a file. Usually produced by --add-tool -tools.txt.")
+    parser.add_argument("--ai-analyze-tool", default="", help="Clone and deeply analyze a GitHub tool repo without approving execution.")
+    parser.add_argument("--ai-add-tool", default="", help="AI-configure a GitHub tool repo, generate manifest.json, and register it.")
+    parser.add_argument("--ai-add-tool-file", default="", help="AI-configure GitHub tool repos from a file, one URL per line.")
+    parser.add_argument("--ai-tool-install", action="store_true", help="Allow detected install commands during AI tool configuration.")
+    parser.add_argument("--ai-tool-approve-run", action="store_true", help="Approve safe passive/safe-active tools for run after configuration. Use only after review.")
+    parser.add_argument("--ai-tool-disable", action="store_true", help="Register AI-configured tool but leave it disabled.")
+    parser.add_argument("--ai-tool-probe-timeout", type=int, default=25)
+    parser.add_argument("--no-ai-tool-llm", action="store_true")
     parser.add_argument("--list-tools", action="store_true", help="List dynamic tools registered in tools/registry.json.")
     parser.add_argument("--edit-tools", action="store_true", help="Open tools.txt in nano or $EDITOR for editing.")
     parser.add_argument("--approve-tool", default="", help="Approve an existing dynamic tool by id.")
