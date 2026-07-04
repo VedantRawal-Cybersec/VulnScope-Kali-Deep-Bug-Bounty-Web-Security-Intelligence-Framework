@@ -1,0 +1,25 @@
+{
+  "profile_name": "owned-site-deep-safe-active",
+  "description": "Default one-command profile for owned or explicitly authorized websites.",
+  "scan_mode": "bugbounty",
+  "internal_engine_scan_mode": "safe-active",
+  "include_subdomains": true,
+  "browser": true,
+  "deep_assets": true,
+  "dynamic_tools": true,
+  "max_pages": 350,
+  "max_depth": 5,
+  "max_params": 600,
+  "request_timeout": 12,
+  "delay": 0.25,
+  "request_budget": 2500,
+  "max_actions": 320,
+  "asset_doc_limit": 80,
+  "llm_planner": true,
+  "llm_decision_interval": 3,
+  "notes": [
+    "Users should only provide a target URL and written authorization.",
+    "Seed URLs may be provided when important routes are hidden behind navigation, JavaScript, or login.",
+    "The engine remains same-scope and consent-gated."
+  ]
+}
