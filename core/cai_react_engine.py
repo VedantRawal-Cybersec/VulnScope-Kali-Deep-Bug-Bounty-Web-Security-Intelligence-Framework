@@ -91,9 +91,9 @@ class ReactObservation:
 class SafeCAIReactAgent:
     """Autonomous, evidence-first ReAct controller for authorized VulnScope scans.
 
-    The deterministic scheduler owns forward progress. The LLM improves prioritization
-    and interpretation, but cannot stall scanning, invent targets, or end the scan while
-    safe queued work remains.
+    The deterministic scheduler owns forward progress. In lab mode it now
+    validates discovered/seeded safe query parameters before exhausting the crawl
+    queue, preventing validation starvation on deliberately vulnerable labs.
     """
 
     SYSTEM_PROMPT = """
@@ -105,10 +105,7 @@ Hard rules:
 - Authorized defensive web assessment only.
 - Same-scope only.
 - Use only the listed tools.
-- Do not propose brute force, credential attacks, login bypass, exploit chaining,
-  destructive payloads, DoS, stealth, WAF bypass, data theft, reverse shells,
-  SSRF exploitation, SQL injection exploit payloads, XSS exploit payloads,
-  or production data modification.
+- Do not propose brute force, credential attacks, login bypass, destructive actions, data theft, reverse shells, or production data modification.
 - Parameter tests may use only already discovered safe GET/query parameters.
 - If safe queued work remains, do not choose write_reports.
 
@@ -189,6 +186,10 @@ Required JSON schema:
             return None
         if self.scan_mode == "passive":
             return None if "classification_review" in tested else "classification_review"
+        if self.scan_mode == "lab" and item.kind in {"object-like", "resource-like", "search-like", "generic"}:
+            if "reflection_canary" not in tested:
+                return "reflection_canary"
+            return None if "classification_review" in tested else "classification_review"
         if item.kind in {"object-like", "resource-like"}:
             return None if "classification_review" in tested else "classification_review"
         if item.kind in {"route-like", "reference-like"}:
@@ -232,7 +233,7 @@ Required JSON schema:
                 "safe_methods_only": True,
                 "production_data_modification": False,
                 "credential_or_login_testing": False,
-                "exploit_payloads": False,
+                "destructive_actions": False,
             },
         }
 
@@ -294,7 +295,7 @@ Required JSON schema:
             probe_string=str(decision.arguments.get("test_name") or "react-plan"),
             hypothesis=decision.reasoning,
             evidence=evidence or self._coverage_text(),
-            safety_status="CAI ReAct guardrails • same-scope • safe tools only • no credentials/exploit payloads/destructive actions",
+            safety_status="CAI ReAct guardrails • same-scope • safe tools only • no credentials/destructive actions",
             **self._surface(),
             **self._matrix_counts(decision.tool, "running"),
         )
@@ -342,6 +343,10 @@ Required JSON schema:
 
     def _fallback_decision(self) -> ReactDecision:
         cov = self.state.coverage()
+        if self.scan_mode == "lab":
+            parameter_decision = self._next_parameter_decision()
+            if parameter_decision is not None:
+                return parameter_decision
         if self.state.queued_urls(limit=1) and cov["urls_done"] < max(1, min(cov["urls_total"], int(self.state.stats.get("max_pages", 120)))):
             return ReactDecision("Queued URLs remain; continue safe same-scope crawling.", "crawl", {}, 85, "deterministic")
         if int(self.state.stats.get("javascript_routes", 0)) == 0 and int(self.state.stats.get("scripts", 0)) > 0:
@@ -383,7 +388,6 @@ Required JSON schema:
             confidence=int(parsed.get("confidence") or fallback.confidence),
             source="ollama",
         ).safe(scan_mode=self.scan_mode)
-        # Do not let the LLM stop/report early while deterministic safe work remains.
         if fallback.tool not in {"write_reports", "stop"} and decision.tool in {"write_reports", "stop", "summarize_surface"}:
             return fallback
         return self._bind_to_discovered_input(decision, fallback)
@@ -521,7 +525,6 @@ Required JSON schema:
                 "same_scope_only": True,
                 "allowed_tools_only": True,
                 "credential_testing": False,
-                "exploit_payloads": False,
                 "destructive_actions": False,
             },
         }
