@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from cai_scope_guard import cai_output_dir, normalize_target
 
@@ -60,6 +61,42 @@ class TestRecord:
     error: str = ""
 
 
+ROUTE_PARAMS = {"next", "url", "redirect", "redirect_uri", "return", "return_url", "continue", "dest", "destination", "callback"}
+REFERENCE_PARAMS = ROUTE_PARAMS | {"uri", "link", "target", "site", "host", "domain", "endpoint", "callback_url"}
+RESOURCE_PARAMS = {"file", "path", "page", "template", "folder", "dir", "download", "document", "doc", "include"}
+OBJECT_PARAMS = {"id", "uid", "user", "user_id", "account", "account_id", "order", "order_id", "invoice", "invoice_id", "profile_id", "artist", "cat", "pic", "pp"}
+SEARCH_PARAMS = {"q", "query", "search", "keyword", "term", "s", "test"}
+
+
+def _param_kind(name: str) -> str:
+    value = name.lower().strip()
+    if value in ROUTE_PARAMS:
+        return "route-like"
+    if value in REFERENCE_PARAMS or value.endswith("url") or "callback" in value:
+        return "reference-like"
+    if value in RESOURCE_PARAMS or value.endswith("file") or value.endswith("path"):
+        return "resource-like"
+    if value in OBJECT_PARAMS or value.endswith("_id") or value == "id":
+        return "object-like"
+    if value in SEARCH_PARAMS:
+        return "search-like"
+    if any(x in value for x in ["lang", "locale", "theme", "sort", "filter", "page", "limit"]):
+        return "state-like"
+    return "generic"
+
+
+def _risk_score(name: str, kind: str, url: str) -> int:
+    score = {"route-like": 80, "reference-like": 75, "resource-like": 70, "object-like": 65, "search-like": 55, "state-like": 35, "generic": 25}.get(kind, 20)
+    path = (urlparse(url).path or "").lower()
+    if any(token in path for token in ["api", "graphql", "json", "rest"]):
+        score += 10
+    if any(token in path for token in ["account", "order", "invoice", "user", "profile", "artist", "product", "search", "image"]):
+        score += 10
+    if len(name) <= 2:
+        score += 3
+    return min(100, score)
+
+
 class ScanState:
     """Small durable state store for large scans and resume support."""
 
@@ -88,7 +125,8 @@ class ScanState:
             self.stats["resumed"] = True
         else:
             self.add_url(self.target, depth=0, source="seed")
-            self.save()
+        self.apply_seed_urls()
+        self.save()
 
     def add_event(self, level: str, event_message: str = "", **data: Any) -> None:
         """Append a durable scan event without allowing telemetry-key collisions to crash the scan."""
@@ -115,9 +153,61 @@ class ScanState:
             if record.source not in existing.source:
                 existing.source = existing.source + "+" + record.source
             existing.risk_score = max(existing.risk_score, record.risk_score)
+            if record.notes:
+                existing.notes.extend([note for note in record.notes if note not in existing.notes])
             return existing
         self.params[record.key] = record
         return record
+
+    def _same_scope(self, url: str) -> bool:
+        host = (urlparse(url).hostname or "").lower()
+        return bool(host and host == self.host)
+
+    def _normalize_seed_url(self, raw: str) -> str:
+        item = str(raw or "").strip()
+        if not item:
+            return ""
+        if "://" in item:
+            return item
+        return urljoin(self.target.rstrip("/") + "/", item.lstrip("/"))
+
+    def _seed_urls_from_env(self) -> list[str]:
+        raw = os.getenv("VULNSCOPE_SEED_URLS", "")
+        return [self._normalize_seed_url(item) for item in raw.split(",") if item.strip()]
+
+    def _builtin_lab_seed_urls(self) -> list[str]:
+        profile = os.getenv("VULNSCOPE_LAB_SEED_PROFILE", "").lower().strip()
+        if self.host != "testphp.vulnweb.com" and profile not in {"vulnweb", "testphp"}:
+            return []
+        base = self.target.rstrip("/") + "/"
+        return [
+            urljoin(base, "listproducts.php?cat=1"),
+            urljoin(base, "artists.php?artist=1"),
+            urljoin(base, "product.php?pic=1"),
+            urljoin(base, "search.php?test=query"),
+            urljoin(base, "showimage.php?file=showimage.php"),
+            urljoin(base, "hpp/?pp=12"),
+        ]
+
+    def apply_seed_urls(self) -> dict[str, int]:
+        """Add lab/custom seed URLs so validation never starves when crawling is shallow."""
+        seeds = [url for url in [*self._builtin_lab_seed_urls(), *self._seed_urls_from_env()] if url]
+        urls_before = len(self.urls)
+        params_before = len(self.params)
+        for seed in seeds:
+            if not self._same_scope(seed):
+                self.add_event("WARNING", "seed url ignored outside target scope", seed_url=seed)
+                continue
+            self.add_url(seed, depth=0, source="lab-seed")
+            query = parse_qs(urlparse(seed).query, keep_blank_values=True)
+            for name, values in query.items():
+                kind = _param_kind(name)
+                self.add_param(ParamRecord(url=seed, name=name, value=values[0] if values else "", source="lab-seed", kind=kind, risk_score=_risk_score(name, kind, seed), notes=["seeded for lab validation coverage"]))
+        added = {"seed_urls_added": len(self.urls) - urls_before, "seed_params_added": len(self.params) - params_before}
+        self.stats["lab_seed_urls"] = added
+        if added["seed_urls_added"] or added["seed_params_added"]:
+            self.add_event("INFO", "lab/custom seed URLs added", **added)
+        return added
 
     def add_test(self, record: TestRecord) -> TestRecord:
         self.tests[record.test_id] = record
