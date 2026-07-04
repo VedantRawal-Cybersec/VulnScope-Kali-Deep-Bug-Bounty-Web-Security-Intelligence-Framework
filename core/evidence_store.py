@@ -6,10 +6,33 @@ import json
 import re
 import time
 import uuid
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from cai_scope_guard import cai_output_dir, normalize_target
+
+
+@dataclass
+class Finding:
+    """Backward-compatible finding model used by legacy modules and AI review."""
+
+    finding_id: str
+    title: str
+    category: str
+    severity: str
+    confidence: str
+    status: str
+    endpoint: str
+    where_found: str
+    how_detected: list[str]
+    why_risky: str
+    evidence: dict[str, Any]
+    recommended_validation: list[str]
+    remediation: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def redact(value: Any, limit: int = 2000) -> str:
@@ -33,10 +56,10 @@ def stable_template_key(url: str, status_code: int, body: str) -> str:
 
 
 class EvidenceStore:
-    """Append-only evidence store for safe scanner telemetry and findings."""
+    """Evidence store with both new append-only API and legacy scanner API."""
 
-    def __init__(self, target: str) -> None:
-        self.target = normalize_target(target)
+    def __init__(self, target: str | None = None) -> None:
+        self.target = normalize_target(target or "http://local.vulnscope")
         self.out_dir = cai_output_dir(self.target) / "evidence"
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.requests_path = self.out_dir / "requests.jsonl"
@@ -45,6 +68,11 @@ class EvidenceStore:
         self.findings_path = self.out_dir / "findings.jsonl"
         self.index_path = self.out_dir / "evidence-index.json"
         self.index: dict[str, Any] = {"target": self.target, "items": []}
+        self.metadata: dict[str, Any] = {}
+        self.endpoints: set[str] = set()
+        self.forms: list[dict[str, Any]] = []
+        self.findings: list[Finding | dict[str, Any]] = []
+        self._finding_counter = 0
         if self.index_path.exists():
             try:
                 self.index = json.loads(self.index_path.read_text(encoding="utf-8"))
@@ -59,6 +87,21 @@ class EvidenceStore:
         self.index["items"] = self.index["items"][-5000:]
         self.index_path.write_text(json.dumps(self.index, indent=2, ensure_ascii=False), encoding="utf-8")
         return item
+
+    def next_finding_id(self) -> str:
+        self._finding_counter += 1
+        return f"finding_{self._finding_counter:04d}"
+
+    def add_endpoint(self, url: str) -> None:
+        if url:
+            self.endpoints.add(str(url))
+
+    def add_form(self, form: dict[str, Any]) -> None:
+        self.forms.append(dict(form))
+
+    def add_finding(self, finding: Finding | dict[str, Any]) -> str:
+        self.findings.append(finding)
+        return self.record_finding(finding)
 
     def record_request(self, *, method: str, url: str, headers: dict[str, str] | None = None, purpose: str = "") -> str:
         item_id = "req_" + uuid.uuid4().hex[:12]
@@ -75,14 +118,34 @@ class EvidenceStore:
         self._append(self.comparisons_path, {"id": item_id, "type": "comparison", "time": time.time(), "baseline_id": baseline_id, "test_id": test_id, "url": url, "parameter": parameter, "result": result})
         return item_id
 
-    def record_finding(self, finding: dict[str, Any]) -> str:
-        item = dict(finding)
-        item.setdefault("id", "finding_" + uuid.uuid4().hex[:10])
+    def record_finding(self, finding: Finding | dict[str, Any]) -> str:
+        if isinstance(finding, Finding):
+            item = finding.to_dict()
+            item["id"] = item.get("finding_id") or self.next_finding_id()
+        elif is_dataclass(finding):
+            item = asdict(finding)
+            item.setdefault("id", item.get("finding_id") or self.next_finding_id())
+        else:
+            item = dict(finding)
+            item.setdefault("id", item.get("finding_id") or "finding_" + uuid.uuid4().hex[:10])
         item.setdefault("type", "finding")
         item.setdefault("time", time.time())
         item["evidence"] = redact(item.get("evidence", ""), 2000)
         self._append(self.findings_path, item)
         return str(item["id"])
+
+    def write_json(self, path: str | Path) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "target": self.target,
+            "metadata": self.metadata,
+            "endpoints": sorted(self.endpoints),
+            "forms": self.forms,
+            "findings": [item.to_dict() if isinstance(item, Finding) else asdict(item) if is_dataclass(item) else item for item in self.findings],
+        }
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return path
 
     def write_markdown_index(self) -> Path:
         path = self.out_dir / "evidence-index.md"
