@@ -19,6 +19,7 @@ try:
 except Exception:  # pragma: no cover
     yaml = None
 
+from core.tool_manifest import ToolManifest
 from core.tool_registry import RegisteredTool, ToolArgument, ToolRegistry, VALID_PARSERS, VALID_PHASES
 
 TOOLS_DIR = Path("tools")
@@ -28,48 +29,17 @@ TOOL_INSTALL_LOG = LOGS_DIR / "tool_install.log"
 VULNSCOPE_LOG = LOGS_DIR / "vulnscope.log"
 
 KNOWN_TOOL_PROFILES: dict[str, dict[str, Any]] = {
-    "nuclei": {
-        "phase": "validation",
-        "output_parser": "jsonl",
-        "run": "nuclei -u {target} -jsonl -silent -severity info,low,medium -rate-limit 5 -no-interactsh -disable-update-check",
-        "finding_tool": True,
-    },
-    "katana": {
-        "phase": "discovery",
-        "output_parser": "jsonl",
-        "run": "katana -u {target} -silent -jsonl -d 2 -ct 120",
-        "finding_tool": False,
-    },
-    "httpx": {
-        "phase": "recon",
-        "output_parser": "jsonl",
-        "run": "httpx -u {target} -json -silent -follow-redirects",
-        "finding_tool": False,
-    },
-    "ffuf": {
-        "phase": "discovery",
-        "output_parser": "json",
-        "run": "ffuf -u {target}/FUZZ -w {wordlist} -of json -rate 50 -t 5 -mc 200,204,301,302,307,308,401,403",
-        "finding_tool": False,
-    },
-    "subfinder": {
-        "phase": "recon",
-        "output_parser": "jsonl",
-        "run": "subfinder -d {host} -json -silent",
-        "finding_tool": False,
-        "requires_subdomain_authorization": True,
-    },
-    "naabu": {
-        "phase": "recon",
-        "output_parser": "jsonl",
-        "run": "naabu -host {host} -json -silent -rate 100",
-        "finding_tool": False,
-    },
+    "nuclei": {"phase": "validation", "output_parser": "jsonl", "run": "nuclei -u {target} -jsonl -silent -severity info,low,medium -rate-limit 5 -no-interactsh -disable-update-check", "finding_tool": True},
+    "katana": {"phase": "discovery", "output_parser": "jsonl", "run": "katana -u {target} -silent -jsonl -d 2 -ct 120", "finding_tool": False},
+    "httpx": {"phase": "recon", "output_parser": "jsonl", "run": "httpx -u {target} -json -silent -follow-redirects", "finding_tool": False},
+    "ffuf": {"phase": "discovery", "output_parser": "json", "run": "ffuf -u {target}/FUZZ -w {wordlist} -of json -rate 50 -t 5 -mc 200,204,301,302,307,308,401,403", "finding_tool": False},
+    "subfinder": {"phase": "recon", "output_parser": "jsonl", "run": "subfinder -d {host} -json -silent", "finding_tool": False, "requires_subdomain_authorization": True},
+    "naabu": {"phase": "recon", "output_parser": "jsonl", "run": "naabu -host {host} -json -silent -rate 100", "finding_tool": False},
 }
 
 MANUAL_PROFILE_NOTES: dict[str, str] = {
-    "sqlmap": "registered for visibility, but no automatic run command is generated. Add a reviewed tool.yaml run profile for owned lab targets.",
-    "dalfox": "registered for visibility, but no automatic run command is generated. Add a reviewed tool.yaml run profile for owned lab targets.",
+    "sqlmap": "registered for visibility, but no automatic run command is generated. Add a reviewed manifest.json/tool.yaml run profile for owned lab targets.",
+    "dalfox": "registered for visibility, but no automatic run command is generated. Add a reviewed manifest.json/tool.yaml run profile for owned lab targets.",
 }
 
 
@@ -126,6 +96,10 @@ class ToolManager:
         yaml_path = path / "tool.yaml"
         yml_path = path / "tool.yml"
         json_path = path / "tool.json"
+        manifest_json_path = path / "manifest.json"
+        if manifest_json_path.exists():
+            manifest = ToolManifest(path)
+            return manifest.to_registry_manifest()
         if yaml_path.exists() or yml_path.exists():
             source = yaml_path if yaml_path.exists() else yml_path
             if yaml is None:
@@ -193,16 +167,7 @@ class ToolManager:
         if key in MANUAL_PROFILE_NOTES and not run:
             metadata["manual_profile_note"] = MANUAL_PROFILE_NOTES[key]
         metadata["requires_manual_run_command"] = not bool(run)
-        return {
-            "name": name,
-            "version": "unknown",
-            "phase": phase,
-            "install": install,
-            "run": run,
-            "arguments": [{"name": "target", "description": "Target URL", "required": True}],
-            "output_parser": parser,
-            "metadata": metadata,
-        }
+        return {"name": name, "version": "unknown", "phase": phase, "install": install, "run": run, "arguments": [{"name": "target", "description": "Target URL", "required": True}], "output_parser": parser, "metadata": metadata}
 
     def _normalize_manifest(self, manifest: dict[str, Any], repo_url: str, local_path: Path) -> RegisteredTool:
         name = str(manifest.get("name") or local_path.name)
@@ -223,19 +188,7 @@ class ToolManager:
         metadata = dict(manifest.get("metadata") or {})
         if profile:
             metadata.update({"known_profile": self._tool_key_from_path(local_path, name), **{k: v for k, v in profile.items() if k not in {"run", "phase", "output_parser"}}})
-        return RegisteredTool(
-            tool_id=self._tool_id(name, repo_url),
-            name=name,
-            version=str(manifest.get("version") or "unknown"),
-            repo_url=repo_url,
-            local_path=str(local_path),
-            phase=phase,
-            install=install_commands,
-            run=run_command,
-            arguments=args,
-            output_parser=parser,
-            metadata=metadata,
-        )
+        return RegisteredTool(tool_id=self._tool_id(name, repo_url), name=name, version=str(manifest.get("version") or "unknown"), repo_url=repo_url, local_path=str(local_path), phase=phase, install=install_commands, run=run_command, arguments=args, output_parser=parser, metadata=metadata)
 
     def clone_or_update(self, repo_url: str) -> Path:
         slug = self._slug_from_repo_url(repo_url)
@@ -270,11 +223,6 @@ class ToolManager:
         return tool
 
     def reconcile_installed_tools(self, *, approve_known: bool = True, enable: bool = True) -> dict[str, Any]:
-        """Repair registry from directories already present in ./tools/.
-
-        This is the fix for manually cloned tools or old installs that never made
-        it into tools/registry.json.
-        """
         added = 0
         repaired = 0
         skipped = 0
@@ -288,6 +236,15 @@ class ToolManager:
                 existing = known_paths.get(resolved)
                 if existing:
                     changed = False
+                    manifest = self._load_manifest(path)
+                    if manifest:
+                        candidate = self._normalize_manifest(manifest, existing.repo_url or f"file://{path.as_posix()}", path)
+                        if candidate.run and candidate.run != existing.run:
+                            existing.run = candidate.run
+                            existing.output_parser = candidate.output_parser
+                            existing.phase = candidate.phase
+                            existing.metadata.update(candidate.metadata)
+                            changed = True
                     if not existing.run:
                         profile = self._known_profile_for(path, existing.name)
                         if profile and profile.get("run"):
@@ -428,14 +385,7 @@ class ToolManager:
             raise ValueError("tool has no run command configured")
         parsed_target = urlparse(target if "://" in target else "https://" + target)
         host = parsed_target.hostname or target.replace("https://", "").replace("http://", "").split("/")[0]
-        context = {
-            "target": target.rstrip("/"),
-            "host": host,
-            "parameter": parameter,
-            "output_format": output_format,
-            "tool_dir": tool.local_path,
-            "wordlist": os.getenv("VULNSCOPE_FFUF_WORDLIST", "/usr/share/wordlists/dirb/common.txt"),
-        }
+        context = {"target": target.rstrip("/"), "host": host, "parameter": parameter, "output_format": output_format, "tool_dir": tool.local_path, "wordlist": os.getenv("VULNSCOPE_FFUF_WORDLIST", "/usr/share/wordlists/dirb/common.txt")}
         command = [self._format_run_args(token, context) for token in tool.run]
         command = self._resolve_command(command, Path(tool.local_path))
         self._log("Running dynamic tool", data={"tool_id": tool_id, "command": command, "target": target})
@@ -491,19 +441,7 @@ class ToolManager:
         for tool in self.registry.list():
             path = Path(tool.local_path)
             executable = tool.run[0] if tool.run else ""
-            rows.append({
-                "tool_id": tool.tool_id,
-                "name": tool.name,
-                "phase": tool.phase,
-                "path_exists": path.exists(),
-                "enabled": tool.enabled,
-                "installed": tool.installed,
-                "approved_for_run": tool.approved_for_run,
-                "has_run_command": bool(tool.run),
-                "run": tool.run,
-                "first_executable_available": bool(executable and (shutil.which(executable) or (path / executable).exists() or (path / "bin" / executable).exists())),
-                "metadata": tool.metadata,
-            })
+            rows.append({"tool_id": tool.tool_id, "name": tool.name, "phase": tool.phase, "path_exists": path.exists(), "enabled": tool.enabled, "installed": tool.installed, "approved_for_run": tool.approved_for_run, "has_run_command": bool(tool.run), "run": tool.run, "first_executable_available": bool(executable and (shutil.which(executable) or (path / executable).exists() or (path / "bin" / executable).exists())), "metadata": tool.metadata})
         payload = {"generated_at": time.time(), "tools": rows, "registry": str(self.registry.path)}
         diag_path = LOGS_DIR / "tool_diagnostics.json"
         diag_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
