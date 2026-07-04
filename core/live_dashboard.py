@@ -23,7 +23,7 @@ YELLOW = "\033[33m"
 MAGENTA = "\033[35m"
 RED = "\033[31m"
 
-VERSION = "1.17.0-dashboard-phase-stable"
+VERSION = "1.17.1-dashboard-tool-status"
 
 SENSITIVE_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie|session|password)=([^\s&;]+)"),
@@ -79,6 +79,8 @@ class LiveSnapshot:
     tools_failed: int = 0
     tools_skipped: int = 0
     tools_blocked: int = 0
+    tools_inactive: int = 0
+    tools_not_ready: int = 0
     confirmed: int = 0
     potential: int = 0
     informational: int = 0
@@ -141,11 +143,7 @@ def _box(title: str, lines: list[str], *, color: str = CYAN, enabled: bool = Tru
 
 
 class LiveDashboard:
-    """Phase-stable CAI-style dashboard.
-
-    The dashboard resets phase-local timing whenever `phase` changes. This fixes
-    stale crawler/JS labels, stopped loading indicators, and frozen phase timers.
-    """
+    """Phase-stable CAI-style dashboard with honest tool-status counters."""
 
     TOOL_ORDER = [
         "metadata_checker",
@@ -242,11 +240,12 @@ class LiveDashboard:
                 self.snapshot.latest_status = "phase_started"
                 self.events.append(f"[{time.strftime('%H:%M:%S')}] 🔁 Phase changed: {self.snapshot.previous_phase} → {self.snapshot.phase}")
                 self.events = self.events[-self.max_events :]
+            integer_fields = {"phase_progress", "phase_total", "turn", "max_turns", "findings", "requests", "urls_found", "paths_found", "params_found", "forms_found", "js_found", "api_routes_found", "tools_total", "tools_running", "tools_completed", "tools_failed", "tools_skipped", "tools_blocked", "tools_inactive", "tools_not_ready", "confirmed", "potential", "informational"}
             for key, value in kwargs.items():
                 if key == "phase":
                     continue
                 if hasattr(self.snapshot, key):
-                    if key in {"phase_progress", "phase_total", "turn", "max_turns", "findings", "requests", "urls_found", "paths_found", "params_found", "forms_found", "js_found", "api_routes_found", "tools_total", "tools_running", "tools_completed", "tools_failed", "tools_skipped", "tools_blocked", "confirmed", "potential", "informational"}:
+                    if key in integer_fields:
                         try:
                             setattr(self.snapshot, key, int(value))
                         except Exception:
@@ -279,23 +278,7 @@ class LiveDashboard:
         confirmation = _clean(confirmation or "review_lead", 40).lower()
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
-            finding = {
-                "type": _clean(finding_type or "Security Review Lead", 140),
-                "severity": severity,
-                "description": _clean(description or "Evidence requires analyst review.", 500),
-                "url": _clean(url or snap.endpoint, 260),
-                "domain": _clean(snap.domain, 120),
-                "request_line": _clean(snap.request_line, 240),
-                "path": _clean(snap.path, 180),
-                "parameter": _clean(parameter or snap.parameters, 220),
-                "test_string": _clean(test_string or snap.probe_string, 220),
-                "evidence": _clean(evidence or snap.evidence, 900),
-                "cvss": _clean(cvss, 80),
-                "confidence": _clean(confidence, 80),
-                "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."),
-                "confirmation": confirmation,
-                "recorded_at": time.time(),
-            }
+            finding = {"type": _clean(finding_type or "Security Review Lead", 140), "severity": severity, "description": _clean(description or "Evidence requires analyst review.", 500), "url": _clean(url or snap.endpoint, 260), "domain": _clean(snap.domain, 120), "request_line": _clean(snap.request_line, 240), "path": _clean(snap.path, 180), "parameter": _clean(parameter or snap.parameters, 220), "test_string": _clean(test_string or snap.probe_string, 220), "evidence": _clean(evidence or snap.evidence, 900), "cvss": _clean(cvss, 80), "confidence": _clean(confidence, 80), "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."), "confirmation": confirmation, "recorded_at": time.time()}
             self.finding_details.append(finding)
             self.snapshot.findings = len(self.finding_details)
             self.snapshot.latest_finding = f"{severity} {finding['type']}"
@@ -370,7 +353,11 @@ class LiveDashboard:
         return lines
 
     def _tool_rows(self, snap: LiveSnapshot) -> list[str]:
-        rows = [f"Total: {snap.tools_total:<3} Running: {snap.tools_running:<2} Completed: {snap.tools_completed:<3} Failed: {snap.tools_failed:<2} Blocked: {snap.tools_blocked:<2} Skip: {snap.tools_skipped:<2}", "─" * 76]
+        rows = [
+            f"Total: {snap.tools_total:<3} Running: {snap.tools_running:<2} Completed: {snap.tools_completed:<3} Failed: {snap.tools_failed:<2} Blocked: {snap.tools_blocked:<2}",
+            f"Real Skip: {snap.tools_skipped:<2} Inactive: {snap.tools_inactive:<3} Needs Config: {snap.tools_not_ready:<3}",
+            "─" * 76,
+        ]
         for tool in self.TOOL_ORDER:
             if tool == snap.current_tool or (tool == "safe_canary_reflection" and snap.current_tool in {"test_parameter", "reflection_canary", "redirect_review"}):
                 mark = f"{SPINNER[snap.spinner_index]} running "
@@ -381,7 +368,7 @@ class LiveDashboard:
             else:
                 mark = "◻ queued  "
             rows.append(f"► {tool:<30} {mark}")
-        return rows[:16]
+        return rows[:17]
 
     def _trace_rows(self, snap: LiveSnapshot, traces: list[str]) -> list[str]:
         rows = ["Turn  Agent                   Action                     Status     Phase"]
@@ -406,16 +393,7 @@ class LiveDashboard:
             "",
         ]
         reasoning = [f"🧠 THINKING: {_clean(snap.decision if snap.decision != '—' else snap.action, 82)}", f"   {_clean(snap.hypothesis, 82)}"]
-        context = [
-            f"📡 Endpoint: {_clean(snap.endpoint, 78)}",
-            f"🗂️  Path: {_clean(snap.path, 82)}",
-            f"📝 Parameter: {_clean(snap.parameters, 78)}",
-            f"🧪 Probe: {_clean(snap.probe_string, 80)}",
-            f"💡 Hypothesis: {_clean(snap.hypothesis, 76)}",
-            f"🔍 Evidence: {_clean(snap.evidence, 78)}",
-            f"📊 Phase: {spinner} {snap.phase}  [{c(self._bar(snap), GREEN)}] {snap.phase_progress}/{max(1, snap.phase_total)}  phase_time={self._phase_elapsed(snap)}",
-            f"📈 Surface: urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found} req={snap.requests}",
-        ]
+        context = [f"📡 Endpoint: {_clean(snap.endpoint, 78)}", f"🗂️  Path: {_clean(snap.path, 82)}", f"📝 Parameter: {_clean(snap.parameters, 78)}", f"🧪 Probe: {_clean(snap.probe_string, 80)}", f"💡 Hypothesis: {_clean(snap.hypothesis, 76)}", f"🔍 Evidence: {_clean(snap.evidence, 78)}", f"📊 Phase: {spinner} {snap.phase}  [{c(self._bar(snap), GREEN)}] {snap.phase_progress}/{max(1, snap.phase_total)}  phase_time={self._phase_elapsed(snap)}", f"📈 Surface: urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found} req={snap.requests}"]
         logs = events[-10:] or ["Waiting for first scan event…"]
         footer = ["─" * width, "  Press Ctrl+C to stop scan  |  consent-gated  |  same-scope  |  safe-active", "─" * width]
         lines: list[str] = []
@@ -441,44 +419,14 @@ class LiveDashboard:
         confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
         counts = self._severity_counts(findings)
         total_label = f"{len(confirmed)} confirmed vulnerabilities" if confirmed else f"{len(findings)} findings / review leads"
-        lines = [
-            "=" * 96,
-            c("╔" + "═" * 79 + "╗", CYAN),
-            c("║                     FINAL ASSESSMENT DASHBOARD                               ║", CYAN),
-            c("╚" + "═" * 79 + "╝", CYAN),
-            "",
-            f"Target:          {snap.domain}",
-            f"Scan Mode:       {snap.mode}",
-            f"Total Time:      {self._elapsed()}",
-            f"Last Phase:      {snap.phase}",
-            f"Total Requests:  {snap.requests}",
-            f"Surface:         urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found}",
-            f"Total Findings:  {total_label}",
-            f"Severity Counts: CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}",
-            "",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "CONFIRMED VULNERABILITIES / REVIEW LEADS — DETAILED BREAKDOWN",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "",
-        ]
+        lines = ["=" * 96, c("╔" + "═" * 79 + "╗", CYAN), c("║                     FINAL ASSESSMENT DASHBOARD                               ║", CYAN), c("╚" + "═" * 79 + "╝", CYAN), "", f"Target:          {snap.domain}", f"Scan Mode:       {snap.mode}", f"Total Time:      {self._elapsed()}", f"Last Phase:      {snap.phase}", f"Total Requests:  {snap.requests}", f"Surface:         urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found}", f"Total Findings:  {total_label}", f"Severity Counts: CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}", "", "────────────────────────────────────────────────────────────────────────────────", "CONFIRMED VULNERABILITIES / REVIEW LEADS — DETAILED BREAKDOWN", "────────────────────────────────────────────────────────────────────────────────", ""]
         if not findings:
             lines.extend([c("No vulnerabilities were confirmed under the selected safe scope and request budget.", YELLOW), "Review final-findings-dashboard.md, parameter-inventory-v2.json, deep-scan-prioritization.json, and evidence-index.md for coverage.", ""])
         for idx, finding in enumerate(findings, 1):
             severity = str(finding.get("severity", "INFO")).upper()
             title = finding.get("type", "Security Finding")
             status = str(finding.get("confirmation", "review_lead")).replace("_", " ").upper()
-            lines.extend([
-                c(f"═══ FINDING #{idx} ═══", self._severity_color(severity)),
-                f"WHAT:       {title} ({severity}) — {status}",
-                f"WHY:        {finding.get('description')}",
-                f"WHERE:      {finding.get('url')}",
-                f"Parameter:  {finding.get('parameter')}",
-                f"Probe:      {finding.get('test_string')}",
-                f"EVIDENCE:   {finding.get('evidence')}",
-                f"CVSS:       {finding.get('cvss')}",
-                f"CONFIDENCE: {finding.get('confidence')}",
-                "REPRODUCTION:",
-            ])
+            lines.extend([c(f"═══ FINDING #{idx} ═══", self._severity_color(severity)), f"WHAT:       {title} ({severity}) — {status}", f"WHY:        {finding.get('description')}", f"WHERE:      {finding.get('url')}", f"Parameter:  {finding.get('parameter')}", f"Probe:      {finding.get('test_string')}", f"EVIDENCE:   {finding.get('evidence')}", f"CVSS:       {finding.get('cvss')}", f"CONFIDENCE: {finding.get('confidence')}", "REPRODUCTION:"])
             for line in str(finding.get("reproduction") or "Review evidence inside authorized scope.").splitlines():
                 lines.append(f"  {line}")
             lines.extend(["", "────────────────────────────────────────────────────────────────────────────────", ""])
@@ -519,17 +467,7 @@ class LiveDashboard:
     def write_reports(self, out: Path) -> dict[str, str]:
         out.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            payload = {
-                "snapshot": asdict(self.snapshot),
-                "events": list(self.events),
-                "traces": list(self.traces),
-                "findings": [dict(item) for item in self.finding_details],
-                "generated_at": time.time(),
-                "interface": "kali_cli",
-                "dashboard": "phase_stable_cli",
-                "version": VERSION,
-                "website_dashboard": False,
-            }
+            payload = {"snapshot": asdict(self.snapshot), "events": list(self.events), "traces": list(self.traces), "findings": [dict(item) for item in self.finding_details], "generated_at": time.time(), "interface": "kali_cli", "dashboard": "phase_stable_cli", "version": VERSION, "website_dashboard": False}
         session_json_path = out / "cli-session.json"
         final_json_path = out / "cli-final-dashboard.json"
         final_md_path = out / "cli-final-dashboard.md"
