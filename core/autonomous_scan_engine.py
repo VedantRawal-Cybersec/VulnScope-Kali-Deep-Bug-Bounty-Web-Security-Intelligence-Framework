@@ -15,6 +15,7 @@ from core.browser_crawler import BrowserCrawler
 from core.cai_react_engine import SafeCAIReactAgent
 from core.crawler_v2 import CrawlerV2
 from core.deep_asset_discovery import DeepAssetDiscovery
+from core.deep_scan_phases import DeepScanPhasePack
 from core.engines.unified_research_orchestrator import UnifiedResearchOrchestrator
 from core.evidence_store import EvidenceStore
 from core.http_client_v2 import SafeHttpClientV2
@@ -31,7 +32,7 @@ from core.scan_state import ScanState
 from core.test_engine import TestEngine
 from core.tool_router import ToolRouter
 
-VERSION = "1.16.1-external-tool-repair"
+VERSION = "1.17.0-deep-phase-dashboard"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -46,7 +47,7 @@ def parse_headers(values: list[str]) -> dict[str, str]:
 
 
 class AutonomousScanEngine:
-    """Phase-stable defensive scan coordinator with repaired external tool integration."""
+    """Phase-stable defensive scan coordinator with deep safe-active phases."""
 
     TOOL_ALIASES = {
         "bootstrap": "llm_public_reasoning",
@@ -58,6 +59,7 @@ class AutonomousScanEngine:
         "crawler_v2": "crawler_v2",
         "browser_crawler": "browser_crawler",
         "parameter_inventory": "parameter_inventory",
+        "deep_scan_phase_pack": "deep_scan_phase_pack",
         "unified_research_orchestrator": "unified_research_orchestrator",
         "dynamic_tool_scheduler": "external_tool_readiness",
         "cai_react_planner": "llm_public_reasoning",
@@ -137,6 +139,7 @@ class AutonomousScanEngine:
         self.react_summary: dict[str, Any] = {}
         self.dynamic_tool_summary: dict[str, Any] = {}
         self.research_summary: dict[str, Any] = {}
+        self.deep_scan_summary: dict[str, Any] = {}
         self._sync_dashboard_matrix("llm_public_reasoning", status="queued")
 
     def _surface(self) -> dict[str, int]:
@@ -202,7 +205,7 @@ class AutonomousScanEngine:
             path=parsed.path or "/",
             parameters=parameter or query,
             probe_string="safe-cai-react",
-            hypothesis="phase-stable autonomous scanner with native research decision layer",
+            hypothesis="phase-stable deep safe-active scanner with native research decision layer",
             evidence=evidence or self._coverage_text(),
             safety_status="same-scope • request budget • approval-gated dynamic tools • no embedded exploit payloads",
             **self._surface(),
@@ -239,7 +242,10 @@ class AutonomousScanEngine:
         self.trace.log(turn_id=self.turns.next_turn(), agent_name="ScopeAgent", tool_name="availability_checker", phase="Scope", status="completed" if root.ok else "failed", target_url=root.url, path=urlparse(root.url).path or "/", message=f"HTTP {root.status_code}" if root.ok else root.error, evidence_summary=root.response_id, progress_percent=6)
         self._dashboard("Scope", "Availability check completed", progress=8, evidence=f"HTTP {root.status_code} {root.error}", agent="ScopeAgent", tool="availability_checker", url=root.url)
         if not root.ok:
+            self.state.stats["target_reachable"] = False
+            self.state.stats["target_reachability_error"] = root.error
             return {"root_ok": False, "status_code": root.status_code, "error": root.error}
+        self.state.stats["target_reachable"] = True
         analyzer_summary = self.analyzers.run_all(root)
         self.state.add_event("INFO", "passive analyzers completed", **analyzer_summary.__dict__)
         return {"root_ok": True, "status_code": root.status_code, "analyzers": analyzer_summary.__dict__}
@@ -277,6 +283,12 @@ class AutonomousScanEngine:
         self.state.add_event("INFO", "post-discovery crawl completed", **post_result.__dict__)
         return post_result.__dict__
 
+    def _safe_deep_phase_pack(self) -> dict[str, Any]:
+        self._dashboard("Deep Scan Phase Pack", "Running subdomain liveness, JS signal, parameter expansion, and prioritization phases", progress=45, agent="DeepScanPhasePack", tool="deep_scan_phase_pack")
+        self.deep_scan_summary = DeepScanPhasePack(state=self.state, client=self.client, dashboard=self.dashboard, include_subdomains=self.include_subdomains).run_all()
+        self.state.add_event("INFO", "deep scan phase pack completed", summary_path=self.deep_scan_summary.get("summary_path", ""))
+        return self.deep_scan_summary
+
     def _research_orchestration(self) -> dict[str, Any]:
         self._dashboard("Unified Research Orchestrator", "Generating strategy profiles and phase decisions", progress=69, agent="UnifiedResearchOrchestrator", tool="unified_research_orchestrator")
         self.research_summary = self.research_orchestrator.run_all()
@@ -292,26 +304,27 @@ class AutonomousScanEngine:
         return self.dynamic_tool_summary
 
     def bootstrap(self) -> None:
-        self._dashboard("Bootstrap", "Starting unified research autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
+        self._dashboard("Bootstrap", "Starting deep safe-active autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
         self.agent_runtime.run_turn(agent="SupervisorAgent", observation="scan requested for authorized target", decision="start scope validation", selected_tool="scope_guard", phase="Bootstrap", handoff_to="ScopeAgent", progress_percent=1)
-        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="unified-research", version=VERSION)
+        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="deep-safe-active", version=VERSION)
         self.phase_runner.run("01 Diagnostics", self.run_ollama_check, progress_start=2, progress_end=5, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.health_check")
-        self.phase_runner.run("02 Scope + Passive Analysis", self._availability_and_passive, progress_start=6, progress_end=18, url=self.target, agent="ReconAgent", tool="passive_analyzers")
-        self.phase_runner.run("03 Deep Asset Discovery", self._deep_asset_discovery, progress_start=19, progress_end=26, url=self.target, agent="AssetDiscoveryAgent", tool="deep_asset_discovery")
-        self.phase_runner.run("04 Primary Crawl", self._initial_crawl, progress_start=27, progress_end=40, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
-        self.phase_runner.run("05 JavaScript Endpoint Extraction", self._javascript_review, progress_start=41, progress_end=50, url=self.target, agent="JSExposureAgent", tool="review_scripts")
-        self.phase_runner.run("06 Browser Route Discovery", self._browser_discovery, progress_start=51, progress_end=56, url=self.target, agent="BrowserCrawlerAgent", tool="browser_crawler")
-        self.phase_runner.run("07 Post-Discovery Crawl", self._post_discovery_crawl, progress_start=57, progress_end=64, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
+        self.phase_runner.run("02 Scope + Passive Analysis", self._availability_and_passive, progress_start=6, progress_end=14, url=self.target, agent="ReconAgent", tool="passive_analyzers")
+        self.phase_runner.run("03 Deep Asset Discovery", self._deep_asset_discovery, progress_start=15, progress_end=24, url=self.target, agent="AssetDiscoveryAgent", tool="deep_asset_discovery")
+        self.phase_runner.run("04 Primary Crawl", self._initial_crawl, progress_start=25, progress_end=36, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
+        self.phase_runner.run("05 JavaScript Endpoint Extraction", self._javascript_review, progress_start=37, progress_end=44, url=self.target, agent="JSExposureAgent", tool="review_scripts")
+        self.phase_runner.run("06 Browser Route Discovery", self._browser_discovery, progress_start=45, progress_end=50, url=self.target, agent="BrowserCrawlerAgent", tool="browser_crawler")
+        self.phase_runner.run("07 Post-Discovery Crawl", self._post_discovery_crawl, progress_start=51, progress_end=56, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
+        self.phase_runner.run("08 Deep Scan Phase Pack", self._safe_deep_phase_pack, progress_start=57, progress_end=68, url=self.target, agent="DeepScanPhasePack", tool="deep_scan_phase_pack")
         self.memory.update_from_state(self.state)
-        self.phase_runner.run("08 LLM Surface Review", lambda: self._llm_surface_summary(progress=66), progress_start=65, progress_end=68, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.plan_actions")
-        self.phase_runner.run("09 Unified Research Orchestration", self._research_orchestration, progress_start=69, progress_end=70, url=self.target, agent="UnifiedResearchOrchestrator", tool="unified_research_orchestrator")
-        self.phase_runner.run("10 Dynamic Tool Scheduler", self._dynamic_tool_phase, progress_start=70, progress_end=71, url=self.target, agent="DynamicToolScheduler", tool="dynamic_tool_scheduler")
+        self.phase_runner.run("09 LLM Surface Review", lambda: self._llm_surface_summary(progress=70), progress_start=69, progress_end=71, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.plan_actions")
+        self.phase_runner.run("10 Unified Research Orchestration", self._research_orchestration, progress_start=72, progress_end=74, url=self.target, agent="UnifiedResearchOrchestrator", tool="unified_research_orchestrator")
+        self.phase_runner.run("11 Dynamic Tool Scheduler", self._dynamic_tool_phase, progress_start=75, progress_end=77, url=self.target, agent="DynamicToolScheduler", tool="dynamic_tool_scheduler")
         if not self.state.params:
-            self._dashboard("Parameter Discovery", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=71, evidence=self._coverage_text(), agent="ParameterDiscoveryAgent", tool="parameter_inventory")
+            self._dashboard("Parameter Discovery", "No safe query parameters or GET inputs were discovered in the selected scope.", progress=77, evidence=self._coverage_text(), agent="ParameterDiscoveryAgent", tool="parameter_inventory")
         self.state.save()
 
     def run_planned_tests(self) -> None:
-        self.handoffs.handoff("ParameterDiscoveryAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="building ReAct decisions from current scan state", progress_percent=72)
+        self.handoffs.handoff("ParameterDiscoveryAgent", "CAIReActPlannerAgent", phase="CAI ReAct Planning", message="building ReAct decisions from current scan state", progress_percent=78)
         if self.client.budget_remaining() <= 0:
             self.state.add_event("WARNING", "request budget exhausted before ReAct loop")
             return
@@ -332,11 +345,12 @@ class AutonomousScanEngine:
         self.extra_reports.update(self.trace.write_reports())
         self.extra_reports.update(self.reasoning.write_reports())
         self.extra_reports.update(self.memory.write_reports())
-        for name, payload in {"cai-react-summary.json": self.react_summary, "dynamic-tool-phase-summary.json": self.dynamic_tool_summary, "unified-research-orchestration.json": self.research_summary, "phase-runner-summary.json": self.phase_runner.summary(), "tool-router-matrix.json": self.tool_router.matrix()}.items():
+        for name, payload in {"cai-react-summary.json": self.react_summary, "dynamic-tool-phase-summary.json": self.dynamic_tool_summary, "unified-research-orchestration.json": self.research_summary, "deep-scan-phase-summary.json": self.deep_scan_summary, "phase-runner-summary.json": self.phase_runner.summary(), "tool-router-matrix.json": self.tool_router.matrix()}.items():
             path = self.state.out_dir / name
             path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
             self.extra_reports[name.replace("-", "_").replace(".", "_")] = str(path)
         reports = ReportingV2(state=self.state, extra_reports=self.extra_reports).write_all()
+        reports.update(self.dashboard.write_reports(self.state.out_dir))
         self.tool_router.mark("report_generator", "completed", "reports written")
         self.dashboard.report_paths.update(reports)
         return reports
@@ -348,9 +362,9 @@ class AutonomousScanEngine:
         reports: dict[str, str] = {}
         try:
             self.bootstrap()
-            self.phase_runner.run("11 Safe Parameter + Endpoint Review", self.run_planned_tests, progress_start=72, progress_end=90, url=self.target, agent="CAIReActPlannerAgent", tool="test_parameter")
-            reports = self.phase_runner.run("12 Reporting", self.write_reports, progress_start=91, progress_end=98, url=self.target, agent="ReportAgent", tool="report_generator").data or {}
-            self._dashboard("Final Dashboard", "Unified research scan completed", progress=100, evidence=self._coverage_text(), agent="ReportAgent", tool="report_generator")
+            self.phase_runner.run("12 Safe Parameter + Endpoint Review", self.run_planned_tests, progress_start=78, progress_end=90, url=self.target, agent="CAIReActPlannerAgent", tool="test_parameter")
+            reports = self.phase_runner.run("13 Reporting", self.write_reports, progress_start=91, progress_end=98, url=self.target, agent="ReportAgent", tool="report_generator").data or {}
+            self._dashboard("Final Dashboard", "Deep safe-active scan completed", progress=100, evidence=self._coverage_text(), agent="ReportAgent", tool="report_generator")
         except KeyboardInterrupt:
             status = "interrupted"
             self.state.add_event("WARNING", "interrupted by user")
@@ -366,11 +380,11 @@ class AutonomousScanEngine:
         finally:
             self.dashboard.stop(final=True)
             self.state.save()
-        return {"status": status, "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "runtime_ms": int((time.time() - started) * 1000), "coverage": self.state.coverage(), "surface": self._surface(), "phase_runner": self.phase_runner.summary(), "research_orchestration": self.research_summary, "dynamic_tools": self.dynamic_tool_summary, "ollama": self.ollama_status, "llm_policy": self.llm_policy.as_dict(), "agent_runtime": self.agent_runtime.summary(), "cai_react": self.react_summary, "tool_router": self.tool_router.matrix(), "reports": reports, "safety": {"same_scope_only": True, "request_budget": True, "approval_gated_dynamic_tools": True, "copied_offensive_code": False, "embedded_attack_payloads": False, "credential_testing": False, "target_data_modification": False, "destructive_actions": False}}
+        return {"status": status, "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "runtime_ms": int((time.time() - started) * 1000), "coverage": self.state.coverage(), "surface": self._surface(), "phase_runner": self.phase_runner.summary(), "deep_scan": self.deep_scan_summary, "research_orchestration": self.research_summary, "dynamic_tools": self.dynamic_tool_summary, "ollama": self.ollama_status, "llm_policy": self.llm_policy.as_dict(), "agent_runtime": self.agent_runtime.summary(), "cai_react": self.react_summary, "tool_router": self.tool_router.matrix(), "reports": reports, "safety": {"same_scope_only": True, "request_budget": True, "approval_gated_dynamic_tools": True, "copied_offensive_code": False, "embedded_attack_payloads": False, "credential_testing": False, "target_data_modification": False, "destructive_actions": False}}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VulnScope safe unified research autonomous scan engine")
+    parser = argparse.ArgumentParser(description="VulnScope safe deep autonomous scan engine")
     parser.add_argument("--target", required=True)
     parser.add_argument("--scan-mode", default="passive", choices=["passive", "safe-active", "lab"])
     parser.add_argument("--include-subdomains", action="store_true")
