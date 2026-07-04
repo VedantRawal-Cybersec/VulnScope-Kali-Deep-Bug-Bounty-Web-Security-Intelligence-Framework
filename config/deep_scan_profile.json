@@ -1,25 +1,25 @@
 {
-  "profile_name": "owned-site-deep-safe-active",
-  "description": "Default one-command profile for owned or explicitly authorized websites.",
+  "profile_name": "owned-site-url-only-deep-safe-active",
+  "description": "Default one-command profile for owned or explicitly authorized websites. User supplies only the target URL; discovery phases perform the route, JavaScript, form, subdomain, parameter, and dynamic-tool workflow.",
   "scan_mode": "bugbounty",
   "internal_engine_scan_mode": "safe-active",
   "include_subdomains": true,
   "browser": true,
   "deep_assets": true,
   "dynamic_tools": true,
-  "max_pages": 350,
-  "max_depth": 5,
-  "max_params": 600,
+  "max_pages": 800,
+  "max_depth": 6,
+  "max_params": 1500,
   "request_timeout": 12,
-  "delay": 0.25,
-  "request_budget": 2500,
-  "max_actions": 320,
-  "asset_doc_limit": 80,
+  "delay": 0.2,
+  "request_budget": 6000,
+  "max_actions": 700,
+  "asset_doc_limit": 160,
   "llm_planner": true,
   "llm_decision_interval": 3,
   "notes": [
-    "Users should only provide a target URL and written authorization.",
-    "Seed URLs may be provided when important routes are hidden behind navigation, JavaScript, or login.",
-    "The engine remains same-scope and consent-gated."
+    "Default command: python3 vulnscope_deep.py https://example.com",
+    "Seed URLs are optional and should not be required for normal usage.",
+    "The engine remains same-scope, consent-gated, non-destructive, and report-driven."
   ]
 }
