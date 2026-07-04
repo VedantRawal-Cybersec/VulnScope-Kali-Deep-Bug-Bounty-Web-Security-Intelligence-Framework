@@ -91,7 +91,13 @@ class TraceLogger:
             handle.write(json.dumps(asdict(event), ensure_ascii=False) + "\n")
         return event
 
-    def write_reports(self) -> dict[str, str]:
+    def write_reports(self, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        """Write trace artifacts.
+
+        Compatibility note: older/newer callers may pass an output path. TraceLogger
+        already derives the correct target output directory, so optional arguments
+        are accepted and ignored.
+        """
         json_path = self.out / "agent-trace.json"
         md_path = self.out / "agent-trace.md"
         write_json(json_path, [asdict(event) for event in self.events])
