@@ -38,6 +38,13 @@ jobs:
             core/tool_manager.py \
             core/tool_router.py \
             core/scan_health.py \
+            core/ai_brain.py \
+            core/autonomous_planner.py \
+            core/ai_tool_discovery.py \
+            core/dynamic_tool_installer.py \
+            core/bounty_integrator.py \
+            core/report_generator.py \
+            core/orchestrator.py \
             core/ai_tool_analyzer.py \
             core/ai_tool_auto_configurator.py \
             core/ai_tool_registry_repair.py \
@@ -50,6 +57,13 @@ jobs:
           from core.autonomous_scan_engine import AutonomousScanEngine
           from core.phase_scheduler import PhaseScheduler
           from core.tool_manager import ToolManager
+          from core.ai_brain import AIBrain
+          from core.autonomous_planner import AutonomousPlanner
+          from core.ai_tool_discovery import AIToolDiscovery
+          from core.dynamic_tool_installer import DynamicToolInstaller
+          from core.bounty_integrator import BountyIntegrator
+          from core.report_generator import ReportGenerator
+          from core.orchestrator import ReActOrchestrator
           from core.ai_tool_auto_configurator import AIToolAutoConfigurator
           from core.ai_tool_registry_repair import AIToolRegistryRepair
           from core.scan_health import ScanHealthReporter
