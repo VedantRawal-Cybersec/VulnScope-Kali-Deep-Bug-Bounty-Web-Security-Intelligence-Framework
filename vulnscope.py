@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "2.0.0-deepseek-react"
+VERSION = "2.0.1-deepseek-dashboard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -23,7 +23,7 @@ YELLOW = "\033[33m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║             DeepSeek ReAct AI → Memory → Tool Learning → Reports             ║
+║          DeepSeek AI → Live Dashboard → Deep Discovery → Final Report         ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -50,7 +50,7 @@ def host_from_target(target: str) -> str:
 def effective_scan_mode(args: argparse.Namespace) -> str:
     if getattr(args, "lab_mode", False) or getattr(args, "mode", "") == "lab":
         return "lab"
-    if getattr(args, "mode", "") == "bugbounty" and args.scan_mode == "passive":
+    if getattr(args, "mode", "") in {"bugbounty", "react"} and args.scan_mode == "passive":
         return "safe-active"
     return args.scan_mode
 
@@ -74,14 +74,16 @@ def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = F
     AUTH.write_text(json.dumps({"target": target, "host": host, "scan_mode": scan_mode, "include_subdomains": include_subdomains, "confirmed_authorization": True, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
 
 
-def run(label: str, command: list[str], timeout: int = 3600) -> dict:
+def run(label: str, command: list[str], timeout: int = 3600, env: dict[str, str] | None = None) -> dict:
     print(f"\n{c('[' + label + ']', CYAN)}", flush=True)
     print("$ " + " ".join(command), flush=True)
     started = datetime.now(timezone.utc)
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    merged_env["PYTHONUNBUFFERED"] = "1"
     try:
-        proc = subprocess.Popen(command, env=env)
+        proc = subprocess.Popen(command, env=merged_env)
         try:
             exit_code = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -94,25 +96,81 @@ def run(label: str, command: list[str], timeout: int = 3600) -> dict:
         return {"label": label, "ok": False, "error": str(exc), "command": command, "started_at": started.isoformat()}
 
 
+def deep_defaults(args: argparse.Namespace) -> dict[str, int | float]:
+    return {
+        "max_pages": max(int(args.max_pages), 350),
+        "max_depth": max(int(args.max_depth), 5),
+        "max_params": max(int(args.max_params), 600),
+        "request_timeout": max(int(args.request_timeout), 12),
+        "delay": min(float(args.delay), 0.25),
+        "request_budget": max(int(args.request_budget), 2500),
+        "max_actions": max(int(args.max_actions), 320),
+        "asset_doc_limit": max(int(args.asset_doc_limit), 80),
+    }
+
+
+def engine_command(target: str, args: argparse.Namespace, *, scan_mode: str, deep: bool = False) -> list[str]:
+    opts = deep_defaults(args) if deep else {
+        "max_pages": args.max_pages,
+        "max_depth": args.max_depth,
+        "max_params": args.max_params,
+        "request_timeout": args.request_timeout,
+        "delay": args.delay,
+        "request_budget": args.request_budget,
+        "max_actions": args.max_actions,
+        "asset_doc_limit": args.asset_doc_limit,
+    }
+    cmd = [
+        sys.executable,
+        "-m",
+        "core.autonomous_scan_engine",
+        "--target",
+        target,
+        "--scan-mode",
+        scan_mode,
+        "--max-pages",
+        str(opts["max_pages"]),
+        "--max-depth",
+        str(opts["max_depth"]),
+        "--max-params",
+        str(opts["max_params"]),
+        "--request-timeout",
+        str(opts["request_timeout"]),
+        "--delay",
+        str(opts["delay"]),
+        "--request-budget",
+        str(opts["request_budget"]),
+        "--max-actions",
+        str(opts["max_actions"]),
+        "--asset-doc-limit",
+        str(opts["asset_doc_limit"]),
+        "--ollama-url",
+        args.ollama_url,
+        "--ollama-model",
+        args.ollama_model,
+    ]
+    if args.include_subdomains:
+        cmd.append("--include-subdomains")
+    if args.resume:
+        cmd.append("--resume")
+    if args.browser or deep:
+        cmd.append("--browser")
+    if args.no_live_dashboard:
+        cmd.append("--no-live-dashboard")
+    if args.no_deep_assets:
+        cmd.append("--no-deep-assets")
+    if args.no_dynamic_tools:
+        cmd.append("--no-dynamic-tools")
+    for header in args.header or []:
+        if ":" in header:
+            cmd.extend(["--header", header])
+    return cmd
+
+
 def run_agentic(target: str, args: argparse.Namespace) -> dict:
     mode = effective_scan_mode(args)
-    os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
-    os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
-    os.environ["VULNSCOPE_SCAN_MODE"] = mode
-    engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--asset-doc-limit", str(args.asset_doc_limit), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
-    if args.include_subdomains:
-        engine_cmd.append("--include-subdomains")
-    if args.resume:
-        engine_cmd.append("--resume")
-    if args.browser:
-        engine_cmd.append("--browser")
-    if args.no_live_dashboard:
-        engine_cmd.append("--no-live-dashboard")
-    if args.no_deep_assets:
-        engine_cmd.append("--no-deep-assets")
-    if args.no_dynamic_tools:
-        engine_cmd.append("--no-dynamic-tools")
-    return run(f"Phase-stable autonomous engine ({mode})", engine_cmd, timeout=3600)
+    env = {"OLLAMA_HOST": args.ollama_url, "VULNSCOPE_OLLAMA_MODEL": args.ollama_model, "VULNSCOPE_OLLAMA_URL": args.ollama_url, "VULNSCOPE_SCAN_MODE": mode}
+    return run(f"Phase-stable autonomous engine ({mode})", engine_command(target, args, scan_mode=mode), timeout=3600, env=env)
 
 
 def auto_discover_tools(target: str, brain, *, approve_install: bool = False, approve_run: bool = False) -> list[dict]:
@@ -134,39 +192,65 @@ def auto_discover_tools(target: str, brain, *, approve_install: bool = False, ap
     return results
 
 
+def load_engine_findings(target: str) -> tuple[list[dict], dict]:
+    host = host_from_target(target)
+    state_path = Path("reports/output/cai-superior") / host / "autonomous-scan-state.json"
+    if not state_path.exists():
+        return [], {"state_path": str(state_path), "state_found": False}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [], {"state_path": str(state_path), "state_found": True, "error": str(exc)}
+    findings = payload.get("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+    return findings, {"state_path": str(state_path), "state_found": True, "coverage": payload.get("stats", {}), "urls": len(payload.get("urls", {})), "params": len(payload.get("params", {}))}
+
+
+def write_deepseek_report(target: str, args: argparse.Namespace, engine_result: dict) -> dict:
+    from core.ai_brain import AIBrain
+    from core.report_generator import ReportGenerator
+    brain = AIBrain(model=args.ollama_model or "deepseek-local")
+    findings, context = load_engine_findings(target)
+    context["engine_result"] = engine_result
+    out_dir = Path(args.out_dir) if args.out_dir else Path("reports/output") / host_from_target(target)
+    report_path = ReportGenerator(brain).write_report(target, findings, out_dir=out_dir, context=context)
+    react_final = out_dir / "vulnscope-react-final.json"
+    payload = {"target": target, "findings": findings, "report_path": str(report_path), "engine_result": engine_result, "context": context, "generated_at": datetime.now(timezone.utc).isoformat()}
+    react_final.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"report_path": str(report_path), "react_final": str(react_final), "findings": len(findings), "context": context}
+
+
 def run_react_ai(target: str, args: argparse.Namespace) -> dict:
     from core.ai_brain import AIBrain
-    from core.autonomous_planner import AutonomousPlanner
-    from core.bounty_integrator import BountyIntegrator
-    from core.orchestrator import ReActOrchestrator
-    mode = "lab" if args.mode == "lab" or args.lab_mode else "bugbounty"
-    aggressive = bool(args.aggressive and mode == "lab")
+    mode = "lab" if args.mode == "lab" or args.lab_mode else "safe-active"
     if args.aggressive and mode != "lab":
-        print(c("Aggressive mode is lab-only. Running bugbounty mode with safe defaults.", YELLOW))
+        print(c("Aggressive mode is lab-only. Running safe-active DeepSeek dashboard mode.", YELLOW))
     brain = AIBrain(model=args.ollama_model or "deepseek-local")
-    planner = AutonomousPlanner()
+    print(c(f"\n[DeepSeek] Host: {brain.ollama_host} | Model: {brain.model}", CYAN))
     if args.auto_discover:
         print(c("\n[Auto-Discover] Searching and registering candidate tools...", CYAN))
         results = auto_discover_tools(target, brain, approve_install=args.approve_install, approve_run=args.approve_run and mode == "lab")
         print(json.dumps({"auto_discover_results": len(results), "log": "logs/auto_discover_results.json"}, indent=2))
-    out_dir = args.out_dir or str(Path("reports/output") / host_from_target(target))
-    orchestrator = ReActOrchestrator(target, mode=mode, aggressive=aggressive, max_turns=args.react_turns, out_dir=out_dir, brain=brain, planner=planner)
-    result = orchestrator.run()
+    env = {"OLLAMA_HOST": args.ollama_url, "VULNSCOPE_OLLAMA_MODEL": args.ollama_model, "VULNSCOPE_OLLAMA_URL": args.ollama_url, "VULNSCOPE_SCAN_MODE": mode, "VULNSCOPE_REACT_AI": "1"}
+    print(c("\n[DeepSeek Dashboard] Launching full crawler + JS + parameter + dynamic-tool engine...", GREEN))
+    engine_result = run("DeepSeek dashboard autonomous engine", engine_command(target, args, scan_mode=mode, deep=True), timeout=7200, env=env)
+    report_info = write_deepseek_report(target, args, engine_result)
     submission = {"submitted": False, "reason": "submit flag not set"}
     if args.submit:
+        from core.bounty_integrator import BountyIntegrator
         if not args.program:
             submission = {"submitted": False, "reason": "missing --program"}
         else:
             answer = input("Submit final report to the selected platform? Type SUBMIT to continue: ").strip()
             if answer == "SUBMIT":
                 integrator = BountyIntegrator(args.platform, api_key=args.api_key)
-                submission = integrator.submit_report(program=args.program, report_path=result.get("report_path", ""), target=target, findings=result.get("findings", []), confirm=True)
+                findings, _context = load_engine_findings(target)
+                submission = integrator.submit_report(program=args.program, report_path=report_info.get("report_path", ""), target=target, findings=findings, confirm=True)
             else:
                 submission = {"submitted": False, "reason": "user cancelled"}
-    result["submission"] = submission
-    final_path = Path(out_dir) / "vulnscope-react-final.json"
-    final_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-    return {"label": "DeepSeek ReAct AI", "ok": True, "exit_code": 0, "result": result, "final_path": str(final_path)}
+    ok = bool(engine_result.get("ok"))
+    return {"label": "DeepSeek dashboard AI", "ok": ok, "exit_code": 0 if ok else 1, "engine": engine_result, "report": report_info, "submission": submission}
 
 
 def handle_tool_registry(args: argparse.Namespace) -> int | None:
@@ -198,13 +282,13 @@ def handle_tool_registry(args: argparse.Namespace) -> int | None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="VulnScope DeepSeek ReAct autonomous security assessment framework")
+    parser = argparse.ArgumentParser(description="VulnScope DeepSeek dashboard autonomous security assessment framework")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["agentic", "bugbounty", "lab", "react"], default="agentic")
-    parser.add_argument("--react-ai", action="store_true", help="Run the DeepSeek ReAct AI loop.")
+    parser.add_argument("--react-ai", action="store_true", help="Run DeepSeek through the full live dashboard engine.")
     parser.add_argument("--aggressive", action="store_true", help="Lab-only higher-intensity approved tool profile.")
-    parser.add_argument("--auto-discover", action="store_true", help="Discover and register candidate tools before scanning.")
+    parser.add_argument("--auto-discover", action="store_true")
     parser.add_argument("--approve-install", action="store_true")
     parser.add_argument("--approve-run", action="store_true")
     parser.add_argument("--submit", action="store_true")
@@ -212,7 +296,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--program", default="")
     parser.add_argument("--api-key", default=os.getenv("BOUNTY_API_KEY", ""))
     parser.add_argument("--out-dir", default="")
-    parser.add_argument("--react-turns", type=int, default=30)
     parser.add_argument("--lab-mode", action="store_true")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
     parser.add_argument("--ai-add-tool", default="")
@@ -261,7 +344,9 @@ def final_summary(target: str, history: list[dict]) -> None:
     payload = {"target": target, "history": history, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION}
     (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     print(c("\n✅ VulnScope run complete.", GREEN))
-    print("   • reports/output/" + host + "/")
+    print("   • reports/output/cai-superior/" + host + "/")
+    print("   • reports/output/" + host + "/final-report.md")
+    print("   • reports/output/" + host + "/vulnscope-react-final.json")
     print("   • reports/output/vulnscope-main/final-summary.json")
 
 
