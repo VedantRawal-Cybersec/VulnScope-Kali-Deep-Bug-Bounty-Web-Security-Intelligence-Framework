@@ -147,24 +147,27 @@ class CrawlerV2:
     def _surface_counts(self) -> dict[str, int]:
         paths = {urlparse(item.url).path or "/" for item in self.state.urls.values()}
         api_routes = [item.url for item in self.state.urls.values() if "/api/" in (urlparse(item.url).path or "").lower() or "graphql" in (urlparse(item.url).path or "").lower()]
-        return {
-            "urls_found": len(self.state.urls),
-            "paths_found": len(paths),
-            "params_found": len(self.state.params),
-            "forms_found": self.form_count,
-            "js_found": len(self.script_urls),
-            "api_routes_found": len(api_routes),
-        }
+        return {"urls_found": len(self.state.urls), "paths_found": len(paths), "params_found": len(self.state.params), "forms_found": self.form_count, "js_found": len(self.script_urls), "api_routes_found": len(api_routes)}
 
-    def _update(self, message: str, url: str, progress: int) -> None:
+    def _update(
+        self,
+        message: str,
+        url: str,
+        progress: int,
+        *,
+        phase: str = "Crawler v2",
+        agent: str = "CrawlerAgent",
+        tool: str = "safe_crawler_v2",
+        probe: str = "crawl",
+    ) -> None:
         parsed = urlparse(url)
         path = parsed.path or "/"
         query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
         if self.dashboard is not None and hasattr(self.dashboard, "update"):
             self.dashboard.update(
-                current_agent="CrawlerAgent",
-                current_tool="safe_crawler_v2",
-                phase="Crawler v2",
+                current_agent=agent,
+                current_tool=tool,
+                phase=phase,
                 phase_progress=progress,
                 requests=self.client.state.stats.get("requests", 0),
                 findings=len(self.state.findings),
@@ -174,7 +177,7 @@ class CrawlerV2:
                 path=path,
                 parameters=query,
                 domain=parsed.hostname or "—",
-                probe_string="crawl",
+                probe_string=probe,
                 evidence=f"urls={len(self.state.urls)} params={len(self.state.params)} hosts={','.join(sorted(self.allowed_hosts))}",
                 safety_status="same-scope crawl with redirect-aware landing host support",
                 **self._surface_counts(),
@@ -214,7 +217,7 @@ class CrawlerV2:
                 skipped += 1
                 continue
             progress = int(min(99, done * 100 / max(1, self.max_pages)))
-            self._update(f"Crawling {done + 1}/{self.max_pages} depth={depth}", url, progress)
+            self._update(f"Crawling {done + 1}/{self.max_pages} depth={depth}", url, progress, phase="Crawler v2", agent="CrawlerAgent", tool="safe_crawler_v2", probe="crawl")
             result = self.client.get(url, purpose="crawl")
             self._remember_final_host(result.url)
             record.last_seen_at = result.elapsed_ms
@@ -263,7 +266,7 @@ class CrawlerV2:
             else:
                 record.status = "done"
             done += 1
-            self._update(f"Completed page {done}: discovered urls={len(self.state.urls)} params={len(self.state.params)}", result.url, progress)
+            self._update(f"Completed page {done}: discovered urls={len(self.state.urls)} params={len(self.state.params)}", result.url, progress, phase="Crawler v2", agent="CrawlerAgent", tool="safe_crawler_v2", probe="crawl")
             if done % 5 == 0:
                 self.state.save()
         self.state.stats["forms"] = self.form_count
@@ -277,7 +280,15 @@ class CrawlerV2:
         for script_url in list(self.script_urls)[:limit]:
             if self.client.budget_remaining() <= 0:
                 break
-            self._update("Reviewing JavaScript route hints", script_url, min(99, count * 100 // max(1, limit)))
+            self._update(
+                "Reviewing JavaScript route hints",
+                script_url,
+                min(99, count * 100 // max(1, limit)),
+                phase="JavaScript Endpoint Extraction",
+                agent="JSExposureAgent",
+                tool="js_route_review",
+                probe="javascript-route-review",
+            )
             response = self.client.get(script_url, purpose="javascript-route-review")
             self._remember_final_host(response.url)
             if not response.ok or response.status_code != 200:
