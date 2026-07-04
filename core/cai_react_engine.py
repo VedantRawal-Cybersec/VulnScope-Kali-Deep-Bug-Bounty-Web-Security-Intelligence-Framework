@@ -91,9 +91,9 @@ class ReactObservation:
 class SafeCAIReactAgent:
     """Autonomous, evidence-first ReAct controller for authorized VulnScope scans.
 
-    The deterministic scheduler owns forward progress. In lab mode it now
-    validates discovered/seeded safe query parameters before exhausting the crawl
-    queue, preventing validation starvation on deliberately vulnerable labs.
+    The deterministic scheduler owns forward progress. In consented safe-active
+    or lab mode it validates discovered/seeded safe query parameters before
+    exhausting the crawl queue, preventing validation starvation on owned sites.
     """
 
     SYSTEM_PROMPT = """
@@ -186,7 +186,7 @@ Required JSON schema:
             return None
         if self.scan_mode == "passive":
             return None if "classification_review" in tested else "classification_review"
-        if self.scan_mode == "lab" and item.kind in {"object-like", "resource-like", "search-like", "generic"}:
+        if self.scan_mode in {"safe-active", "lab"} and item.kind in {"object-like", "resource-like", "search-like", "generic"}:
             if "reflection_canary" not in tested:
                 return "reflection_canary"
             return None if "classification_review" in tested else "classification_review"
@@ -343,7 +343,7 @@ Required JSON schema:
 
     def _fallback_decision(self) -> ReactDecision:
         cov = self.state.coverage()
-        if self.scan_mode == "lab":
+        if self.scan_mode in {"safe-active", "lab"}:
             parameter_decision = self._next_parameter_decision()
             if parameter_decision is not None:
                 return parameter_decision
