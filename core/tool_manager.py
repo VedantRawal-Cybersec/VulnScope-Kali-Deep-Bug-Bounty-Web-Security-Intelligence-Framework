@@ -9,7 +9,7 @@ import shlex
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -61,7 +61,13 @@ class CommandResult:
 
 
 class ToolManager:
-    """Install, register, repair, and execute manifest-based dynamic tools."""
+    """Install, register, repair, and execute manifest-based dynamic tools.
+
+    Approval model:
+    - Known safe profiles may be auto-approved when `approve_known=True`.
+    - AI-repaired tools may be auto-approved only when metadata says READY.
+    - Unknown heuristic tools are never auto-approved just because a run command exists.
+    """
 
     def __init__(self, registry: ToolRegistry | None = None) -> None:
         self.registry = registry or ToolRegistry()
@@ -81,9 +87,7 @@ class ToolManager:
         parsed = urlparse(repo_url)
         path = parsed.path.strip("/").removesuffix(".git")
         slug = re.sub(r"[^a-zA-Z0-9_.-]+", "_", path.replace("/", "__"))
-        if not slug:
-            slug = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
-        return slug[:120]
+        return (slug or hashlib.sha256(repo_url.encode()).hexdigest()[:12])[:120]
 
     @staticmethod
     def _tool_id(name: str, repo_url: str) -> str:
@@ -92,33 +96,31 @@ class ToolManager:
         return f"{base}_{suffix}"
 
     @staticmethod
-    def _load_manifest(path: Path) -> dict[str, Any] | None:
-        yaml_path = path / "tool.yaml"
-        yml_path = path / "tool.yml"
-        json_path = path / "tool.json"
-        manifest_json_path = path / "manifest.json"
-        if manifest_json_path.exists():
-            manifest = ToolManifest(path)
-            return manifest.to_registry_manifest()
-        if yaml_path.exists() or yml_path.exists():
-            source = yaml_path if yaml_path.exists() else yml_path
-            if yaml is None:
-                raise RuntimeError("PyYAML is required to read tool.yaml. Install pyyaml or use tool.json.")
-            return yaml.safe_load(source.read_text(encoding="utf-8")) or {}
-        if json_path.exists():
-            return json.loads(json_path.read_text(encoding="utf-8"))
-        return None
-
-    @staticmethod
     def _split_command(command: str | list[str]) -> list[str]:
         if isinstance(command, list):
             return [str(item) for item in command]
         return shlex.split(str(command))
 
     @staticmethod
+    def _load_manifest(path: Path) -> dict[str, Any] | None:
+        manifest_json_path = path / "manifest.json"
+        if manifest_json_path.exists():
+            return ToolManifest(path).to_registry_manifest()
+        yaml_path = path / "tool.yaml"
+        yml_path = path / "tool.yml"
+        if yaml_path.exists() or yml_path.exists():
+            if yaml is None:
+                raise RuntimeError("PyYAML is required to read tool.yaml. Install pyyaml or use manifest.json/tool.json.")
+            source = yaml_path if yaml_path.exists() else yml_path
+            return yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+        json_path = path / "tool.json"
+        if json_path.exists():
+            return json.loads(json_path.read_text(encoding="utf-8"))
+        return None
+
+    @staticmethod
     def _tool_key_from_path(local_path: Path, name: str = "") -> str:
-        values = [local_path.name.lower(), name.lower()]
-        joined = " ".join(values).replace("__", "/")
+        joined = " ".join([local_path.name.lower(), name.lower()]).replace("__", "/")
         for key in sorted(KNOWN_TOOL_PROFILES, key=len, reverse=True):
             if key in joined:
                 return key
@@ -128,36 +130,45 @@ class ToolManager:
         return ""
 
     def _known_profile_for(self, local_path: Path, name: str = "") -> dict[str, Any] | None:
-        key = self._tool_key_from_path(local_path, name)
-        return KNOWN_TOOL_PROFILES.get(key)
+        return KNOWN_TOOL_PROFILES.get(self._tool_key_from_path(local_path, name))
+
+    def _can_auto_approve(self, tool: RegisteredTool, local_path: Path) -> bool:
+        if not tool.run:
+            return False
+        metadata = tool.metadata or {}
+        known_profile = metadata.get("known_profile") or self._tool_key_from_path(local_path, tool.name)
+        if known_profile in KNOWN_TOOL_PROFILES:
+            return True
+        if str(metadata.get("ai_repair_status") or metadata.get("analysis_status") or "").upper() == "READY":
+            return True
+        return False
 
     def _infer_manifest(self, repo_url: str, local_path: Path) -> dict[str, Any]:
         name = local_path.name.replace("__", "/")
         install: list[str] = []
-        run = ""
-        parser = "plain"
-        phase = "discovery"
-        metadata: dict[str, Any] = {"manifest_inferred": True}
         if (local_path / "requirements.txt").exists():
             install.append("python3 -m pip install -r requirements.txt")
         if (local_path / "pyproject.toml").exists():
             install.append("python3 -m pip install .")
         if (local_path / "setup.py").exists():
-            install.append("python3 setup.py install")
+            install.append("python3 -m pip install .")
         if (local_path / "go.mod").exists():
-            install.append("go build")
+            install.append("go build ./...")
         if (local_path / "package.json").exists():
             install.append("npm install")
         if (local_path / "install.sh").exists():
             install.append("bash install.sh")
-        if (local_path / "setup.sh").exists():
-            install.append("bash setup.sh")
+
+        phase = "discovery"
+        parser = "plain"
+        run = ""
+        metadata: dict[str, Any] = {"manifest_inferred": True}
         profile = self._known_profile_for(local_path, name)
         if profile:
             phase = str(profile.get("phase") or phase)
             parser = str(profile.get("output_parser") or parser)
             run = str(profile.get("run") or "")
-            metadata.update({k: v for k, v in profile.items() if k not in {"run", "phase", "output_parser"}})
+            metadata.update({"known_profile": self._tool_key_from_path(local_path, name), **{k: v for k, v in profile.items() if k not in {"run", "phase", "output_parser"}}})
         else:
             for candidate in ["main.py", "scanner.py", "scan.py", "app.py"]:
                 if (local_path / candidate).exists():
@@ -205,9 +216,7 @@ class ToolManager:
 
     def add_tool(self, repo_url: str, *, approve_install: bool = False, approve_run: bool = False, enable: bool = False, run_command: str = "") -> RegisteredTool:
         local_path = self.clone_or_update(repo_url)
-        manifest = self._load_manifest(local_path)
-        if manifest is None:
-            manifest = self._infer_manifest(repo_url, local_path)
+        manifest = self._load_manifest(local_path) or self._infer_manifest(repo_url, local_path)
         if run_command:
             manifest["run"] = run_command
             manifest.setdefault("metadata", {})["manual_run_command_provided"] = True
@@ -219,7 +228,7 @@ class ToolManager:
         if enable:
             tool.enabled = True
         self.registry.upsert(tool)
-        self._log("Registered dynamic tool", data={"tool_id": tool.tool_id, "name": tool.name, "phase": tool.phase, "path": tool.local_path, "has_run": bool(tool.run)})
+        self._log("Registered dynamic tool", data={"tool_id": tool.tool_id, "name": tool.name, "phase": tool.phase, "path": tool.local_path, "has_run": bool(tool.run), "approved_for_run": tool.approved_for_run})
         return tool
 
     def reconcile_installed_tools(self, *, approve_known: bool = True, enable: bool = True) -> dict[str, Any]:
@@ -253,8 +262,13 @@ class ToolManager:
                             existing.phase = str(profile.get("phase") or existing.phase)
                             existing.metadata.update({"known_profile": self._tool_key_from_path(path, existing.name), "auto_repaired_run": True})
                             changed = True
-                    if approve_known and existing.run and not existing.approved_for_run:
+                    should_auto_approve = bool(approve_known and self._can_auto_approve(existing, path))
+                    if should_auto_approve and not existing.approved_for_run:
                         existing.approved_for_run = True
+                        changed = True
+                    if not should_auto_approve and not existing.metadata.get("manual_run_approval") and existing.metadata.get("manifest_inferred") and existing.approved_for_run:
+                        existing.approved_for_run = False
+                        existing.metadata["approval_reset_reason"] = "unknown inferred tool requires AI repair or manual approval"
                         changed = True
                     if enable and not existing.enabled:
                         existing.enabled = True
@@ -273,11 +287,11 @@ class ToolManager:
                 tool = self._normalize_manifest(manifest, repo_url, path)
                 tool.installed = True
                 tool.enabled = enable
-                if approve_known and tool.run:
+                if approve_known and self._can_auto_approve(tool, path):
                     tool.approved_for_run = True
                 self.registry.upsert(tool)
                 added += 1
-                self._log("Auto-registered installed tool directory", data={"tool_id": tool.tool_id, "path": str(path), "has_run": bool(tool.run)})
+                self._log("Auto-registered installed tool directory", data={"tool_id": tool.tool_id, "path": str(path), "has_run": bool(tool.run), "approved_for_run": tool.approved_for_run})
             except Exception as exc:
                 errors.append({"path": str(path), "error": str(exc)[:500]})
                 self._log("Failed to auto-register installed tool directory", level="ERROR", data={"path": str(path), "error": str(exc)[:500]})
@@ -303,14 +317,7 @@ class ToolManager:
         if raw.startswith("-") and not raw.startswith("--"):
             raw = raw[1:]
         path = Path(raw)
-        lines = path.read_text(encoding="utf-8").splitlines()
-        urls: list[str] = []
-        for line in lines:
-            item = line.strip()
-            if not item or item.startswith("#"):
-                continue
-            urls.append(item)
-        return urls
+        return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.strip().startswith("#")]
 
     def install_from_file(self, file_path: str | Path, *, confirm_authorization: bool = False, install_timeout: int = 900) -> dict[str, Any]:
         if not confirm_authorization:
@@ -341,7 +348,7 @@ class ToolManager:
         started = time.time()
         try:
             self._log("Installing batch tool", data={"url": url, "index": index, "total": total})
-            tool = self.add_tool(url, approve_install=True, approve_run=True, enable=True)
+            tool = self.add_tool(url, approve_install=True, approve_run=False, enable=True)
             install_results = self.install_tool(tool.tool_id, confirm=True, timeout=install_timeout)
             tool = self.registry.get(tool.tool_id) or tool
             ok = all(item.status == "completed" for item in install_results) if install_results else True
