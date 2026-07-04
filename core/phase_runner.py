@@ -19,18 +19,14 @@ class PhaseResult:
 
 
 class PhaseRunner:
-    """Crash-safe scan phase runner.
-
-    Every major phase is wrapped so one phase cannot kill the full scan.
-    The dashboard always receives start/completed/failed telemetry with the
-    current URL/path/endpoint context.
-    """
+    """Crash-safe scan phase runner with deterministic dashboard transitions."""
 
     def __init__(self, *, state: Any, dashboard: Any | None = None, trace: Any | None = None) -> None:
         self.state = state
         self.dashboard = dashboard
         self.trace = trace
         self.results: list[PhaseResult] = []
+        self.current_phase: str = ""
 
     def _surface_counts(self) -> dict[str, int]:
         try:
@@ -56,7 +52,7 @@ class PhaseRunner:
             if self.dashboard is not None and hasattr(self.dashboard, "update"):
                 self.dashboard.update(
                     phase=phase,
-                    phase_progress=progress,
+                    phase_progress=max(0, min(100, int(progress))),
                     current_agent=agent,
                     current_tool=tool,
                     decision=status,
@@ -74,7 +70,7 @@ class PhaseRunner:
                     **self._surface_counts(),
                 )
             if self.dashboard is not None and hasattr(self.dashboard, "event"):
-                level = "ERROR" if status == "failed_non_blocking" else "INFO"
+                level = "ERROR" if status == "failed_non_blocking" else "SUCCESS" if status == "completed" else "INFO"
                 self.dashboard.event(level, f"{phase}: {action}")
         except Exception:
             pass
@@ -92,13 +88,14 @@ class PhaseRunner:
 
     def run(self, name: str, fn: Callable[[], Any], *, progress_start: int, progress_end: int, url: str | None = None, agent: str = "PhaseRunner", tool: str = "phase_runner", required: bool = False) -> PhaseResult:
         started = time.time()
+        self.current_phase = name
         self._emit(phase=name, action="starting", status="running", progress=progress_start, url=url, agent=agent, tool=tool)
         try:
             data_raw = fn()
             data = asdict(data_raw) if hasattr(data_raw, "__dataclass_fields__") else (dict(data_raw) if isinstance(data_raw, dict) else {"result": str(data_raw)[:1000]})
             result = PhaseResult(name=name, status="completed", started_at=started, finished_at=time.time(), elapsed_ms=int((time.time() - started) * 1000), data=data)
             self.results.append(result)
-            self._emit(phase=name, action="completed", status="completed", progress=progress_end, url=url, evidence=self.coverage_text(), agent=agent, tool=tool)
+            self._emit(phase=name, action=f"completed in {result.elapsed_ms}ms", status="completed", progress=progress_end, url=url, evidence=self.coverage_text(), agent=agent, tool=tool)
             return result
         except Exception as exc:
             status = "failed_required" if required else "failed_non_blocking"
