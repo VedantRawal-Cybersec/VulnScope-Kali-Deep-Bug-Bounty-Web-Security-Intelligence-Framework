@@ -1,238 +1,222 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import json
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
-from rich.console import Console
-from rich.table import Table
-
-from ai.finding_review import run_ai_finding_review
-from core.correlation_engine import correlate_findings
-from core.context_store import ContextStore
-from core.evidence_store import EvidenceStore
-from core.external_tool_orchestrator import collect_external_tool_status
-from core.request_engine import RequestEngine
+from core.ai_brain import AIBrain
+from core.autonomous_planner import AutonomousPlanner
+from core.report_generator import ReportGenerator
 from core.tool_manager import ToolManager
-from core.validators import Target
-from modules.access_control_hints import analyze_access_control_hints
-from modules.api_surface_mapper import map_api_surface
-from modules.cors_analyzer import analyze_cors
-from modules.crawler import crawl_same_domain
-from modules.deep_route_intelligence import analyze_deep_routes
-from modules.exposure_finder import find_sensitive_exposure_signals
-from modules.header_cookie_auditor import audit_headers_and_cookies
-from modules.http_intelligence import collect_http_metadata
-from modules.ip_route_intelligence import collect_ip_route_intelligence
-from modules.js_endpoint_miner import mine_javascript_endpoints
-from modules.parameter_discovery import analyze_parameters
-from modules.robots_sitemap import analyze_robots_and_sitemap
-from modules.sqli_signal_analysis import analyze_sqli_signals
-from modules.xss_precision import analyze_xss_precision
-from reports.markdown_report import generate_markdown_report
-
-console = Console()
 
 
-class Orchestrator:
-    """Prompt-driven orchestrator adapter for VulnScope Prompt Engine.
+class ReActOrchestrator:
+    LAB_INTENSITY_FLAGS = {
+        "nuclei": ["-tags", "critical,high", "-severity", "critical,high"],
+        "ffuf": ["-rate", "100", "-t", "20"],
+        "sqlmap": ["--level", "5", "--risk", "3", "--batch"],
+    }
 
-    It builds a phase/tool graph from the current dynamic registry and then runs
-    VulnScope's production AutonomousScanEngine. This preserves the existing
-    crawler, ToolRouter, PhaseScheduler, reporting, and safety checks while
-    exposing the exact orchestration interface expected by the prompt engine.
-    """
-
-    PHASES = ["recon", "discovery", "validation", "reporting"]
-
-    def __init__(self, target: str, scope: str | None = None, mode: str = "bugbounty", dashboard: Any | None = None, plan: dict[str, Any] | None = None) -> None:
-        self.target = target
-        self.scope = scope or target
+    def __init__(self, target: str, *, mode: str = "bugbounty", aggressive: bool = False, max_turns: int = 30, out_dir: str | Path | None = None, brain: AIBrain | None = None, planner: AutonomousPlanner | None = None) -> None:
+        self.target = target if "://" in target else "https://" + target
         self.mode = "lab" if mode == "lab" else "bugbounty"
-        self.dashboard = dashboard
-        self.plan = plan or {}
-        self.context = ContextStore()
-        self.context.target = target
-        self.context.scope = self.scope
+        self.aggressive = bool(aggressive and self.mode == "lab")
+        self.max_turns = max_turns
+        self.brain = brain or AIBrain()
+        self.planner = planner or AutonomousPlanner()
         self.tool_manager = ToolManager()
-        self.graph: dict[str, list[str]] = {}
+        self.reporter = ReportGenerator(self.brain)
+        host = urlparse(self.target).hostname or "target"
+        self.out_dir = Path(out_dir or Path("reports/output") / host)
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.urls: list[str] = [self.target]
+        self.parameters: list[dict[str, Any]] = []
+        self.findings: list[dict[str, Any]] = []
+        self.observations: list[dict[str, Any]] = []
+        self.actions: list[dict[str, Any]] = []
+        self.report_path: Path | None = None
+        self.finished = False
 
-    def build_graph(self) -> dict[str, list[str]]:
+    def detect_stack(self) -> list[str]:
+        text = " ".join(self.urls).lower()
+        stack: list[str] = []
+        if ".php" in text or "php" in text:
+            stack.append("php")
+        if "api/" in text:
+            stack.append("api")
+        if "graphql" in text:
+            stack.append("graphql")
+        return stack or ["unknown"]
+
+    def available_tools(self) -> list[str]:
         self.tool_manager.reconcile_installed_tools(approve_known=True, enable=True)
-        phases = self.plan.get("phases") or self.PHASES
-        graph: dict[str, list[str]] = {}
-        for phase in phases:
-            normalized = "validation" if phase == "exploitation" else str(phase)
-            tools = self.tool_manager.registry.list(enabled_only=True, phase=normalized)
-            graph[normalized] = [tool.name for tool in tools]
-        self.graph = graph
-        return graph
+        tools: list[str] = []
+        for tool in self.tool_manager.registry.list(enabled_only=True):
+            if not tool.run or not tool.approved_for_run:
+                continue
+            if self.mode != "lab" and tool.phase == "exploitation":
+                continue
+            tools.append(tool.name)
+        return tools
 
-    def _selected_tool_names(self) -> set[str]:
-        tools = self.plan.get("tools")
-        if tools in (None, "auto"):
-            return set()
-        if isinstance(tools, str):
-            return {tools.lower()}
-        if isinstance(tools, list):
-            return {str(item).lower() for item in tools}
-        return set()
+    def context(self) -> dict[str, Any]:
+        return {
+            "target": self.target,
+            "mode": self.mode,
+            "aggressive": self.aggressive,
+            "surface": {"urls": len(self.urls), "params": len(self.parameters), "findings": len(self.findings), "observations": len(self.observations)},
+            "urls": self.urls[-50:],
+            "parameters": self.parameters[-100:],
+            "findings": self.findings[-50:],
+            "available_tools": self.available_tools(),
+            "tech_stack": self.detect_stack(),
+            "last_actions": self.actions[-10:],
+        }
+
+    def tool_by_name(self, name: str):
+        wanted = name.lower().strip()
+        for tool in self.tool_manager.registry.list(enabled_only=True):
+            if tool.name.lower() == wanted or tool.tool_id.lower() == wanted or wanted in tool.name.lower():
+                return tool
+        return None
+
+    def parse_action(self, action: str) -> tuple[str, Any]:
+        action = str(action or "").strip()
+        if action.startswith("run_tool:"):
+            return "run_tool", action.split(":", 1)[1].strip()
+        if action.startswith("inject_endpoints:"):
+            raw = action.split(":", 1)[1].strip()
+            try:
+                value = ast.literal_eval(raw)
+                if isinstance(value, list):
+                    return "inject_endpoints", [str(item) for item in value]
+            except Exception:
+                pass
+            return "inject_endpoints", []
+        if action == "generate_report":
+            return "generate_report", None
+        if action == "finish":
+            return "finish", None
+        return "unknown", action
+
+    def safe_scope_url(self, url: str) -> bool:
+        target_host = urlparse(self.target).hostname or ""
+        full = url if "://" in url else self.target.rstrip("/") + "/" + url.lstrip("/")
+        test_host = urlparse(full).hostname or ""
+        return target_host.lower() == test_host.lower()
+
+    def inject_endpoints(self, endpoints: list[str]) -> dict[str, Any]:
+        added: list[str] = []
+        for endpoint in endpoints:
+            url = endpoint if "://" in endpoint else self.target.rstrip("/") + "/" + endpoint.lstrip("/")
+            if self.safe_scope_url(url) and url not in self.urls:
+                self.urls.append(url)
+                added.append(url)
+        return {"added": added, "count": len(added)}
+
+    def format_command(self, command: list[str]) -> list[str]:
+        parsed = urlparse(self.target)
+        host = parsed.hostname or self.target
+        return [str(token).replace("{target}", self.target.rstrip("/")).replace("{host}", host).replace("{output_format}", "json") for token in command]
+
+    def run_tool(self, tool_name: str) -> dict[str, Any]:
+        tool = self.tool_by_name(tool_name)
+        if tool is None:
+            return {"ok": False, "error": f"tool not found: {tool_name}"}
+        if not tool.approved_for_run:
+            return {"ok": False, "error": f"tool is not approved for run: {tool.name}"}
+        if not tool.run:
+            return {"ok": False, "error": f"tool has no run command: {tool.name}"}
+        command = self.format_command(tool.run)
+        if self.aggressive:
+            lower_name = tool.name.lower()
+            for key, flags in self.LAB_INTENSITY_FLAGS.items():
+                if key in lower_name:
+                    command.extend(flags)
+                    break
+        started = time.time()
+        stdout_path = self.out_dir / f"{tool.tool_id}_{int(started)}.stdout.txt"
+        stderr_path = self.out_dir / f"{tool.tool_id}_{int(started)}.stderr.txt"
+        try:
+            with stdout_path.open("w", encoding="utf-8", errors="ignore") as stdout, stderr_path.open("w", encoding="utf-8", errors="ignore") as stderr:
+                proc = subprocess.run(command, cwd=tool.local_path or ".", stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL, text=True, timeout=600 if self.aggressive else 240, shell=False, check=False)
+            result = {"ok": proc.returncode == 0, "tool": tool.name, "tool_id": tool.tool_id, "command": command, "exit_code": proc.returncode, "stdout_path": str(stdout_path), "stderr_path": str(stderr_path), "elapsed_ms": int((time.time() - started) * 1000)}
+        except Exception as exc:
+            result = {"ok": False, "tool": tool.name, "tool_id": tool.tool_id, "command": command, "error": str(exc), "elapsed_ms": int((time.time() - started) * 1000)}
+        self.observations.append(result)
+        findings = self.extract_findings_from_output(tool.name, stdout_path if stdout_path.exists() else None)
+        self.findings.extend(findings)
+        self.planner.update(self.context(), tool.name, findings)
+        return {**result, "findings_added": len(findings)}
+
+    def extract_findings_from_output(self, tool_name: str, stdout_path: Path | None) -> list[dict[str, Any]]:
+        if stdout_path is None or not stdout_path.exists():
+            return []
+        text = stdout_path.read_text(encoding="utf-8", errors="ignore")
+        findings: list[dict[str, Any]] = []
+        for line in text.splitlines()[:5000]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            item: dict[str, Any] | None = None
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    item = parsed
+            except Exception:
+                pass
+            if item:
+                severity = str(item.get("severity") or item.get("info", {}).get("severity") or "INFO").upper()
+                title = item.get("name") or item.get("template-id") or item.get("matched-at") or f"{tool_name} observation"
+                findings.append({"title": str(title), "severity": severity, "confidence": 0.75 if severity in {"LOW", "MEDIUM", "HIGH", "CRITICAL"} else 0.45, "affected_url": item.get("matched-at") or item.get("url") or self.target, "evidence": json.dumps(item, ensure_ascii=False)[:2000], "tool": tool_name, "status": "review_lead"})
+        return findings[:100]
+
+    def generate_report(self) -> dict[str, Any]:
+        self.report_path = self.reporter.write_report(self.target, self.findings, out_dir=self.out_dir, context=self.context())
+        return {"ok": True, "report_path": str(self.report_path), "findings": len(self.findings)}
+
+    def next_action(self) -> str:
+        ctx = self.context()
+        tools = ctx["available_tools"]
+        if self.aggressive and tools:
+            selected = self.planner.choose_tool(ctx, tools, aggressive=True)
+            if selected:
+                return f"run_tool:{selected}"
+        return self.brain.decide_next_action(ctx, tools)
 
     def run(self) -> dict[str, Any]:
-        from core.autonomous_scan_engine import AutonomousScanEngine
-
-        graph = self.build_graph()
-        selected = self._selected_tool_names()
-        if selected:
-            graph = {phase: [tool for tool in names if tool.lower() in selected] for phase, names in graph.items()}
-        scan_mode = "lab" if self.mode == "lab" else "safe-active"
-        options = self.plan.get("options") or {}
-        max_pages = int(options.get("max_pages", options.get("--max-pages", 80)))
-        max_depth = int(options.get("max_depth", options.get("--max-depth", 3)))
-        max_actions = int(options.get("max_actions", options.get("--max-actions", 120)))
-        request_budget = int(options.get("request_budget", options.get("--request-budget", 400)))
-        browser = bool(options.get("browser", options.get("--browser", False)))
-        engine = AutonomousScanEngine(
-            self.target,
-            scan_mode=scan_mode,
-            include_subdomains=False,
-            max_pages=max_pages,
-            max_depth=max_depth,
-            max_actions=max_actions,
-            request_budget=request_budget,
-            browser=browser,
-            live_dashboard=False,
-            dynamic_tools=True,
-        )
-        payload = engine.run()
-        findings = []
-        try:
-            findings = list(engine.state.findings)
-        except Exception:
-            findings = []
-        for finding in findings:
-            if isinstance(finding, dict):
-                self.context.add_finding(finding)
-        self.context.add_tool_run("autonomous_engine", payload)
-        out_dir = Path("reports/output/prompt-engine")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        snapshot = out_dir / "scan_snapshot.json"
-        self.context.save_snapshot(snapshot)
-        result = {"target": self.target, "mode": self.mode, "graph": graph, "findings": findings, "engine": payload, "snapshot": str(snapshot)}
-        (out_dir / "orchestrator_result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-        return result
+        for turn in range(1, self.max_turns + 1):
+            if self.finished:
+                break
+            action = self.next_action()
+            action_type, payload = self.parse_action(action)
+            record = {"turn": turn, "action": action, "type": action_type, "payload": payload, "time": time.time()}
+            if action_type == "run_tool":
+                result = self.run_tool(str(payload))
+            elif action_type == "inject_endpoints":
+                result = self.inject_endpoints(payload or [])
+            elif action_type == "generate_report":
+                result = self.generate_report()
+                self.finished = True
+            elif action_type == "finish":
+                result = self.generate_report() if self.report_path is None else {"ok": True, "status": "finished"}
+                self.finished = True
+            else:
+                result = {"ok": False, "error": f"unknown action: {action}"}
+                self.finished = True
+            record["result"] = result
+            self.actions.append(record)
+            self.brain.store_decision(json.dumps(self.context(), ensure_ascii=False), action, json.dumps(result, ensure_ascii=False), metadata={"mode": self.mode, "aggressive": self.aggressive})
+        if self.report_path is None:
+            self.generate_report()
+        payload = {"target": self.target, "mode": self.mode, "aggressive": self.aggressive, "actions": self.actions, "findings": self.findings, "observations": self.observations, "report_path": str(self.report_path) if self.report_path else ""}
+        (self.out_dir / "orchestrator-result.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return payload
 
 
-class VulnScopeScanner:
-    def __init__(
-        self,
-        target: Target,
-        mode: str,
-        max_pages: int,
-        output_dir: Path,
-        ai_review: bool = False,
-        ai_providers: list[str] | None = None,
-        timeout: int = 30,
-        delay: float = 0.7,
-        retries: int = 2,
-    ) -> None:
-        self.target = target
-        self.mode = mode
-        self.max_pages = max_pages
-        self.output_dir = output_dir
-        self.ai_review = ai_review
-        self.ai_providers = ai_providers
-        self.timeout = timeout
-        self.delay = delay
-        self.retries = retries
-        self.request_engine = RequestEngine(timeout=timeout, delay=delay, retries=retries)
-        self.store = EvidenceStore()
-
-    def run(self) -> None:
-        console.print("\n[cyan][+] Initializing VulnScope-Kali Intelligence modules...[/cyan]")
-        self._print_module_status(self.ai_review)
-        console.print("\n[cyan][01/18] Collecting IP route intelligence...[/cyan]")
-        collect_ip_route_intelligence(self.store, self.target.normalized_url)
-        console.print("[cyan][02/18] Detecting trusted external tool readiness...[/cyan]")
-        collect_external_tool_status(self.store)
-        console.print("[cyan][03/18] Probing root target...[/cyan]")
-        root_response = self.request_engine.get(self.target.normalized_url)
-        collect_http_metadata(self.store, root_response)
-        if root_response.error:
-            console.print(f"[yellow][!] Root request failed but scan will continue safely:[/yellow] {root_response.error}")
-            self.store.metadata["root_probe_warning"] = {"error": root_response.error, "safe_continuation": True, "suggested_command_flags": "--timeout 45 --delay 1.0 --retries 3 --max-pages 5"}
-        else:
-            self.store.add_endpoint(root_response.url)
-        console.print("[cyan][04/18] Auditing security headers and cookies...[/cyan]")
-        audit_headers_and_cookies(self.store, root_response)
-        console.print("[cyan][05/18] Analyzing CORS posture...[/cyan]")
-        analyze_cors(self.store, root_response)
-        console.print("[cyan][06/18] Parsing robots.txt and sitemap.xml...[/cyan]")
-        analyze_robots_and_sitemap(base_url=self.target.base_url, target_host=self.target.host, request_engine=self.request_engine, store=self.store)
-        console.print("[cyan][07/18] Crawling same-domain pages...[/cyan]")
-        responses = crawl_same_domain(start_url=root_response.url or self.target.normalized_url, target_host=self.target.host, request_engine=self.request_engine, store=self.store, max_pages=self.max_pages)
-        all_responses = [root_response] + responses
-        console.print("[cyan][08/18] Mining JavaScript endpoints...[/cyan]")
-        mine_javascript_endpoints(responses=all_responses, target_host=self.target.host, request_engine=self.request_engine, store=self.store)
-        console.print("[cyan][09/18] Classifying deep route intelligence...[/cyan]")
-        analyze_deep_routes(self.store)
-        console.print("[cyan][10/18] Mapping API surface...[/cyan]")
-        map_api_surface(self.store)
-        console.print("[cyan][11/18] Analyzing parameters and forms...[/cyan]")
-        analyze_parameters(self.store)
-        console.print("[cyan][12/18] Identifying access-control review candidates...[/cyan]")
-        analyze_access_control_hints(self.store)
-        console.print("[cyan][13/18] Running safe XSS precision signals...[/cyan]")
-        analyze_xss_precision(self.store, all_responses)
-        console.print("[cyan][14/18] Running safe SQLi signal analysis...[/cyan]")
-        analyze_sqli_signals(self.store, all_responses)
-        console.print("[cyan][15/18] Searching for sensitive exposure signals...[/cyan]")
-        find_sensitive_exposure_signals(self.store, all_responses)
-        console.print("[cyan][16/18] Correlating evidence and deduplicating findings...[/cyan]")
-        correlate_findings(self.store)
-        if self.ai_review:
-            console.print("[cyan][17/18] Running AI Analyst Engine on redacted evidence...[/cyan]")
-            run_ai_finding_review(self.store, providers=self.ai_providers)
-            correlate_findings(self.store)
-        else:
-            console.print("[yellow][17/18] AI Analyst Engine skipped. Use --ai-review to enable.[/yellow]")
-        console.print("[cyan][18/18] Writing reports...[/cyan]")
-        report_path = self.output_dir / "target-report.md"
-        evidence_path = self.output_dir / "evidence.json"
-        generate_markdown_report(self.store, report_path, self.target.normalized_url, self.mode)
-        self.store.write_json(evidence_path)
-        self._print_summary(report_path, evidence_path)
-
-    @staticmethod
-    def _print_module_status(ai_review: bool) -> None:
-        table = Table(title="VulnScope Intelligence Modules")
-        table.add_column("ID", style="cyan")
-        table.add_column("Module")
-        table.add_column("Status")
-        modules = [("01", "IP Route Intelligence", "READY"), ("02", "External Tool Orchestrator Status", "READY"), ("03", "HTTP Intelligence", "READY"), ("04", "Header & Cookie Auditor", "READY"), ("05", "CORS Analyzer", "READY"), ("06", "robots.txt + Sitemap Intelligence", "READY"), ("07", "Same-Domain Crawler", "READY"), ("08", "JavaScript Endpoint Miner", "READY"), ("09", "DeepRoute Intelligence", "READY"), ("10", "API Surface Mapper", "READY"), ("11", "Parameter Intelligence", "READY"), ("12", "Access Control / IDOR Hints", "READY"), ("13", "XSS Precision Signals", "READY"), ("14", "SQLi Signal Analysis", "READY"), ("15", "Sensitive Exposure Finder", "READY"), ("16", "Evidence Correlation Engine", "READY"), ("17", "AI Analyst Engine", "READY" if ai_review else "OPTIONAL"), ("18", "Report Generator", "READY")]
-        for row in modules:
-            table.add_row(*row)
-        console.print(table)
-
-    def _print_summary(self, report_path: Path, evidence_path: Path) -> None:
-        table = Table(title="Scan Summary")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value")
-        table.add_row("Target", self.target.normalized_url)
-        table.add_row("Mode", self.mode)
-        table.add_row("AI Review", "Enabled" if self.ai_review else "Disabled")
-        table.add_row("Timeout", f"{self.timeout}s")
-        table.add_row("Delay", f"{self.delay}s")
-        table.add_row("Retries", str(self.retries))
-        ip_info = self.store.metadata.get("ip_route_intelligence", {})
-        table.add_row("Resolved IPs", str(ip_info.get("resolved_ip_count", 0)))
-        tool_status = self.store.metadata.get("external_tool_status", [])
-        installed_tools = [tool for tool in tool_status if tool.get("installed")]
-        table.add_row("Trusted Tools Detected", str(len(installed_tools)))
-        table.add_row("Endpoints Discovered", str(len(self.store.endpoints)))
-        table.add_row("Forms Detected", str(len(self.store.forms)))
-        table.add_row("Findings Generated", str(len(self.store.findings)))
-        table.add_row("Markdown Report", str(report_path))
-        table.add_row("Evidence JSON", str(evidence_path))
-        console.print("\n[green][+] Scan completed successfully.[/green]")
-        console.print(table)
+Orchestrator = ReActOrchestrator
