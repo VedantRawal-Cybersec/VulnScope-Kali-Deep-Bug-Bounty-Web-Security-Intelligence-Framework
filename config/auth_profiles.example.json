@@ -1,0 +1,30 @@
+{
+  "description": "Example only. Do not commit real credentials or browser storage states.",
+  "target": "https://owned-site.com",
+  "scope": {
+    "include_subdomains": false,
+    "allowed_hosts": ["owned-site.com"]
+  },
+  "account_a": {
+    "label": "low_priv_user_a",
+    "browser_storage_state_file": "secrets/account_a_state.json",
+    "notes": "Generate locally after logging into an owned/authorized test account. Do not commit."
+  },
+  "account_b": {
+    "label": "low_priv_user_b",
+    "browser_storage_state_file": "secrets/account_b_state.json",
+    "notes": "Generate locally after logging into a second owned/authorized test account. Do not commit."
+  },
+  "allowed_tests": [
+    "access-control-differential-review",
+    "same-endpoint-cross-account-status-compare",
+    "same-endpoint-cross-account-content-shape-compare"
+  ],
+  "blocked_tests": [
+    "credential guessing",
+    "session theft",
+    "privilege escalation attempts",
+    "data modification",
+    "destructive actions"
+  ]
+}
