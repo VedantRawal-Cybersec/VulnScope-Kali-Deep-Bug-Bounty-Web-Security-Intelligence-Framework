@@ -1,0 +1,83 @@
+name: VulnScope CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  compile-import-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile critical files
+        run: |
+          python -m py_compile \
+            vulnscope.py \
+            vulnscope_deep.py \
+            core/autonomous_scan_engine.py \
+            core/live_dashboard.py \
+            core/crawler_v2.py \
+            core/phase_runner.py \
+            core/phase_scheduler.py \
+            core/tool_manager.py \
+            core/tool_router.py \
+            core/scan_health.py \
+            core/ai_tool_analyzer.py \
+            core/ai_tool_auto_configurator.py \
+            core/ai_tool_registry_repair.py \
+            scripts/diagnose_tools.py \
+            scripts/network_diag.py
+
+      - name: Import critical modules
+        run: |
+          python - <<'PY'
+          from core.autonomous_scan_engine import AutonomousScanEngine
+          from core.phase_scheduler import PhaseScheduler
+          from core.tool_manager import ToolManager
+          from core.ai_tool_auto_configurator import AIToolAutoConfigurator
+          from core.ai_tool_registry_repair import AIToolRegistryRepair
+          from core.scan_health import ScanHealthReporter
+          print('critical imports ok')
+          PY
+
+      - name: Verify autonomous engine complete flow markers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('core/autonomous_scan_engine.py').read_text(encoding='utf-8')
+          required = [
+              '01 Diagnostics',
+              '02 Scope + Passive Analysis',
+              '03 Deep Asset Discovery',
+              '04 Primary Crawl',
+              '05 JavaScript Endpoint Extraction',
+              '06 Browser Route Discovery',
+              '07 Post-Discovery Crawl',
+              '08 Deep Scan Phase Pack',
+              '09 LLM Surface Review',
+              '10 Unified Research Orchestration',
+              '11 Dynamic Tool Scheduler',
+              '12 Safe Parameter + Endpoint Review',
+              '13 Reporting',
+              'def main(',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit('missing engine markers: ' + ', '.join(missing))
+          print('complete engine markers ok')
+          PY
