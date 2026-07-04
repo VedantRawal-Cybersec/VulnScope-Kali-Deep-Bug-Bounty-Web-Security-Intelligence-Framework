@@ -29,6 +29,7 @@ jobs:
           python -m py_compile \
             vulnscope.py \
             vulnscope_deep.py \
+            core/agentic_framework.py \
             core/autonomous_scan_engine.py \
             core/live_dashboard.py \
             core/crawler_v2.py \
@@ -52,6 +53,7 @@ jobs:
           from core.ai_tool_auto_configurator import AIToolAutoConfigurator
           from core.ai_tool_registry_repair import AIToolRegistryRepair
           from core.scan_health import ScanHealthReporter
+          from core.agentic_framework import TraceLogger
           print('critical imports ok')
           PY
 
