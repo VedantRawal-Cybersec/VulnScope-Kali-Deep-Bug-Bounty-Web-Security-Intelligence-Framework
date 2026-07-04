@@ -8,7 +8,8 @@ from typing import Any
 from core.tool_registry import ToolRegistry
 
 
-STATUS_VALUES = {"queued", "running", "completed", "failed", "skipped", "blocked_by_scope", "blocked_by_safety", "timed_out"}
+STATUS_VALUES = {"queued", "running", "completed", "failed", "skipped", "blocked_by_scope", "blocked_by_safety", "timed_out", "inactive", "not_ready"}
+ACTIVE_STATUSES = {"queued", "running", "completed", "failed", "timed_out"}
 MODE_RANK = {"passive": 0, "safe-active": 1, "lab": 2}
 PHASE_CATEGORY = {
     "recon": "Reconnaissance",
@@ -38,7 +39,16 @@ class RoutedTool:
 
 
 class ToolRouter:
-    """Selects eligible core, native research, and installed tools."""
+    """Selects eligible core, native research, and installed tools.
+
+    Important status semantics:
+    - skipped means a phase actually attempted to select/run a tool and skipped it.
+    - inactive means the tool is valid but not part of the current active phase/mode.
+    - not_ready means the tool exists but is missing run config, approval, or enablement.
+
+    This prevents dashboard false alarms such as `Skip: 19` before those tools
+    have ever been reached.
+    """
 
     def __init__(self, tools: list[RoutedTool] | None = None, *, load_dynamic: bool = True) -> None:
         self.tools = tools or self.default_tools()
@@ -52,6 +62,7 @@ class ToolRouter:
             RoutedTool("browser_crawler", "Transparent Browser Crawler", "CrawlerAgent", "Discovery", "passive", "passive", ["target"], False),
             RoutedTool("parameter_inventory", "Parameter Inventory", "ParameterDiscoveryAgent", "Discovery", "passive", "passive", ["urls"], False),
             RoutedTool("deep_asset_discovery", "Deep Public Asset Discovery", "AssetDiscoveryAgent", "Discovery", "passive", "passive", ["target"], False),
+            RoutedTool("deep_scan_phase_pack", "Deep Scan Phase Pack", "DeepScanPhasePack", "Discovery", "passive", "safe_active_enrichment", ["state"], False),
             RoutedTool("unified_research_orchestrator", "Unified Research Orchestrator", "UnifiedResearchOrchestrator", "Reasoning", "passive", "decision_layer", ["state"], False),
             RoutedTool("header_analyzer", "Header Analyzer", "HeaderAnalysisAgent", "Passive Analysis", "passive", "passive", ["root_response"], False),
             RoutedTool("cookie_analyzer", "Cookie Analyzer", "CookieAnalysisAgent", "Passive Analysis", "passive", "passive", ["root_response"], False),
@@ -59,9 +70,9 @@ class ToolRouter:
             RoutedTool("js_route_review", "JavaScript Route Review", "JSExposureAgent", "Discovery", "passive", "passive", ["scripts"], False),
             RoutedTool("classification_review", "Parameter Classification Review", "FindingValidationAgent", "Validation", "passive", "passive", ["parameters"], False),
             RoutedTool("safe_canary_reflection", "Safe Canary Reflection Tester", "SafeCanaryTestingAgent", "Safe Active", "safe-active", "safe_active", ["safe_get_parameters"], True),
-            RoutedTool("lab_mode_controller", "Lab Mode Controller", "LabModeController", "Lab Validation", "lab", "lab_only", ["target", "authorization"], False),
-            RoutedTool("lab_parameter_review", "Lab Parameter Review", "LabModeController", "Lab Validation", "lab", "lab_only", ["parameters"], True),
-            RoutedTool("external_tool_readiness", "External Tool Readiness Check", "LabModeController", "Lab Validation", "lab", "lab_only", ["target"], False),
+            RoutedTool("lab_mode_controller", "Lab Mode Controller", "LabModeController", "Lab Validation", "lab", "lab_only", ["target", "authorization"], False, status="inactive", reason="lab mode only"),
+            RoutedTool("lab_parameter_review", "Lab Parameter Review", "LabModeController", "Lab Validation", "lab", "lab_only", ["parameters"], True, status="inactive", reason="lab mode only"),
+            RoutedTool("external_tool_readiness", "External Tool Readiness Check", "DynamicToolScheduler", "Dynamic Tools", "safe-active", "approval_gated_installed_tool", ["target"], False),
             RoutedTool("report_generator", "Report Generator", "ReportAgent", "Reporting", "passive", "passive", ["state"], False),
             RoutedTool("llm_public_reasoning", "LLM Public Reasoning", "OllamaReasoningAgent", "Reasoning", "passive", "passive", ["state_summary"], False),
             RoutedTool("llm_evidence_validator", "LLM Evidence Validator", "FindingValidationAgent", "Validation", "passive", "passive", ["ambiguous_evidence"], False),
@@ -90,7 +101,7 @@ class ToolRouter:
                     safety_level="approval_gated_installed_tool",
                     required_inputs=["target"],
                     finding_capability=True,
-                    status="queued" if ready else "skipped",
+                    status="queued" if ready else "not_ready",
                     reason="ready" if ready else ("missing run command" if not has_command else "not enabled or not approved"),
                 )
             )
@@ -100,6 +111,9 @@ class ToolRouter:
         selected: list[RoutedTool] = []
         for tool in self.tools:
             if phase and phase.lower() not in {tool.category.lower(), tool.agent_owner.lower(), tool.tool_id.lower(), "any"}:
+                if tool.status == "queued":
+                    tool.status = "inactive"
+                    tool.reason = f"not in phase {phase}"
                 continue
             if MODE_RANK.get(scan_mode, 0) < MODE_RANK.get(tool.required_scan_mode, 0):
                 tool.status = "blocked_by_safety"
@@ -122,7 +136,9 @@ class ToolRouter:
         counts = {status: 0 for status in STATUS_VALUES}
         for tool in self.tools:
             counts[tool.status if tool.status in counts else "queued"] += 1
-        return {"total": len(self.tools), "counts": counts, "tools": [tool.to_dict() for tool in self.tools]}
+        active_total = sum(counts.get(status, 0) for status in ACTIVE_STATUSES)
+        unavailable_total = counts.get("inactive", 0) + counts.get("not_ready", 0)
+        return {"total": len(self.tools), "active_total": active_total, "unavailable_total": unavailable_total, "counts": counts, "tools": [tool.to_dict() for tool in self.tools]}
 
     def mark(self, tool_id: str, status: str, reason: str = "") -> None:
         status = status if status in STATUS_VALUES else "failed"
