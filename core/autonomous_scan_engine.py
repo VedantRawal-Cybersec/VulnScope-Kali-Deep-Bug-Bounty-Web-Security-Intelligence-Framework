@@ -28,11 +28,12 @@ from core.phase_scheduler import PhaseScheduler
 from core.reasoning_stream import ReasoningStream
 from core.reporting_v2 import ReportingV2
 from core.safe_analyzers import PassiveAnalyzers
+from core.scan_health import ScanHealthReporter
 from core.scan_state import ScanState
 from core.test_engine import TestEngine
 from core.tool_router import ToolRouter
 
-VERSION = "1.17.1-tool-status-matrix"
+VERSION = "1.17.5-complete-phase-flow"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -47,7 +48,7 @@ def parse_headers(values: list[str]) -> dict[str, str]:
 
 
 class AutonomousScanEngine:
-    """Phase-stable defensive scan coordinator with honest tool-status matrix."""
+    """Phase-stable defensive scan coordinator with complete 13-phase flow."""
 
     TOOL_ALIASES = {
         "bootstrap": "llm_public_reasoning",
@@ -73,7 +74,29 @@ class AutonomousScanEngine:
         "llm_gateway.plan_actions": "llm_public_reasoning",
     }
 
-    def __init__(self, target: str, *, scan_mode: str = "passive", include_subdomains: bool = False, headers: dict[str, str] | None = None, max_pages: int = 120, max_depth: int = 3, max_params: int = 250, request_timeout: int = 8, delay: float = 0.6, request_budget: int = 500, max_actions: int = 160, resume: bool = False, browser: bool = False, live_dashboard: bool = True, deep_assets: bool = True, dynamic_tools: bool = True, asset_doc_limit: int = 40, ollama_url: str | None = None, ollama_model: str | None = None) -> None:
+    def __init__(
+        self,
+        target: str,
+        *,
+        scan_mode: str = "passive",
+        include_subdomains: bool = False,
+        headers: dict[str, str] | None = None,
+        max_pages: int = 120,
+        max_depth: int = 3,
+        max_params: int = 250,
+        request_timeout: int = 8,
+        delay: float = 0.6,
+        request_budget: int = 500,
+        max_actions: int = 160,
+        resume: bool = False,
+        browser: bool = False,
+        live_dashboard: bool = True,
+        deep_assets: bool = True,
+        dynamic_tools: bool = True,
+        asset_doc_limit: int = 40,
+        ollama_url: str | None = None,
+        ollama_model: str | None = None,
+    ) -> None:
         self.target = normalize_target(target)
         self.scan_mode = scan_mode if scan_mode in {"passive", "safe-active", "lab"} else "passive"
         self.include_subdomains = include_subdomains
@@ -81,29 +104,43 @@ class AutonomousScanEngine:
         self.max_depth = max(0, int(max_depth))
         self.max_params = max(1, int(max_params))
         self.max_actions = max(1, int(max_actions))
-        self.browser = browser
+        self.browser = bool(browser)
         self.deep_assets = bool(deep_assets)
         self.dynamic_tools = bool(dynamic_tools)
         self.asset_doc_limit = max(1, int(asset_doc_limit))
         self.ollama_url = ollama_url or os.getenv("VULNSCOPE_OLLAMA_URL", "http://localhost:11434/api/chat")
         self.ollama_model = ollama_model or os.getenv("VULNSCOPE_OLLAMA_MODEL", "qwen2.5:3b")
+
+        os.environ["VULNSCOPE_SCAN_MODE"] = self.scan_mode
         self.dashboard = LiveDashboard(self.target, max_turns=max_actions, enabled=True, live_stream=live_dashboard)
         self.dashboard.update(mode=self.scan_mode, authorization_status="confirmed")
+
         self.state = ScanState(self.target, resume=resume)
         self.state.stats["max_pages"] = self.max_pages
         self.state.stats["max_depth"] = self.max_depth
+        self.state.stats["scan_mode"] = self.scan_mode
         self.state.stats["engine_version"] = VERSION
+        self.state.stats["include_subdomains"] = self.include_subdomains
+        self.state.stats["dynamic_tools_enabled"] = self.dynamic_tools
+        self.state.stats["browser_enabled"] = self.browser
+
         self.evidence = EvidenceStore(self.target)
         self.client = SafeHttpClientV2(state=self.state, evidence=self.evidence, headers=headers or {}, timeout=request_timeout, delay=delay, request_budget=request_budget)
         self.crawler = CrawlerV2(state=self.state, client=self.client, max_pages=max_pages, max_depth=max_depth, include_subdomains=include_subdomains, dashboard=self.dashboard)
         self.tester = TestEngine(state=self.state, client=self.client, dashboard=self.dashboard)
         self.analyzers = PassiveAnalyzers(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard)
+
         self.agent_registry = AgentRegistry()
         self.trace = TraceLogger(self.target, scan_id=self.dashboard.snapshot.scan_id)
         self.handoffs = HandoffManager(self.trace, self.dashboard)
         self.turns = TurnManager()
         self.llm_policy = LLMPolicy.from_env()
-        self.llm = LLMGateway(ollama_url=self.ollama_url, fast_model=self.ollama_model, deep_model=os.getenv("VULNSCOPE_DEEP_MODEL", self.ollama_model), report_model=os.getenv("VULNSCOPE_REPORT_MODEL", self.ollama_model))
+        self.llm = LLMGateway(
+            ollama_url=self.ollama_url,
+            fast_model=self.ollama_model,
+            deep_model=os.getenv("VULNSCOPE_DEEP_MODEL", self.ollama_model),
+            report_model=os.getenv("VULNSCOPE_REPORT_MODEL", self.ollama_model),
+        )
         self.reasoning = ReasoningStream(self.target, dashboard=self.dashboard, trace=self.trace)
         self.memory = LLMMemory(self.target)
         self.tool_router = ToolRouter()
@@ -112,22 +149,41 @@ class AutonomousScanEngine:
         self.phase_runner = PhaseRunner(state=self.state, dashboard=self.dashboard, trace=self.trace)
         self.dynamic_scheduler = PhaseScheduler(dashboard=self.dashboard, report_dir=self.state.out_dir, state=self.state, scan_mode=self.scan_mode)
         self.research_orchestrator = UnifiedResearchOrchestrator(state=self.state, dashboard=self.dashboard)
+
         self.extra_reports: dict[str, str] = {}
         self.ollama_status: dict[str, Any] = {}
         self.react_summary: dict[str, Any] = {}
         self.dynamic_tool_summary: dict[str, Any] = {}
         self.research_summary: dict[str, Any] = {}
         self.deep_scan_summary: dict[str, Any] = {}
+        self.health_reports: dict[str, str] = {}
         self._sync_dashboard_matrix("llm_public_reasoning", status="queued")
 
     def _surface(self) -> dict[str, int]:
         paths = {urlparse(item.url).path or "/" for item in self.state.urls.values()}
-        api_like = {u.url for u in self.state.urls.values() if "/api/" in (urlparse(u.url).path or "").lower() or "graphql" in (urlparse(u.url).path or "").lower()}
-        return {"urls_found": len(self.state.urls), "paths_found": len(paths), "params_found": len(self.state.params), "forms_found": int(self.state.stats.get("forms", 0)) + int(self.state.stats.get("browser_forms", 0)), "js_found": int(self.state.stats.get("scripts", 0)), "api_routes_found": len(api_like) + int(self.state.stats.get("javascript_routes", 0))}
+        api_like = {
+            item.url
+            for item in self.state.urls.values()
+            if "/api/" in (urlparse(item.url).path or "").lower()
+            or "graphql" in (urlparse(item.url).path or "").lower()
+        }
+        return {
+            "urls_found": len(self.state.urls),
+            "paths_found": len(paths),
+            "params_found": len(self.state.params),
+            "forms_found": int(self.state.stats.get("forms", 0)) + int(self.state.stats.get("browser_forms", 0)),
+            "js_found": int(self.state.stats.get("scripts", 0)),
+            "api_routes_found": len(api_like) + int(self.state.stats.get("javascript_routes", 0)),
+        }
 
     def _coverage_text(self) -> str:
         cov = self.state.coverage()
-        return f"urls={cov['urls_done']}/{cov['urls_total']} params={cov['params_done']}/{cov['params_total']} tests={cov['tests_done']}/{cov['tests_total']} req={cov['requests']} findings={cov['findings']} timeouts={cov['timeouts']}"
+        return (
+            f"urls={cov['urls_done']}/{cov['urls_total']} "
+            f"params={cov['params_done']}/{cov['params_total']} "
+            f"tests={cov['tests_done']}/{cov['tests_total']} "
+            f"req={cov['requests']} findings={cov['findings']} timeouts={cov['timeouts']}"
+        )
 
     def _sync_dashboard_matrix(self, tool: str, *, status: str = "running") -> dict[str, int]:
         router_ids = {item.tool_id for item in self.tool_router.tools}
@@ -139,7 +195,16 @@ class AutonomousScanEngine:
             self.current_router_tool = tool_id
         matrix = self.tool_router.matrix()
         counts = matrix.get("counts", {})
-        return {"tools_total": int(matrix.get("total", 0)), "tools_running": int(counts.get("running", 0)), "tools_completed": int(counts.get("completed", 0)), "tools_failed": int(counts.get("failed", 0)) + int(counts.get("timed_out", 0)), "tools_skipped": int(counts.get("skipped", 0)), "tools_blocked": int(counts.get("blocked_by_scope", 0)) + int(counts.get("blocked_by_safety", 0)), "tools_inactive": int(counts.get("inactive", 0)), "tools_not_ready": int(counts.get("not_ready", 0))}
+        return {
+            "tools_total": int(matrix.get("total", 0)),
+            "tools_running": int(counts.get("running", 0)),
+            "tools_completed": int(counts.get("completed", 0)),
+            "tools_failed": int(counts.get("failed", 0)) + int(counts.get("timed_out", 0)),
+            "tools_skipped": int(counts.get("skipped", 0)),
+            "tools_blocked": int(counts.get("blocked_by_scope", 0)) + int(counts.get("blocked_by_safety", 0)),
+            "tools_inactive": int(counts.get("inactive", 0)),
+            "tools_not_ready": int(counts.get("not_ready", 0)),
+        }
 
     def _turn_count(self) -> int:
         try:
@@ -148,12 +213,45 @@ class AutonomousScanEngine:
             runtime_turns = 0
         return max(int(self.turns.index), len(self.trace.events), runtime_turns, int(self.react_summary.get("turns", 0) or 0))
 
-    def _dashboard(self, phase: str, action: str, *, progress: int = 0, evidence: str = "", agent: str = "SupervisorAgent", tool: str = "autonomous_engine", decision: str = "-", url: str | None = None, parameter: str = "") -> None:
+    def _dashboard(
+        self,
+        phase: str,
+        action: str,
+        *,
+        progress: int = 0,
+        evidence: str = "",
+        agent: str = "SupervisorAgent",
+        tool: str = "autonomous_engine",
+        decision: str = "-",
+        url: str | None = None,
+        parameter: str = "",
+    ) -> None:
         current_url = url or self.target
         parsed = urlparse(current_url)
         query = parsed.query or "No safe query parameters or GET inputs were discovered in the selected scope."
         matrix_counts = self._sync_dashboard_matrix(tool, status="running")
-        self.dashboard.update(phase=phase, phase_progress=progress, turn=self._turn_count(), max_turns=self.max_actions, requests=self.state.stats.get("requests", 0), findings=len(self.state.findings), current_agent=agent, current_tool=tool, decision=decision, action=action, endpoint=current_url, request_line="GET " + (parsed.path or "/") + (("?" + parsed.query) if parsed.query else ""), path=parsed.path or "/", parameters=parameter or query, probe_string="safe-cai-react", hypothesis="phase-stable deep safe-active scanner with native research decision layer", evidence=evidence or self._coverage_text(), safety_status="same-scope • request budget • approval-gated dynamic tools • no embedded exploit payloads", **self._surface(), **matrix_counts)
+        self.dashboard.update(
+            phase=phase,
+            phase_progress=progress,
+            turn=self._turn_count(),
+            max_turns=self.max_actions,
+            requests=self.state.stats.get("requests", 0),
+            findings=len(self.state.findings),
+            current_agent=agent,
+            current_tool=tool,
+            decision=decision,
+            action=action,
+            endpoint=current_url,
+            request_line="GET " + (parsed.path or "/") + (("?" + parsed.query) if parsed.query else ""),
+            path=parsed.path or "/",
+            parameters=parameter or query,
+            probe_string="safe-cai-react",
+            hypothesis="phase-stable autonomous scanner with deterministic forward progress",
+            evidence=evidence or self._coverage_text(),
+            safety_status="same-scope • request budget • approval-gated dynamic tools • no destructive actions",
+            **self._surface(),
+            **matrix_counts,
+        )
         self.dashboard.event("INFO", action)
 
     def run_ollama_check(self) -> dict[str, Any]:
@@ -163,34 +261,83 @@ class AutonomousScanEngine:
         self.ollama_status = health.to_dict()
         label = f"Connected • {health.fast_model} • safe-cai-react" if health.ok else f"Fallback • {health.fast_model} • {health.error or 'unreachable'}"
         self.dashboard.update(ollama_status=label, turn=self._turn_count(), **self._sync_dashboard_matrix("llm_public_reasoning"))
-        self.reasoning.publish(turn_id=turn_id, agent="OllamaReasoningAgent", observation=f"Ollama health ok={health.ok}; model_available={health.model_available}", hypothesis="LLM is advisory; deterministic engines continue without it", decision=label, selected_tool="llm_gateway.health_check", safety="LLM failure cannot block crawling, extraction, testing, or reporting", evidence_summary=json.dumps(self.ollama_status, ensure_ascii=False)[:600], next_action="continue with scope and recon", progress_percent=3)
+        self.reasoning.publish(
+            turn_id=turn_id,
+            agent="OllamaReasoningAgent",
+            observation=f"Ollama health ok={health.ok}; model_available={health.model_available}",
+            hypothesis="LLM is advisory; deterministic engines continue without it",
+            decision=label,
+            selected_tool="llm_gateway.health_check",
+            safety="LLM failure cannot block crawling, extraction, testing, or reporting",
+            evidence_summary=json.dumps(self.ollama_status, ensure_ascii=False)[:600],
+            next_action="continue with scope and recon",
+            progress_percent=3,
+        )
         return self.ollama_status
 
     def _llm_surface_summary(self, *, progress: int) -> dict[str, Any]:
         allowed, reason = self.llm_policy.allow("public_reasoning", force=True)
         if not allowed:
             return {"ok": False, "reason": reason}
-        context = {"coverage": self.state.coverage(), "surface": self._surface(), "memory": self.memory.llm_summary(limit=30), "policy_reason": reason}
+        context = {
+            "coverage": self.state.coverage(),
+            "surface": self._surface(),
+            "memory": self.memory.llm_summary(limit=30),
+            "policy_reason": reason,
+            "dynamic_tools": self.dynamic_tool_summary,
+        }
         response = self.llm.plan_actions(context, model_role="fast")
         if response.ok and response.public_reasoning:
             for item in response.public_reasoning[:5]:
-                self.reasoning.publish(agent="OllamaReasoningAgent", observation="LLM reviewed sanitized scan surface", hypothesis="model can prioritize, but ToolRouter enforces execution", decision=item, selected_tool="llm_gateway.plan_actions", safety="advisory only; same-scope safe tools only", evidence_summary=json.dumps(self._surface(), ensure_ascii=False), next_action="enter research orchestration", progress_percent=progress)
+                self.reasoning.publish(
+                    agent="OllamaReasoningAgent",
+                    observation="LLM reviewed sanitized scan surface",
+                    hypothesis="model can prioritize, but ToolRouter enforces execution",
+                    decision=item,
+                    selected_tool="llm_gateway.plan_actions",
+                    safety="advisory only; same-scope safe tools only",
+                    evidence_summary=json.dumps(self._surface(), ensure_ascii=False),
+                    next_action="enter research orchestration",
+                    progress_percent=progress,
+                )
         elif not response.ok:
-            self.reasoning.publish(agent="OllamaReasoningAgent", observation="LLM surface summary unavailable", hypothesis="native research orchestrator and fallback ReAct decisions are sufficient", decision=response.error or "LLM unavailable", selected_tool="llm_gateway.plan_actions", safety="fallback deterministic scan continues", next_action="enter research orchestration", progress_percent=progress)
+            self.reasoning.publish(
+                agent="OllamaReasoningAgent",
+                observation="LLM surface summary unavailable",
+                hypothesis="native research orchestrator and fallback ReAct decisions are sufficient",
+                decision=response.error or "LLM unavailable",
+                selected_tool="llm_gateway.plan_actions",
+                safety="fallback deterministic scan continues",
+                next_action="enter research orchestration",
+                progress_percent=progress,
+            )
         return response.to_dict() if hasattr(response, "to_dict") else {"ok": bool(getattr(response, "ok", False))}
 
     def _availability_and_passive(self) -> dict[str, Any]:
         self.handoffs.handoff("SupervisorAgent", "ScopeAgent", phase="Scope", message="target normalized and authorization confirmed", target_url=self.target, path=urlparse(self.target).path or "/", progress_percent=4)
         root = self.client.get(self.target, purpose="target-availability")
-        self.trace.log(turn_id=self.turns.next_turn(), agent_name="ScopeAgent", tool_name="availability_checker", phase="Scope", status="completed" if root.ok else "failed", target_url=root.url, path=urlparse(root.url).path or "/", message=f"HTTP {root.status_code}" if root.ok else root.error, evidence_summary=root.response_id, progress_percent=6)
+        self.trace.log(
+            turn_id=self.turns.next_turn(),
+            agent_name="ScopeAgent",
+            tool_name="availability_checker",
+            phase="Scope",
+            status="completed" if root.ok else "failed",
+            target_url=root.url,
+            path=urlparse(root.url).path or "/",
+            message=f"HTTP {root.status_code}" if root.ok else root.error,
+            evidence_summary=root.response_id,
+            progress_percent=6,
+        )
         self._dashboard("Scope", "Availability check completed", progress=8, evidence=f"HTTP {root.status_code} {root.error}", agent="ScopeAgent", tool="availability_checker", url=root.url)
         if not root.ok:
             self.state.stats["target_reachable"] = False
             self.state.stats["target_reachability_error"] = root.error
+            self.state.save()
             return {"root_ok": False, "status_code": root.status_code, "error": root.error}
         self.state.stats["target_reachable"] = True
         analyzer_summary = self.analyzers.run_all(root)
         self.state.add_event("INFO", "passive analyzers completed", **analyzer_summary.__dict__)
+        self.state.save()
         return {"root_ok": True, "status_code": root.status_code, "analyzers": analyzer_summary.__dict__}
 
     def _deep_asset_discovery(self) -> dict[str, Any]:
@@ -198,6 +345,7 @@ class AutonomousScanEngine:
             return {"skipped": True, "reason": "disabled"}
         result = DeepAssetDiscovery(state=self.state, client=self.client, include_subdomains=self.include_subdomains, dashboard=self.dashboard, max_docs=self.asset_doc_limit).run()
         self.state.add_event("INFO", "deep asset discovery completed", **result.__dict__)
+        self.state.save()
         return result.__dict__
 
     def _initial_crawl(self) -> dict[str, Any]:
@@ -207,11 +355,13 @@ class AutonomousScanEngine:
         self.state.stats["scripts"] = crawl_result.scripts
         self.state.add_event("INFO", "crawler completed", **crawl_result.__dict__)
         self._dashboard("Crawler v2", "Initial crawl completed", progress=40, evidence=self._coverage_text(), agent="CrawlerAgent", tool="safe_crawler")
+        self.state.save()
         return crawl_result.__dict__
 
     def _javascript_review(self) -> dict[str, Any]:
         js_routes = self.crawler.analyze_scripts(limit=max(80, min(250, self.max_pages * 2)))
         self.state.add_event("INFO", "script route review completed", routes=js_routes)
+        self.state.save()
         return {"routes_added": js_routes, "scripts_seen": int(self.state.stats.get("scripts", 0))}
 
     def _browser_discovery(self) -> dict[str, Any]:
@@ -219,23 +369,33 @@ class AutonomousScanEngine:
             return {"skipped": True, "reason": "browser flag not enabled"}
         browser_result = BrowserCrawler(state=self.state, include_subdomains=self.include_subdomains, dashboard=self.dashboard, max_routes=max(250, self.max_pages)).run()
         self.state.add_event("INFO", "browser route discovery finished", **browser_result.__dict__)
+        self.state.save()
         return browser_result.__dict__
 
     def _post_discovery_crawl(self) -> dict[str, Any]:
         post_result = self.crawler.crawl()
         self.state.add_event("INFO", "post-discovery crawl completed", **post_result.__dict__)
+        self.state.save()
         return post_result.__dict__
 
     def _safe_deep_phase_pack(self) -> dict[str, Any]:
         self._dashboard("Deep Scan Phase Pack", "Running subdomain liveness, JS signal, parameter expansion, and prioritization phases", progress=45, agent="DeepScanPhasePack", tool="deep_scan_phase_pack")
         self.deep_scan_summary = DeepScanPhasePack(state=self.state, client=self.client, dashboard=self.dashboard, include_subdomains=self.include_subdomains).run_all()
+        self.extra_reports["deep_scan_phase_summary"] = self.deep_scan_summary.get("summary_path", "")
+        if self.state.stats.get("deep_scan_prioritization_path"):
+            self.extra_reports["deep_scan_prioritization"] = str(self.state.stats.get("deep_scan_prioritization_path"))
         self.state.add_event("INFO", "deep scan phase pack completed", summary_path=self.deep_scan_summary.get("summary_path", ""))
+        self.state.save()
         return self.deep_scan_summary
 
     def _research_orchestration(self) -> dict[str, Any]:
         self._dashboard("Unified Research Orchestrator", "Generating strategy profiles and phase decisions", progress=69, agent="UnifiedResearchOrchestrator", tool="unified_research_orchestrator")
         self.research_summary = self.research_orchestrator.run_all()
+        for key in ["markdown_path", "json_path", "summary_path"]:
+            if self.research_summary.get(key):
+                self.extra_reports[f"research_{key}"] = str(self.research_summary[key])
         self.state.add_event("INFO", "unified research orchestration completed", decisions=len(self.research_summary.get("decisions", [])), markdown_path=self.research_summary.get("markdown_path", ""))
+        self.state.save()
         return self.research_summary
 
     def _dynamic_tool_phase(self) -> dict[str, Any]:
@@ -243,15 +403,146 @@ class AutonomousScanEngine:
             return {"skipped": True, "reason": "disabled"}
         self._dashboard("Dynamic Tool Scheduler", "Running enabled approved dynamic tools", progress=70, agent="DynamicToolScheduler", tool="dynamic_tool_scheduler")
         self.dynamic_tool_summary = self.dynamic_scheduler.run_all(target=self.target, confirm=True, timeout=240)
+        if self.dynamic_tool_summary.get("summary_path"):
+            self.extra_reports["dynamic_tool_phase_summary"] = self.dynamic_tool_summary["summary_path"]
         self.state.add_event("INFO", "dynamic tool scheduler completed", summary_path=self.dynamic_tool_summary.get("summary_path", ""))
+        self.state.save()
         return self.dynamic_tool_summary
 
-    def bootstrap(self) -> None:
-        self._dashboard("Bootstrap", "Starting deep safe-active autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
-        self.agent_runtime.run_turn(agent="SupervisorAgent", observation="scan requested for authorized target", decision="start scope validation", selected_tool="scope_guard", phase="Bootstrap", handoff_to="ScopeAgent", progress_percent=1)
-        self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="deep-safe-active", version=VERSION)
-        self.phase_runner.run("01 Diagnostics", self.run_ollama_check, progress_start=2, progress_end=5, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.health_check")
-        self.phase_runner.run("02 Scope + Passive Analysis", self._availability_and_passive, progress_start=6, progress_end=14, url=self.target, agent="ReconAgent", tool="passive_analyzers")
-        self.phase_runner.run("03 Deep Asset Discovery", self._deep_asset_discovery, progress_start=15, progress_end=24, url=self.target, agent="AssetDiscoveryAgent", tool="deep_asset_discovery")
-        self.phase_runner.run("04 Primary Crawl", self._initial_crawl, progress_start=25, progress_end=36, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
-        self.phase_runner.run("05 JavaScript Endpoint Extraction", self._javascript_review, progress_start=37, progress_end=44, url=self.target, agent="JSExposureAgent", tool="review_scripts")
+    def _safe_parameter_review(self) -> dict[str, Any]:
+        self._dashboard("Safe Parameter + Endpoint Review", "Running deterministic CAI ReAct parameter review", progress=76, agent="CAIReActPlannerAgent", tool="cai_react_planner")
+        planner = SafeCAIReactAgent(
+            target=self.target,
+            scan_mode=self.scan_mode,
+            state=self.state,
+            crawler=self.crawler,
+            tester=self.tester,
+            llm=self.llm,
+            dashboard=self.dashboard,
+            trace=self.trace,
+            turns=self.turns,
+            tool_router=self.tool_router,
+            max_turns=self.max_actions,
+            max_params=self.max_params,
+        )
+        self.react_summary = planner.run()
+        react_path = self.state.out_dir / "cai-react-summary.json"
+        react_path.write_text(json.dumps(self.react_summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.extra_reports["cai_react_summary"] = str(react_path)
+        self.state.add_event("INFO", "safe parameter review completed", turns=self.react_summary.get("turns", 0))
+        self.state.save()
+        return self.react_summary
+
+    def _write_reports(self) -> dict[str, Any]:
+        self._dashboard("Reporting", "Writing final evidence reports and scan health", progress=93, agent="ReportAgent", tool="report_generator")
+        reporter = ReportingV2(state=self.state, extra_reports=self.extra_reports)
+        reports = reporter.write_all()
+        self.extra_reports.update(reports)
+        health = ScanHealthReporter(state=self.state, phase_runner=self.phase_runner, dynamic_summary=self.dynamic_tool_summary, extra=self.extra_reports).write_all()
+        self.health_reports = health
+        self.extra_reports.update(health)
+        dashboard_reports = self.dashboard.write_reports(self.state.out_dir)
+        self.extra_reports.update(dashboard_reports)
+        self.trace.write_reports(self.state.out_dir)
+        self.state.add_event("INFO", "reports written", reports=self.extra_reports)
+        self.state.save()
+        self._dashboard("Reporting", "Final reports written", progress=100, evidence=json.dumps(self.extra_reports, ensure_ascii=False)[:1000], agent="ReportAgent", tool="report_generator")
+        return {"reports": self.extra_reports}
+
+    def bootstrap(self) -> dict[str, Any]:
+        self.dashboard.start()
+        try:
+            self._dashboard("Bootstrap", "Starting deep safe-active autonomous scan engine", progress=1, agent="SupervisorAgent", tool="bootstrap")
+            self.agent_runtime.run_turn(agent="SupervisorAgent", observation="scan requested for authorized target", decision="start scope validation", selected_tool="scope_guard", phase="Bootstrap", handoff_to="ScopeAgent", progress_percent=1)
+            self.state.add_event("INFO", "autonomous scan started", scan_mode=self.scan_mode, engine="deep-safe-active", version=VERSION)
+
+            self.phase_runner.run("01 Diagnostics", self.run_ollama_check, progress_start=2, progress_end=5, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.health_check")
+            self.phase_runner.run("02 Scope + Passive Analysis", self._availability_and_passive, progress_start=6, progress_end=14, url=self.target, agent="ReconAgent", tool="passive_analyzers")
+            self.phase_runner.run("03 Deep Asset Discovery", self._deep_asset_discovery, progress_start=15, progress_end=24, url=self.target, agent="AssetDiscoveryAgent", tool="deep_asset_discovery")
+            self.phase_runner.run("04 Primary Crawl", self._initial_crawl, progress_start=25, progress_end=36, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
+            self.phase_runner.run("05 JavaScript Endpoint Extraction", self._javascript_review, progress_start=37, progress_end=44, url=self.target, agent="JSExposureAgent", tool="review_scripts")
+            self.phase_runner.run("06 Browser Route Discovery", self._browser_discovery, progress_start=45, progress_end=52, url=self.target, agent="BrowserCrawlerAgent", tool="browser_crawler")
+            self.phase_runner.run("07 Post-Discovery Crawl", self._post_discovery_crawl, progress_start=53, progress_end=59, url=self.target, agent="CrawlerAgent", tool="crawler_v2")
+            self.phase_runner.run("08 Deep Scan Phase Pack", self._safe_deep_phase_pack, progress_start=60, progress_end=68, url=self.target, agent="DeepScanPhasePack", tool="deep_scan_phase_pack")
+            self.phase_runner.run("09 LLM Surface Review", lambda: self._llm_surface_summary(progress=69), progress_start=69, progress_end=70, url=self.target, agent="OllamaReasoningAgent", tool="llm_gateway.plan_actions")
+            self.phase_runner.run("10 Unified Research Orchestration", self._research_orchestration, progress_start=71, progress_end=75, url=self.target, agent="UnifiedResearchOrchestrator", tool="unified_research_orchestrator")
+            self.phase_runner.run("11 Dynamic Tool Scheduler", self._dynamic_tool_phase, progress_start=76, progress_end=82, url=self.target, agent="DynamicToolScheduler", tool="dynamic_tool_scheduler")
+            self.phase_runner.run("12 Safe Parameter + Endpoint Review", self._safe_parameter_review, progress_start=83, progress_end=92, url=self.target, agent="CAIReActPlannerAgent", tool="cai_react_planner")
+            self.phase_runner.run("13 Reporting", self._write_reports, progress_start=93, progress_end=100, url=self.target, agent="ReportAgent", tool="report_generator", required=True)
+
+            summary = {
+                "ok": True,
+                "version": VERSION,
+                "target": self.target,
+                "scan_mode": self.scan_mode,
+                "phase_summary": self.phase_runner.summary(),
+                "coverage": self.state.coverage(),
+                "reports": self.extra_reports,
+                "dynamic_tools": self.dynamic_tool_summary,
+                "react": self.react_summary,
+            }
+            self.state.add_event("SUCCESS", "autonomous scan completed", summary=summary)
+            self.state.save()
+            return summary
+        finally:
+            self.dashboard.stop(final=True)
+
+    def run(self) -> dict[str, Any]:
+        return self.bootstrap()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="VulnScope complete phase-stable autonomous engine")
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
+    parser.add_argument("--include-subdomains", action="store_true")
+    parser.add_argument("--header", action="append", default=[])
+    parser.add_argument("--max-pages", type=int, default=120)
+    parser.add_argument("--max-depth", type=int, default=3)
+    parser.add_argument("--max-params", type=int, default=250)
+    parser.add_argument("--request-timeout", type=int, default=8)
+    parser.add_argument("--delay", type=float, default=0.6)
+    parser.add_argument("--request-budget", type=int, default=500)
+    parser.add_argument("--max-actions", type=int, default=160)
+    parser.add_argument("--asset-doc-limit", type=int, default=40)
+    parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", "http://localhost:11434/api/chat"))
+    parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", "qwen2.5:3b"))
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--no-live-dashboard", action="store_true")
+    parser.add_argument("--no-deep-assets", action="store_true")
+    parser.add_argument("--no-dynamic-tools", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    engine = AutonomousScanEngine(
+        args.target,
+        scan_mode=args.scan_mode,
+        include_subdomains=args.include_subdomains,
+        headers=parse_headers(args.header),
+        max_pages=args.max_pages,
+        max_depth=args.max_depth,
+        max_params=args.max_params,
+        request_timeout=args.request_timeout,
+        delay=args.delay,
+        request_budget=args.request_budget,
+        max_actions=args.max_actions,
+        resume=args.resume,
+        browser=args.browser,
+        live_dashboard=not args.no_live_dashboard,
+        deep_assets=not args.no_deep_assets,
+        dynamic_tools=not args.no_dynamic_tools,
+        asset_doc_limit=args.asset_doc_limit,
+        ollama_url=args.ollama_url,
+        ollama_model=args.ollama_model,
+    )
+    summary = engine.run()
+    print(json.dumps({"ok": bool(summary.get("ok")), "coverage": summary.get("coverage"), "reports": summary.get("reports")}, indent=2, ensure_ascii=False))
+    return 0 if summary.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
