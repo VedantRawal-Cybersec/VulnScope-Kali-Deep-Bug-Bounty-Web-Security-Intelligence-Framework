@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
+import ollama
 import os
+import chromadb
+from chromadb.utils import embedding_functions
+import json
 import time
 from pathlib import Path
 from typing import Any
 
-try:
-    import ollama  # type: ignore
-except Exception:  # pragma: no cover
-    ollama = None
-
 
 class AIBrain:
-    """Memory-backed assistant layer for the prompt orchestrator.
+    """Memory-backed assistant layer for the prompt orchestrator."""
 
-    It uses Ollama when available and falls back to deterministic local memory
-    when Ollama is not running. This keeps VulnScope usable on clean systems.
-    """
-
-    def __init__(self, model: str | None = None, collection_name: str = "vulnscope") -> None:
-        self.model = model or os.getenv("VULNSCOPE_OLLAMA_MODEL", "qwen2.5:3b")
+    def __init__(self, model: str = "deepseek-local", collection_name: str = "vulnscope") -> None:
+        self.model = model
         self.collection_name = collection_name
+        self.ollama_host = os.getenv("OLLAMA_HOST", "http://192.168.199.1:11434").rstrip("/")
+        self.client = ollama.Client(host=self.ollama_host)
+
+        self.chroma_path = "./chroma_db"
+        self.embedding_url = f"{self.ollama_host}/api/embeddings"
+        self.embedding_function = embedding_functions.OllamaEmbeddingFunction(
+            url=self.embedding_url,
+            model_name=self.model,
+        )
+        self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
+        self.collection = self.chroma_client.get_or_create_collection(
+            name=self.collection_name,
+            embedding_function=self.embedding_function,
+        )
+
         self.memory_path = Path("reports/output/prompt-engine/memory.jsonl")
         self.memory_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -31,7 +40,32 @@ class AIBrain:
         with self.memory_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def retrieve_similar_decisions(self, current_context: str, top_k: int = 5) -> list[dict[str, Any]]:
+        try:
+            doc_id = f"decision_{int(record['time'] * 1000)}"
+            self.collection.add(
+                ids=[doc_id],
+                documents=[context],
+                metadatas=[{"decision": decision, "outcome": outcome, "time": record["time"]}],
+            )
+        except Exception:
+            pass
+
+    def retrieve_similar(self, current_context: str, top_k: int = 5) -> list[dict[str, Any]]:
+        try:
+            result = self.collection.query(
+                query_texts=[current_context],
+                n_results=top_k,
+            )
+            documents = result.get("documents", [[]])[0]
+            metadatas = result.get("metadatas", [[]])[0]
+            rows: list[dict[str, Any]] = []
+            for document, metadata in zip(documents, metadatas):
+                rows.append({"context": document, "metadata": metadata or {}})
+            if rows:
+                return rows
+        except Exception:
+            pass
+
         if not self.memory_path.exists():
             return []
         rows: list[dict[str, Any]] = []
@@ -43,11 +77,15 @@ class AIBrain:
             rows.append({"context": item.get("context", ""), "metadata": {"decision": item.get("decision", ""), "outcome": item.get("outcome", "")}})
         return rows[-top_k:]
 
+    def retrieve_similar_decisions(self, current_context: str, top_k: int = 5) -> list[dict[str, Any]]:
+        return self.retrieve_similar(current_context, top_k)
+
     def chat(self, prompt: str) -> str:
-        if ollama is None:
-            return ""
         try:
-            response = ollama.chat(model=self.model, messages=[{"role": "user", "content": prompt}])
+            response = self.client.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
             return str(response.get("message", {}).get("content", "")).strip()
         except Exception:
             return ""
