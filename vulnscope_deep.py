@@ -57,7 +57,7 @@ def ask_authorization(target: str, yes: bool) -> None:
 
 def run_json(command: list[str], *, env: dict[str, str] | None = None) -> tuple[int, dict]:
     try:
-        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=90)
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=30)
     except subprocess.TimeoutExpired:
         return 124, {"ok": False, "error": "diagnostic timeout"}
     text = proc.stdout.strip()
@@ -135,7 +135,8 @@ def main() -> int:
     parser.add_argument("--mode", choices=["bugbounty", "lab"], default="")
     parser.add_argument("--seed-url", action="append", default=[], help="Optional same-scope URL/path with existing query parameters. Repeatable.")
     parser.add_argument("--yes", action="store_true", help="Skip authorization prompt only if written authorization is already confirmed.")
-    parser.add_argument("--skip-network-diag", action="store_true")
+    parser.add_argument("--network-diag", action="store_true", help="Run the pre-scan network diagnostic before dashboard launch. Off by default for instant UI.")
+    parser.add_argument("--skip-network-diag", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--continue-if-unreachable", action="store_true", help="Continue only when you supplied seed URLs and understand network checks failed.")
     parser.add_argument("--no-subdomains", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
@@ -162,7 +163,7 @@ def main() -> int:
         env["VULNSCOPE_SEED_URLS"] = ",".join([value for value in [existing, *seeds] if value])
     env.setdefault("VULNSCOPE_LLM_DECISION_INTERVAL", str(profile.get("llm_decision_interval", 3)))
 
-    if not args.skip_network_diag:
+    if args.network_diag and not args.skip_network_diag:
         print("\n[1/3] Checking target reachability...")
         code, payload = run_json([sys.executable, "scripts/network_diag.py", "--target", target, "--timeout", str(profile.get("request_timeout", 12))], env=env)
         reachable = bool(payload.get("http", {}).get("ok"))
@@ -176,7 +177,7 @@ def main() -> int:
         else:
             print("Target reachable. Continuing.")
 
-    print("\n[2/3] Preparing deep safe-active workflow...")
+    print("\n[1/2] Preparing deep safe-active workflow...")
     if seeds:
         print("Seed URLs:")
         for seed in seeds:
@@ -184,7 +185,7 @@ def main() -> int:
     else:
         print("No seed URLs supplied. VulnScope will rely on crawler, subdomain discovery, JS mining, forms, and parameter inventory.")
 
-    print("\n[3/3] Launching VulnScope...")
+    print("\n[2/2] Launching VulnScope dashboard now...")
     cmd = build_command(target, args, profile)
     print("$ " + " ".join(cmd))
     started = time.time()
