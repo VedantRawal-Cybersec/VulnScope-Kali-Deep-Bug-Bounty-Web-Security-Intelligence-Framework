@@ -10,12 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from vulnscope_preflight import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, print_preflight_status, run_preflight
-
-VERSION = "1.17.3-ai-registry-repair"
+VERSION = "2.0.0-deepseek-react"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
-TOOLS_TXT = Path("tools.txt")
 
 RESET = "\033[0m"
 CYAN = "\033[36m"
@@ -26,7 +23,7 @@ YELLOW = "\033[33m"
 BANNER = f"""
 {CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                          VulnScope Ultimate v{VERSION:<24}║
-║        AI Tool Configurator → Registry Repair → Deep Discovery → Evidence    ║
+║             DeepSeek ReAct AI → Memory → Tool Learning → Reports             ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝{RESET}
 """
 
@@ -58,20 +55,23 @@ def effective_scan_mode(args: argparse.Namespace) -> str:
     return args.scan_mode
 
 
-def preprocess_argv(argv: list[str]) -> list[str]:
-    rewritten: list[str] = []
-    index = 0
-    while index < len(argv):
-        item = argv[index]
-        if item == "--add-tool" and index + 1 < len(argv):
-            nxt = argv[index + 1]
-            if nxt.startswith("-") and not nxt.startswith("--"):
-                rewritten.extend(["--add-tool-file", nxt[1:]])
-                index += 2
-                continue
-        rewritten.append(item)
-        index += 1
-    return rewritten
+def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = False) -> None:
+    host = host_from_target(target)
+    print(c("\n[Authorization] Target: " + target, GREEN))
+    if scan_mode == "lab":
+        print(c("Lab mode is intended only for owned labs, training systems, or deliberately vulnerable targets.", YELLOW))
+    if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
+        print("\nRules:")
+        print("- You own this target or have explicit written authorization.")
+        print("- VulnScope keeps execution approval-gated and writes evidence-first reports.")
+        answer = input("\nDo you have explicit written authorization to test this target? (yes/no): ").strip().lower()
+        if answer not in {"yes", "y"}:
+            raise SystemExit("Authorization not confirmed.")
+    scope_text = f"Scope locked to {host}" + (" and subdomains." if include_subdomains else ".")
+    print(c(f"  ℹ️  {scope_text}", CYAN))
+    print(c(f"  ℹ️  Mode: {scan_mode}.", CYAN))
+    AUTH.parent.mkdir(parents=True, exist_ok=True)
+    AUTH.write_text(json.dumps({"target": target, "host": host, "scan_mode": scan_mode, "include_subdomains": include_subdomains, "confirmed_authorization": True, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
 
 
 def run(label: str, command: list[str], timeout: int = 3600) -> dict:
@@ -94,64 +94,11 @@ def run(label: str, command: list[str], timeout: int = 3600) -> dict:
         return {"label": label, "ok": False, "error": str(exc), "command": command, "started_at": started.isoformat()}
 
 
-def confirm(target: str, yes: bool, scan_mode: str, include_subdomains: bool = False) -> None:
-    host = host_from_target(target)
-    print(c("\n[Authorization] Confirmed for: " + target, GREEN))
-    if scan_mode == "lab":
-        print(c("WARNING: lab mode is intended only for targets you own or intentionally vulnerable labs. Destructive actions remain disabled in VulnScope core.", YELLOW))
-    if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
-        print("\nRules:")
-        print("- You own this target, are using a local/intentionally vulnerable lab, or have explicit written authorization.")
-        print("- VulnScope runs evidence-first defensive checks only.")
-        print("- Production data modification is not allowed.")
-        answer = input("\nDo you have explicit written authorization to test this target? (yes/no): ").strip().lower()
-        if answer not in {"yes", "y"}:
-            raise SystemExit("Authorization not confirmed.")
-    if scan_mode in {"safe-active", "lab"} and not yes and os.getenv("VULNSCOPE_SAFE_ACTIVE_OK", "0") != "1":
-        answer = input(f"\n{scan_mode} mode sends harmless canary/check values to safe GET parameters. Type CONTINUE to proceed: ").strip()
-        if answer != "CONTINUE":
-            raise SystemExit(f"{scan_mode} mode not confirmed.")
-    scope_text = f"Scope locked to {host}" + (" and subdomains." if include_subdomains else ".")
-    print(c(f"  ℹ️  {scope_text}", CYAN))
-    print(c(f"  ℹ️  Mode: {scan_mode}. No destructive actions, credential attacks, OOB callbacks, or service disruption.", CYAN))
-    AUTH.parent.mkdir(parents=True, exist_ok=True)
-    AUTH.write_text(json.dumps({"target": target, "host": host, "scan_mode": scan_mode, "include_subdomains": include_subdomains, "confirmed_authorization": True, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
-
-
-def final_summary(target: str, history: list[dict]) -> None:
-    host = host_from_target(target)
-    reports = {"dynamic_tool_registry": "tools/registry.json", "dynamic_tool_phase_summary": f"reports/output/cai-superior/{host}/dynamic-tool-phase-summary.json", "batch_tool_install_log": "logs/tool_install.log", "vulnscope_log": "logs/vulnscope.log", "phase_runner_summary": f"reports/output/cai-superior/{host}/phase-runner-summary.json", "owasp_coverage": f"reports/output/cai-superior/{host}/owasp-coverage-report.md", "final_findings_dashboard": f"reports/output/cai-superior/{host}/final-findings-dashboard.md", "autonomous_report": f"reports/output/cai-superior/{host}/autonomous-scan-report.md", "autonomous_state": f"reports/output/cai-superior/{host}/autonomous-scan-state.json", "parameter_inventory_v2": f"reports/output/cai-superior/{host}/parameter-inventory-v2.json", "tool_router_matrix": f"reports/output/cai-superior/{host}/tool-router-matrix.json", "authorization": str(AUTH)}
-    payload = {"target": target, "history": history, "reports": reports, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION, "batch_tool_installer": True, "dynamic_tool_registry": True, "website_dashboard": False}
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    lines = ["# VulnScope Summary", "", f"Target: `{target}`", "", f"Version: `{VERSION}`", "Batch tool installer: `true`", "Dynamic tool registry: `true`", "", "## Steps"]
-    for item in history:
-        lines.append(f"- `{item.get('label')}` ok=`{item.get('ok')}` exit=`{item.get('exit_code', 'n/a')}`")
-    lines += ["", "## Reports"]
-    for name, path in reports.items():
-        lines.append(f"- `{name}`: `{path}`")
-    (OUT / "final-summary.md").write_text("\n".join(lines), encoding="utf-8")
-    print(c("\n✅ Full report written to: reports/output/cai-superior/" + host + "/", GREEN))
-    for path in reports.values():
-        print("   • " + path)
-
-
-def append_headers(cmd: list[str], headers: list[str]) -> None:
-    for header in headers or []:
-        if ":" in header:
-            cmd.extend(["--header", header])
-
-
 def run_agentic(target: str, args: argparse.Namespace) -> dict:
     mode = effective_scan_mode(args)
     os.environ["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
     os.environ["VULNSCOPE_OLLAMA_URL"] = args.ollama_url
-    os.environ["VULNSCOPE_LLM_DECISION_INTERVAL"] = str(args.llm_decision_interval)
-    os.environ["VULNSCOPE_LLM_DECISION_TIMEOUT"] = str(args.llm_decision_timeout)
     os.environ["VULNSCOPE_SCAN_MODE"] = mode
-    if args.no_llm_planner:
-        os.environ["VULNSCOPE_DISABLE_LLM_PLANNER"] = "1"
-    history: list[dict] = []
     engine_cmd = [sys.executable, "-m", "core.autonomous_scan_engine", "--target", target, "--scan-mode", mode, "--max-pages", str(args.max_pages), "--max-depth", str(args.max_depth), "--max-params", str(args.max_params), "--request-timeout", str(args.request_timeout), "--delay", str(args.delay), "--request-budget", str(args.request_budget), "--max-actions", str(args.max_actions), "--asset-doc-limit", str(args.asset_doc_limit), "--ollama-url", args.ollama_url, "--ollama-model", args.ollama_model]
     if args.include_subdomains:
         engine_cmd.append("--include-subdomains")
@@ -165,52 +112,71 @@ def run_agentic(target: str, args: argparse.Namespace) -> dict:
         engine_cmd.append("--no-deep-assets")
     if args.no_dynamic_tools:
         engine_cmd.append("--no-dynamic-tools")
-    append_headers(engine_cmd, args.header)
-    history.append(run(f"Safe CAI ReAct Autonomous Engine ({mode})", engine_cmd, timeout=3600))
-    ok = all(item.get("ok") for item in history)
-    return {"label": f"VulnScope {VERSION} {mode}", "ok": ok, "exit_code": 0 if ok else 1, "steps": history}
+    return run(f"Phase-stable autonomous engine ({mode})", engine_cmd, timeout=3600)
 
 
-def run_cai(target: str, args: argparse.Namespace) -> dict:
-    cmd = [sys.executable, "cai_superior_cli.py", "--target", target, "--criticality", args.criticality]
-    if args.include_subdomains:
-        cmd.append("--include-subdomains")
-    return run("CAI checkpoint pipeline", cmd, timeout=3600)
+def auto_discover_tools(target: str, brain, *, approve_install: bool = False, approve_run: bool = False) -> list[dict]:
+    from core.ai_tool_discovery import AIToolDiscovery
+    from core.dynamic_tool_installer import DynamicToolInstaller
+    context = {"target": target, "host": host_from_target(target), "goal": "discover defensive web assessment tools"}
+    discovery = AIToolDiscovery(brain)
+    installer = DynamicToolInstaller(brain)
+    repos = discovery.discover(context, per_query=2, max_total=8)
+    results: list[dict] = []
+    for repo_url in repos:
+        try:
+            results.append(installer.install_and_register(repo_url, approve_install=approve_install, approve_run=approve_run, enable=True))
+        except Exception as exc:
+            results.append({"repo_url": repo_url, "ok": False, "error": str(exc)})
+    out = Path("logs/auto_discover_results.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+    return results
 
 
-def run_preflight_step(args: argparse.Namespace) -> dict:
-    payload = run_preflight(install_python=not args.no_python_install, run_tool_setup_flag=not args.skip_tool_setup, check_ollama_flag=not args.skip_ollama, require_ollama=False, auto_pull_model=not args.no_model_pull, ollama_url=args.ollama_url, ollama_model=args.ollama_model)
-    print_preflight_status(payload)
-    return {"label": "Preflight", "ok": bool(payload.get("ok")), "exit_code": 0 if payload.get("ok") else 2, "summary": payload.get("summary", {}), "blocking_issues": payload.get("blocking_issues", [])}
-
-
-def edit_tools_file() -> int:
-    if not TOOLS_TXT.exists():
-        TOOLS_TXT.write_text("# Add one GitHub repository URL per line\n", encoding="utf-8")
-    editor = os.getenv("EDITOR") or "nano"
-    try:
-        return subprocess.call([editor, str(TOOLS_TXT)])
-    except FileNotFoundError:
-        print(f"Editor not found: {editor}. Edit {TOOLS_TXT} manually.")
-        return 1
+def run_react_ai(target: str, args: argparse.Namespace) -> dict:
+    from core.ai_brain import AIBrain
+    from core.autonomous_planner import AutonomousPlanner
+    from core.bounty_integrator import BountyIntegrator
+    from core.orchestrator import ReActOrchestrator
+    mode = "lab" if args.mode == "lab" or args.lab_mode else "bugbounty"
+    aggressive = bool(args.aggressive and mode == "lab")
+    if args.aggressive and mode != "lab":
+        print(c("Aggressive mode is lab-only. Running bugbounty mode with safe defaults.", YELLOW))
+    brain = AIBrain(model=args.ollama_model or "deepseek-local")
+    planner = AutonomousPlanner()
+    if args.auto_discover:
+        print(c("\n[Auto-Discover] Searching and registering candidate tools...", CYAN))
+        results = auto_discover_tools(target, brain, approve_install=args.approve_install, approve_run=args.approve_run and mode == "lab")
+        print(json.dumps({"auto_discover_results": len(results), "log": "logs/auto_discover_results.json"}, indent=2))
+    out_dir = args.out_dir or str(Path("reports/output") / host_from_target(target))
+    orchestrator = ReActOrchestrator(target, mode=mode, aggressive=aggressive, max_turns=args.react_turns, out_dir=out_dir, brain=brain, planner=planner)
+    result = orchestrator.run()
+    submission = {"submitted": False, "reason": "submit flag not set"}
+    if args.submit:
+        if not args.program:
+            submission = {"submitted": False, "reason": "missing --program"}
+        else:
+            answer = input("Submit final report to the selected platform? Type SUBMIT to continue: ").strip()
+            if answer == "SUBMIT":
+                integrator = BountyIntegrator(args.platform, api_key=args.api_key)
+                submission = integrator.submit_report(program=args.program, report_path=result.get("report_path", ""), target=target, findings=result.get("findings", []), confirm=True)
+            else:
+                submission = {"submitted": False, "reason": "user cancelled"}
+    result["submission"] = submission
+    final_path = Path(out_dir) / "vulnscope-react-final.json"
+    final_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"label": "DeepSeek ReAct AI", "ok": True, "exit_code": 0, "result": result, "final_path": str(final_path)}
 
 
 def handle_tool_registry(args: argparse.Namespace) -> int | None:
-    from core.tool_import_wizard import PROMPT_TOKEN, run_import_wizard
     from core.tool_manager import ToolManager
     manager = ToolManager()
-    if args.edit_tools:
-        return edit_tools_file()
     if args.ai_repair_tools:
         from core.ai_tool_registry_repair import AIToolRegistryRepair
         payload = AIToolRegistryRepair(timeout=args.ai_tool_probe_timeout, use_llm=not args.no_ai_tool_llm).repair_all(approve_safe_run=args.ai_repair_approve_safe_run, enable=not args.ai_tool_disable, limit=args.ai_repair_limit)
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
-    if args.ai_analyze_tool:
-        from core.ai_tool_auto_configurator import AIToolAutoConfigurator
-        payload = AIToolAutoConfigurator(timeout=args.ai_tool_probe_timeout, use_llm=not args.no_ai_tool_llm).configure(args.ai_analyze_tool, install=False, approve_install=False, approve_run=False, enable=False)
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return 0 if payload.get("status") not in {"BLOCKED"} else 2
     if args.ai_add_tool:
         from core.ai_tool_auto_configurator import AIToolAutoConfigurator
         payload = AIToolAutoConfigurator(timeout=args.ai_tool_probe_timeout, use_llm=not args.no_ai_tool_llm).configure(args.ai_add_tool, install=args.ai_tool_install, approve_install=args.ai_tool_install, approve_run=args.ai_tool_approve_run, enable=not args.ai_tool_disable)
@@ -228,43 +194,42 @@ def handle_tool_registry(args: argparse.Namespace) -> int | None:
         tool = manager.registry.approve(args.approve_tool, install=args.approve_tool_install, run=args.approve_tool_run, enable=args.enable_tool)
         print(json.dumps({"approved": tool.to_dict()}, indent=2, ensure_ascii=False))
         return 0
-    if args.add_tool_file:
-        summary = manager.install_from_file(args.add_tool_file, confirm_authorization=args.yes, install_timeout=args.tool_install_timeout)
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
-        print(f"\n{summary.get('installed_successfully', 0)} tools installed successfully, {summary.get('failed', 0)} failed.")
-        return 0 if summary.get("status") == "completed" else 2
-    if args.add_tool is not None:
-        return run_import_wizard(args.add_tool if args.add_tool else PROMPT_TOKEN, yes=args.yes)
     return None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="VulnScope CAI-style autonomous safe scanner")
+    parser = argparse.ArgumentParser(description="VulnScope DeepSeek ReAct autonomous security assessment framework")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
-    parser.add_argument("--mode", choices=["deps", "cai", "agentic", "bugbounty", "lab"], default="agentic")
+    parser.add_argument("--mode", choices=["agentic", "bugbounty", "lab", "react"], default="agentic")
+    parser.add_argument("--react-ai", action="store_true", help="Run the DeepSeek ReAct AI loop.")
+    parser.add_argument("--aggressive", action="store_true", help="Lab-only higher-intensity approved tool profile.")
+    parser.add_argument("--auto-discover", action="store_true", help="Discover and register candidate tools before scanning.")
+    parser.add_argument("--approve-install", action="store_true")
+    parser.add_argument("--approve-run", action="store_true")
+    parser.add_argument("--submit", action="store_true")
+    parser.add_argument("--platform", choices=["hackerone", "bugcrowd"], default="hackerone")
+    parser.add_argument("--program", default="")
+    parser.add_argument("--api-key", default=os.getenv("BOUNTY_API_KEY", ""))
+    parser.add_argument("--out-dir", default="")
+    parser.add_argument("--react-turns", type=int, default=30)
     parser.add_argument("--lab-mode", action="store_true")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
-    parser.add_argument("--add-tool", nargs="?", const="__prompt__", default=None)
-    parser.add_argument("--add-tool-file", default="")
-    parser.add_argument("--ai-analyze-tool", default="")
     parser.add_argument("--ai-add-tool", default="")
     parser.add_argument("--ai-add-tool-file", default="")
-    parser.add_argument("--ai-repair-tools", action="store_true", help="Re-analyze and repair every existing dynamic tool registry entry.")
-    parser.add_argument("--ai-repair-approve-safe-run", action="store_true", help="After repair, approve passive/safe-active tools for run. Review output first when possible.")
-    parser.add_argument("--ai-repair-limit", type=int, default=0, help="Limit number of registry entries repaired in one run; 0 means all.")
+    parser.add_argument("--ai-repair-tools", action="store_true")
+    parser.add_argument("--ai-repair-approve-safe-run", action="store_true")
+    parser.add_argument("--ai-repair-limit", type=int, default=0)
     parser.add_argument("--ai-tool-install", action="store_true")
     parser.add_argument("--ai-tool-approve-run", action="store_true")
     parser.add_argument("--ai-tool-disable", action="store_true")
     parser.add_argument("--ai-tool-probe-timeout", type=int, default=25)
     parser.add_argument("--no-ai-tool-llm", action="store_true")
     parser.add_argument("--list-tools", action="store_true")
-    parser.add_argument("--edit-tools", action="store_true")
     parser.add_argument("--approve-tool", default="")
     parser.add_argument("--approve-tool-install", action="store_true")
     parser.add_argument("--approve-tool-run", action="store_true")
     parser.add_argument("--enable-tool", action="store_true")
-    parser.add_argument("--tool-install-timeout", type=int, default=900)
     parser.add_argument("--no-dynamic-tools", action="store_true")
     parser.add_argument("--header", action="append", default=[])
     parser.add_argument("--max-pages", type=int, default=120)
@@ -274,43 +239,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--delay", type=float, default=0.6)
     parser.add_argument("--request-budget", type=int, default=500)
     parser.add_argument("--max-actions", type=int, default=160)
-    parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--asset-doc-limit", type=int, default=40)
     parser.add_argument("--no-deep-assets", action="store_true")
-    parser.add_argument("--llm-decision-interval", type=int, default=4)
-    parser.add_argument("--llm-decision-timeout", type=int, default=6)
-    parser.add_argument("--no-llm-planner", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--browser", action="store_true")
-    parser.add_argument("--tool-timeout", type=int, default=20)
-    parser.add_argument("--with-100-tools", action="store_true")
-    parser.add_argument("--with-legacy-react", action="store_true")
-    parser.add_argument("--skip-100-tools", action="store_true")
-    parser.add_argument("--skip-react", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--include-subdomains", action="store_true")
-    parser.add_argument("--criticality", choices=["low", "normal", "high", "critical"], default="normal")
-    parser.add_argument("--max-turns", type=int, default=15)
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--skip-preflight", action="store_true")
-    parser.add_argument("--skip-tool-setup", action="store_true")
-    parser.add_argument("--skip-ollama", action="store_true")
-    parser.add_argument("--allow-ollama-fallback", action="store_true")
-    parser.add_argument("--no-model-pull", action="store_true")
-    parser.add_argument("--no-python-install", action="store_true")
     parser.add_argument("--live-dashboard", action="store_true", default=True)
     parser.add_argument("--no-live-dashboard", action="store_true")
-    parser.add_argument("--no-final-dashboard", action="store_true")
-    parser.add_argument("--ollama-url", default=os.getenv("VULNSCOPE_OLLAMA_URL", DEFAULT_OLLAMA_URL))
-    parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL))
+    parser.add_argument("--ollama-url", default=os.getenv("OLLAMA_HOST", "http://192.168.199.1:11434"))
+    parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", "deepseek-local"))
     args, unknown = parser.parse_known_args(argv)
     if unknown:
         os.environ["VULNSCOPE_IGNORED_ARGS"] = " ".join(unknown)
     return args
 
 
+def final_summary(target: str, history: list[dict]) -> None:
+    host = host_from_target(target)
+    OUT.mkdir(parents=True, exist_ok=True)
+    payload = {"target": target, "history": history, "generated_at": datetime.now(timezone.utc).isoformat(), "version": VERSION}
+    (OUT / "final-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(c("\n✅ VulnScope run complete.", GREEN))
+    print("   • reports/output/" + host + "/")
+    print("   • reports/output/vulnscope-main/final-summary.json")
+
+
 def main() -> int:
-    args = parse_args(preprocess_argv(sys.argv[1:]))
+    args = parse_args(sys.argv[1:])
     if args.version:
         print(VERSION)
         return 0
@@ -318,22 +274,16 @@ def main() -> int:
     if registry_result is not None:
         return registry_result
     print(BANNER)
-    history: list[dict] = []
-    if not args.skip_preflight:
-        preflight = run_preflight_step(args)
-        history.append(preflight)
-        if not preflight.get("ok"):
-            print(c("\nPreflight blocked launch because required local dependencies are missing. Fix the blocking items above, then run again.", RED))
-            return 2
-    if args.mode == "deps":
-        return 0 if all(x.get("ok") for x in history) else 2
     target = normalize_target(args.target or input("\nTarget URL/domain: ").strip())
-    mode = effective_scan_mode(args)
+    mode = "lab" if args.mode == "lab" or args.lab_mode else effective_scan_mode(args)
     confirm(target, args.yes, mode, include_subdomains=args.include_subdomains)
-    print(c(f"\n🚀 Starting phase-stable autonomous scan in {mode} mode... (Ctrl+C to stop)", GREEN))
-    history.append(run_cai(target, args) if args.mode == "cai" else run_agentic(target, args))
+    if args.react_ai or args.mode == "react" or args.auto_discover or args.aggressive or args.submit:
+        result = run_react_ai(target, args)
+    else:
+        result = run_agentic(target, args)
+    history = [result]
     final_summary(target, history)
-    return 0 if all(x.get("ok") for x in history) else 1
+    return 0 if result.get("ok") else 1
 
 
 if __name__ == "__main__":
