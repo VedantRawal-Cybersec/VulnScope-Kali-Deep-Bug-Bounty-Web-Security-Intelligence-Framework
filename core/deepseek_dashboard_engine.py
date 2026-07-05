@@ -7,33 +7,24 @@ from typing import Any
 from core.ai_brain import AIBrain
 from core.autonomous_scan_engine import AutonomousScanEngine, build_parser, parse_headers
 from core.deepseek_autonomy_loop import DeepSeekAutonomyLoop
+from core.safe_surface_engine import SafeSurfaceEngine
 
 
 class DeepSeekDashboardEngine(AutonomousScanEngine):
-    """Full dashboard engine with DeepSeek controlling the review loop."""
+    """Full dashboard engine with deterministic mapping before AI control."""
 
     def _safe_parameter_review(self) -> dict[str, Any]:
-        self._dashboard(
-            "DeepSeek Autonomous ReAct",
-            "DeepSeek is choosing the next safe action from crawler state, parameters, previous observations, and approved tools",
-            progress=76,
-            agent="DeepSeekPlannerAgent",
-            tool="deepseek_react_loop",
-        )
+        self._dashboard("Surface Mapping", "Mapping URLs, forms, parameters, scripts, and checks", progress=74, agent="SafeSurfaceEngine", tool="safe_surface_engine")
+        surface = SafeSurfaceEngine(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard, max_pages=self.max_pages, max_depth=self.max_depth, max_params=self.max_params, mode=self.scan_mode).run_all()
+        self.extra_reports.update(surface.get("reports", {}))
+        self.state.add_event("INFO", "surface mapping completed", summary=surface)
+        self.state.save()
+
+        self._dashboard("DeepSeek Autonomous ReAct", "DeepSeek is choosing the next action from mapped scan state", progress=80, agent="DeepSeekPlannerAgent", tool="deepseek_react_loop")
         brain = AIBrain(model=self.ollama_model or "deepseek-local")
-        loop = DeepSeekAutonomyLoop(
-            target=self.target,
-            state=self.state,
-            crawler=self.crawler,
-            tester=self.tester,
-            dashboard=self.dashboard,
-            dynamic_scheduler=self.dynamic_scheduler,
-            brain=brain,
-            max_turns=min(max(20, self.max_actions), 120),
-            max_params=self.max_params,
-            scan_mode=self.scan_mode,
-        )
+        loop = DeepSeekAutonomyLoop(target=self.target, state=self.state, crawler=self.crawler, tester=self.tester, dashboard=self.dashboard, dynamic_scheduler=self.dynamic_scheduler, brain=brain, max_turns=min(max(20, self.max_actions), 120), max_params=self.max_params, scan_mode=self.scan_mode)
         self.react_summary = loop.run()
+        self.react_summary["surface"] = surface
         if self.react_summary.get("summary_path"):
             self.extra_reports["deepseek_autonomy_summary"] = self.react_summary["summary_path"]
         if self.react_summary.get("markdown_path"):
