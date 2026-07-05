@@ -22,8 +22,7 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 MAGENTA = "\033[35m"
 RED = "\033[31m"
-
-VERSION = "1.17.4-classic-phase-stable"
+VERSION = "1.17.5-deterministic-tool-state"
 SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 SENSITIVE_PATTERNS = [re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie|session|password)=([^\s&;]+)")]
 
@@ -138,11 +137,7 @@ def _box(title: str, lines: list[str], *, color: str = CYAN, enabled: bool = Tru
 
 
 class LiveDashboard:
-    """Classic VulnScope CLI dashboard with fixed phase/timer/tool state.
-
-    The visual structure intentionally matches the original CLI dashboard: Agent
-    Trace, Tool Matrix, Live Reasoning, Current Context, Live Log, and footer.
-    """
+    """Classic VulnScope CLI dashboard with deterministic per-tool lifecycle state."""
 
     TOOL_ORDER = [
         "crawler_v2",
@@ -159,21 +154,46 @@ class LiveDashboard:
         "unified_research_orchestrator",
         "report_generator",
         "llm_public_reasoning",
-        "llm_evidence_validator",
     ]
+
+    TOOL_THRESHOLDS = {
+        "header_analyzer": 14,
+        "cookie_analyzer": 14,
+        "metadata_checker": 14,
+        "crawler_v2": 59,
+        "browser_crawler": 52,
+        "parameter_inventory": 59,
+        "js_route_review": 44,
+        "deep_scan_phase_pack": 68,
+        "llm_public_reasoning": 70,
+        "unified_research_orchestrator": 75,
+        "external_tool_readiness": 82,
+        "classification_review": 92,
+        "safe_canary_reflection": 92,
+        "report_generator": 100,
+    }
+
+    ALIASES = {
+        "availability_checker": ["header_analyzer", "cookie_analyzer", "metadata_checker"],
+        "passive_analyzers": ["header_analyzer", "cookie_analyzer", "metadata_checker"],
+        "review_scripts": ["js_route_review"],
+        "safe_surface_engine": ["parameter_inventory", "header_analyzer", "cookie_analyzer", "metadata_checker", "js_route_review"],
+        "surface_map": ["parameter_inventory", "js_route_review"],
+        "test_parameter": ["safe_canary_reflection", "classification_review"],
+        "reflection_canary": ["safe_canary_reflection"],
+        "redirect_review": ["safe_canary_reflection"],
+        "classification_review": ["classification_review"],
+        "dynamic_tool_scheduler": ["external_tool_readiness"],
+        "llm_gateway.plan_actions": ["llm_public_reasoning"],
+        "cai_react_planner": ["classification_review", "safe_canary_reflection"],
+        "deepseek_react_loop": ["classification_review", "safe_canary_reflection"],
+    }
+
+    TERMINAL_STATUSES = {"completed", "failed", "inactive", "skipped", "blocked", "blocked_by_safety", "not_ready", "timed_out"}
 
     def __init__(self, target: str, *, max_turns: int = 0, enabled: bool = True, live_stream: bool = False, refresh_interval: float = 0.5, interactive: bool | None = None) -> None:
         parts = target_components(target)
-        self.snapshot = LiveSnapshot(
-            target=_clean(parts["target"], 180),
-            max_turns=max_turns,
-            domain=_clean(parts["domain"], 100),
-            endpoint=_clean(parts["endpoint"], 180),
-            request_line=_clean(parts["request_line"], 180),
-            path=_clean(parts["path"], 140),
-            parameters=_clean(parts["parameters"], 180),
-            method=parts.get("method", "GET"),
-        )
+        self.snapshot = LiveSnapshot(target=_clean(parts["target"], 180), max_turns=max_turns, domain=_clean(parts["domain"], 100), endpoint=_clean(parts["endpoint"], 180), request_line=_clean(parts["request_line"], 180), path=_clean(parts["path"], 140), parameters=_clean(parts["parameters"], 180), method=parts.get("method", "GET"))
         self.enabled = bool(enabled) and os.getenv("VULNSCOPE_NO_CLI_DASHBOARD", "0") != "1"
         self.live_stream = bool(live_stream) and os.getenv("VULNSCOPE_NO_LIVE_DASHBOARD", "0") != "1"
         self.interactive = sys.stdout.isatty() if interactive is None else bool(interactive)
@@ -186,6 +206,8 @@ class LiveDashboard:
         self.running = False
         self.thread: threading.Thread | None = None
         self.report_paths: dict[str, str] = {}
+        self.tool_statuses: dict[str, str] = {name: "queued" for name in self.TOOL_ORDER}
+        self.tool_reasons: dict[str, str] = {}
         self._alt_screen = False
         self._last_height = 0
         self._last_render_at = 0.0
@@ -219,11 +241,91 @@ class LiveDashboard:
             sys.stdout.flush()
             self._alt_screen = False
         if final and self.enabled:
+            self._finalize_tool_statuses()
             self.show_final()
+
+    def _tool_names(self, tool: str) -> list[str]:
+        tool = str(tool or "").strip()
+        if not tool:
+            return []
+        names = []
+        if tool in self.TOOL_ORDER:
+            names.append(tool)
+        names.extend(self.ALIASES.get(tool, []))
+        if tool.startswith("dynamic:"):
+            names.append("external_tool_readiness")
+        seen: list[str] = []
+        for name in names:
+            if name in self.TOOL_ORDER and name not in seen:
+                seen.append(name)
+        return seen
+
+    def _set_tool_status(self, tool: str, status: str, reason: str = "") -> None:
+        status = str(status or "queued").replace("blocked_by_safety", "blocked")
+        if status == "done":
+            status = "completed"
+        if status not in {"queued", "running", "completed", "failed", "skipped", "blocked", "inactive", "not_ready", "timed_out"}:
+            status = "completed" if status == "success" else status
+        for name in self._tool_names(tool):
+            previous = self.tool_statuses.get(name, "queued")
+            if previous in self.TERMINAL_STATUSES and status == "running":
+                continue
+            self.tool_statuses[name] = status
+            if reason:
+                self.tool_reasons[name] = _clean(reason, 80)
+
+    def _infer_tool_statuses(self, snap: LiveSnapshot) -> dict[str, str]:
+        statuses = dict(self.tool_statuses)
+        current_names = set(self._tool_names(snap.current_tool))
+        for name in current_names:
+            if statuses.get(name) not in self.TERMINAL_STATUSES:
+                statuses[name] = "running"
+        for name, threshold in self.TOOL_THRESHOLDS.items():
+            if statuses.get(name) in self.TERMINAL_STATUSES or statuses.get(name) == "running":
+                continue
+            if snap.phase_progress >= threshold:
+                statuses[name] = "completed"
+        if snap.phase_progress >= 92 and snap.params_found == 0:
+            for name in ["classification_review", "safe_canary_reflection"]:
+                if statuses.get(name) in {"queued", "running"}:
+                    statuses[name] = "inactive"
+        if snap.phase_progress >= 82 and statuses.get("external_tool_readiness") == "queued":
+            statuses["external_tool_readiness"] = "inactive"
+        if snap.phase_progress >= 100:
+            for name, status in list(statuses.items()):
+                if status == "queued":
+                    statuses[name] = "inactive"
+        return statuses
+
+    def _finalize_tool_statuses(self) -> None:
+        statuses = self._infer_tool_statuses(self.snapshot)
+        for name, status in statuses.items():
+            if status == "queued":
+                statuses[name] = "inactive"
+        self.tool_statuses.update(statuses)
+        self._sync_counts()
+
+    def _sync_counts(self) -> None:
+        statuses = self._infer_tool_statuses(self.snapshot)
+        counts = {"running": 0, "completed": 0, "failed": 0, "skipped": 0, "blocked": 0, "inactive": 0, "not_ready": 0, "timed_out": 0, "queued": 0}
+        for status in statuses.values():
+            counts[status if status in counts else "queued"] += 1
+        self.snapshot.tools_total = len(statuses)
+        self.snapshot.tools_running = counts["running"]
+        self.snapshot.tools_completed = counts["completed"]
+        self.snapshot.tools_failed = counts["failed"] + counts["timed_out"]
+        self.snapshot.tools_skipped = counts["skipped"]
+        self.snapshot.tools_blocked = counts["blocked"]
+        self.snapshot.tools_inactive = counts["inactive"]
+        self.snapshot.tools_not_ready = counts["not_ready"]
 
     def update(self, **kwargs: Any) -> None:
         now = time.time()
         with self.lock:
+            tool_statuses = kwargs.pop("tool_statuses", None)
+            if isinstance(tool_statuses, dict):
+                for tool, status in tool_statuses.items():
+                    self._set_tool_status(str(tool), str(status), "bulk-update")
             endpoint_value = kwargs.get("endpoint") or kwargs.get("target_url") or kwargs.get("url")
             if endpoint_value and not any(k in kwargs for k in ("domain", "request_line", "path", "parameters")):
                 parts = target_components(str(endpoint_value))
@@ -253,8 +355,11 @@ class LiveDashboard:
                             setattr(self.snapshot, key, 0)
                     else:
                         setattr(self.snapshot, key, _clean(value, 260))
+            if "current_tool" in kwargs or "tool_status" in kwargs:
+                self._set_tool_status(str(kwargs.get("current_tool", self.snapshot.current_tool)), str(kwargs.get("tool_status", "running")), str(kwargs.get("decision", "")))
             self.snapshot.last_update_at = now
             self.snapshot.spinner_index = (self.snapshot.spinner_index + 1) % len(SPINNER)
+            self._sync_counts()
 
     def event(self, level: str, message: str) -> None:
         level = str(level or "INFO").upper()
@@ -279,23 +384,7 @@ class LiveDashboard:
         confirmation = _clean(confirmation or "review_lead", 40).lower()
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
-            finding = {
-                "type": _clean(finding_type or "Security Review Lead", 140),
-                "severity": severity,
-                "description": _clean(description or "Evidence requires analyst review.", 500),
-                "url": _clean(url or snap.endpoint, 260),
-                "domain": _clean(snap.domain, 120),
-                "request_line": _clean(snap.request_line, 240),
-                "path": _clean(snap.path, 180),
-                "parameter": _clean(parameter or snap.parameters, 220),
-                "test_string": _clean(test_string or snap.probe_string, 220),
-                "evidence": _clean(evidence or snap.evidence, 900),
-                "cvss": _clean(cvss, 80),
-                "confidence": _clean(confidence, 80),
-                "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."),
-                "confirmation": confirmation,
-                "recorded_at": time.time(),
-            }
+            finding = {"type": _clean(finding_type or "Security Review Lead", 140), "severity": severity, "description": _clean(description or "Evidence requires analyst review.", 500), "url": _clean(url or snap.endpoint, 260), "domain": _clean(snap.domain, 120), "request_line": _clean(snap.request_line, 240), "path": _clean(snap.path, 180), "parameter": _clean(parameter or snap.parameters, 220), "test_string": _clean(test_string or snap.probe_string, 220), "evidence": _clean(evidence or snap.evidence, 900), "cvss": _clean(cvss, 80), "confidence": _clean(confidence, 80), "reproduction": _clean_multiline(reproduction or "Review generated evidence and validate only inside the authorized scope."), "confirmation": confirmation, "recorded_at": time.time()}
             self.finding_details.append(finding)
             self.snapshot.findings = len(self.finding_details)
             self.snapshot.latest_finding = f"{severity} {finding['type']}"
@@ -369,22 +458,23 @@ class LiveDashboard:
                 lines.append(f"{key}: {value}")
         return lines
 
+    def _status_icon(self, status: str) -> str:
+        return {"running": SPINNER[self.snapshot.spinner_index] + " running", "completed": "✓ completed", "failed": "✗ failed", "timed_out": "✗ timed out", "skipped": "↷ skipped", "blocked": "⛔ blocked", "inactive": "· inactive", "not_ready": "⚙ needs config", "queued": "◻ queued"}.get(status, "◻ queued")
+
     def _tool_rows(self, snap: LiveSnapshot) -> list[str]:
+        statuses = self._infer_tool_statuses(snap)
+        counts = {"running": 0, "completed": 0, "failed": 0, "timed_out": 0, "skipped": 0, "blocked": 0, "inactive": 0, "not_ready": 0, "queued": 0}
+        for status in statuses.values():
+            counts[status if status in counts else "queued"] += 1
         rows = [
-            f"Total: {snap.tools_total:<3} Running: {snap.tools_running:<2} Completed: {snap.tools_completed:<3} Failed: {snap.tools_failed:<2} Blocked: {snap.tools_blocked:<2} Skip: {snap.tools_skipped:<2}",
-            f"Inactive: {snap.tools_inactive:<3} Needs Config: {snap.tools_not_ready:<3}   (Skip means actually selected but missing runtime input)",
+            f"Total: {len(statuses):<3} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed'] + counts['timed_out']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}",
+            f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3} Queued: {counts['queued']:<3}   (queued means later phase, not error)",
             "─" * 76,
         ]
         for tool in self.TOOL_ORDER:
-            if tool == snap.current_tool or (tool == "safe_canary_reflection" and snap.current_tool in {"test_parameter", "reflection_canary", "redirect_review"}):
-                mark = f"{SPINNER[snap.spinner_index]} running"
-            elif tool in {"report_generator", "llm_public_reasoning"} and snap.phase_progress < 85:
-                mark = "◻ queued"
-            elif snap.tools_completed > 0 and tool not in {snap.current_tool}:
-                mark = "✓ completed" if tool in {"crawler_v2", "browser_crawler"} and snap.phase_progress > 40 else "◻ queued"
-            else:
-                mark = "◻ queued"
-            rows.append(f"► {tool:<30} {mark}")
+            reason = self.tool_reasons.get(tool, "")
+            suffix = (" — " + reason) if reason and statuses.get(tool) in {"inactive", "not_ready", "blocked", "skipped", "failed"} else ""
+            rows.append(f"► {tool:<30} {self._status_icon(statuses.get(tool, 'queued'))}{suffix}")
         return rows[:17]
 
     def _trace_rows(self, snap: LiveSnapshot, traces: list[str]) -> list[str]:
@@ -403,23 +493,9 @@ class LiveDashboard:
         width = 95
         spinner = SPINNER[snap.spinner_index]
         header_line = f" VulnScope v{VERSION}   Target: {_clean(snap.domain, 24)}   Mode: {snap.mode}   Time: {self._elapsed()}   Phase: {self._phase_elapsed(snap)} "
-        header = [
-            c("┌" + "─" * (width - 2) + "┐", CYAN),
-            c("│" + _pad(header_line, width - 2) + "│", CYAN),
-            c("└" + "─" * (width - 2) + "┘", CYAN),
-            "",
-        ]
+        header = [c("┌" + "─" * (width - 2) + "┐", CYAN), c("│" + _pad(header_line, width - 2) + "│", CYAN), c("└" + "─" * (width - 2) + "┘", CYAN), ""]
         reasoning = [f"🧠 THINKING: {_clean(snap.decision if snap.decision != '—' else snap.action, 82)}", f"   {_clean(snap.hypothesis, 82)}"]
-        context = [
-            f"📡 Endpoint: {_clean(snap.endpoint, 78)}",
-            f"🗂️  Path: {_clean(snap.path, 82)}",
-            f"📝 Parameter: {_clean(snap.parameters, 78)}",
-            f"🧪 Payload: {_clean(snap.probe_string, 80)}",
-            f"💡 Hypothesis: {_clean(snap.hypothesis, 76)}",
-            f"🔍 Evidence: {_clean(snap.evidence, 78)}",
-            f"📊 Phase: {spinner} {snap.phase}  [{c(self._bar(snap), GREEN)}] {snap.phase_progress}/{max(1, snap.phase_total)}",
-            f"📈 Surface: urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found} req={snap.requests}",
-        ]
+        context = [f"📡 Endpoint: {_clean(snap.endpoint, 78)}", f"🗂️  Path: {_clean(snap.path, 82)}", f"📝 Parameter: {_clean(snap.parameters, 78)}", f"🧪 Payload: {_clean(snap.probe_string, 80)}", f"💡 Hypothesis: {_clean(snap.hypothesis, 76)}", f"🔍 Evidence: {_clean(snap.evidence, 78)}", f"📊 Phase: {spinner} {snap.phase}  [{c(self._bar(snap), GREEN)}] {snap.phase_progress}/{max(1, snap.phase_total)}", f"📈 Surface: urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found} req={snap.requests}"]
         logs = events[-10:] or ["Waiting for first scan event…"]
         footer = ["─" * width, "  Press Ctrl+C to stop scan  |  All findings auto-reported  |  Zero-impact mode", "─" * width]
         lines: list[str] = []
@@ -438,34 +514,21 @@ class LiveDashboard:
         return text if color else _strip_ansi(text)
 
     def final_text(self, *, color: bool = True) -> str:
+        self._finalize_tool_statuses()
         with self.lock:
             snap = LiveSnapshot(**asdict(self.snapshot))
             findings = [dict(item) for item in self.finding_details]
+            tool_statuses = dict(self.tool_statuses)
         c = lambda text, col: _colorize(text, col, color)
         confirmed = [item for item in findings if item.get("confirmation") == "confirmed"]
         counts = self._severity_counts(findings)
         total_label = f"{len(confirmed)} confirmed vulnerabilities" if confirmed else f"{len(findings)} findings / review leads"
-        lines = [
-            "=" * 96,
-            c("FINAL ASSESSMENT DASHBOARD", CYAN),
-            "=" * 96,
-            f"Target:          {snap.domain}",
-            f"Scan Mode:       {snap.mode}",
-            f"Total Time:      {self._elapsed()}",
-            f"Last Phase:      {snap.phase}",
-            f"Total Requests:  {snap.requests}",
-            f"Surface:         urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found}",
-            f"Tool Status:     completed={snap.tools_completed} failed={snap.tools_failed} skip={snap.tools_skipped} inactive={snap.tools_inactive} needs_config={snap.tools_not_ready}",
-            f"Total Findings:  {total_label}",
-            f"Severity Counts: CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}",
-            "",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "CONFIRMED VULNERABILITIES / REVIEW LEADS — DETAILED BREAKDOWN",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "",
-        ]
+        tool_counts: dict[str, int] = {}
+        for status in tool_statuses.values():
+            tool_counts[status] = tool_counts.get(status, 0) + 1
+        lines = ["=" * 96, c("FINAL ASSESSMENT DASHBOARD", CYAN), "=" * 96, f"Target:          {snap.domain}", f"Scan Mode:       {snap.mode}", f"Total Time:      {self._elapsed()}", f"Last Phase:      {snap.phase}", f"Total Requests:  {snap.requests}", f"Surface:         urls={snap.urls_found} paths={snap.paths_found} params={snap.params_found} forms={snap.forms_found} js={snap.js_found} api={snap.api_routes_found}", f"Tool Status:     completed={tool_counts.get('completed', 0)} running={tool_counts.get('running', 0)} failed={tool_counts.get('failed', 0) + tool_counts.get('timed_out', 0)} inactive={tool_counts.get('inactive', 0)} queued={tool_counts.get('queued', 0)} needs_config={tool_counts.get('not_ready', 0)}", f"Total Findings:  {total_label}", f"Severity Counts: CRITICAL:{counts['CRITICAL']} HIGH:{counts['HIGH']} MEDIUM:{counts['MEDIUM']} LOW:{counts['LOW']} INFO:{counts['INFO']}", "", "────────────────────────────────────────────────────────────────────────────────", "CONFIRMED VULNERABILITIES / REVIEW LEADS — DETAILED BREAKDOWN", "────────────────────────────────────────────────────────────────────────────────", ""]
         if not findings:
-            lines.extend([c("No vulnerabilities were confirmed under the selected safe scope and request budget.", YELLOW), "Review dynamic-tool-phase-summary.json, phase-runner-summary.json, parameter-inventory-v2.json, deep-scan-prioritization.json, and evidence-index.md for exact coverage.", ""])
+            lines.extend([c("No vulnerabilities were confirmed under the selected safe scope and request budget.", YELLOW), "Review scan-health.json, surface-map.md, dynamic-tool-phase-summary.json, parameter-inventory-v2.json, and evidence-index.md for exact coverage.", ""])
         for idx, finding in enumerate(findings, 1):
             severity = str(finding.get("severity", "INFO")).upper()
             title = finding.get("type", "Security Finding")
@@ -477,7 +540,7 @@ class LiveDashboard:
         lines.extend(["=" * 96, "✅ Full report written to: " + str(Path("reports/output/cai-superior") / snap.domain), "", "--- Report Files ---"])
         for entry in self._report_lines():
             lines.append(f"- {entry}")
-        lines.append("=" * 96)
+        lines.append("=")
         text = "\n".join(lines)
         return text if color else _strip_ansi(text)
 
@@ -510,8 +573,9 @@ class LiveDashboard:
 
     def write_reports(self, out: Path) -> dict[str, str]:
         out.mkdir(parents=True, exist_ok=True)
+        self._finalize_tool_statuses()
         with self.lock:
-            payload = {"snapshot": asdict(self.snapshot), "events": list(self.events), "traces": list(self.traces), "findings": [dict(item) for item in self.finding_details], "generated_at": time.time(), "interface": "kali_cli", "dashboard": "classic_phase_stable_cli", "version": VERSION, "website_dashboard": False}
+            payload = {"snapshot": asdict(self.snapshot), "tool_statuses": dict(self.tool_statuses), "tool_reasons": dict(self.tool_reasons), "events": list(self.events), "traces": list(self.traces), "findings": [dict(item) for item in self.finding_details], "generated_at": time.time(), "interface": "kali_cli", "dashboard": "deterministic_tool_state_cli", "version": VERSION, "website_dashboard": False}
         session_json_path = out / "cli-session.json"
         final_json_path = out / "cli-final-dashboard.json"
         final_md_path = out / "cli-final-dashboard.md"
@@ -521,5 +585,5 @@ class LiveDashboard:
         findings_json_path.write_text(json.dumps(payload["findings"], indent=2, ensure_ascii=False), encoding="utf-8")
         reports = {"cli_session_json": str(session_json_path), "cli_final_dashboard_json": str(final_json_path), "cli_final_dashboard_md": str(final_md_path), "detailed_findings_json": str(findings_json_path)}
         self.report_paths = dict(reports)
-        final_md_path.write_text("# VulnScope Classic Phase-Stable Final Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
+        final_md_path.write_text("# VulnScope Deterministic Tool-State Final Dashboard\n\n```text\n" + self.final_text(color=False) + "\n```\n", encoding="utf-8")
         return reports
