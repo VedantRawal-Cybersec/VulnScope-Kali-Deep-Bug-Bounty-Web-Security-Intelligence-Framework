@@ -32,6 +32,7 @@ jobs:
             core/deepseek_cli.py \
             core/deepseek_autonomy_loop.py \
             core/deepseek_dashboard_engine.py \
+            core/safe_surface_engine.py \
             core/agentic_framework.py \
             core/autonomous_scan_engine.py \
             core/live_dashboard.py \
@@ -60,6 +61,7 @@ jobs:
           from core.deepseek_cli import main
           from core.deepseek_autonomy_loop import DeepSeekAutonomyLoop
           from core.deepseek_dashboard_engine import DeepSeekDashboardEngine
+          from core.safe_surface_engine import SafeSurfaceEngine
           from core.autonomous_scan_engine import AutonomousScanEngine
           from core.phase_scheduler import PhaseScheduler
           from core.tool_manager import ToolManager
