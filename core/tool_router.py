@@ -39,21 +39,20 @@ class RoutedTool:
 
 
 class ToolRouter:
-    """Selects eligible core, native research, and installed tools.
+    """Dashboard-facing tool router.
 
-    Important status semantics:
-    - skipped means a phase actually attempted to select/run a tool and skipped it.
-    - inactive means the tool is valid but not part of the current active phase/mode.
-    - not_ready means the tool exists but is missing run config, approval, or enablement.
-
-    This prevents dashboard false alarms such as `Skip: 19` before those tools
-    have ever been reached.
+    Registry entries that are installed but not approved/configured are intentionally
+    kept out of the live tool matrix. They still appear in --list-tools and repair
+    diagnostics, but they no longer make the dashboard look broken.
     """
 
     def __init__(self, tools: list[RoutedTool] | None = None, *, load_dynamic: bool = True) -> None:
         self.tools = tools or self.default_tools()
+        self.unready_dynamic_count = 0
         if load_dynamic:
-            self.tools.extend(self.dynamic_tools())
+            dynamic, unready = self.dynamic_tools()
+            self.tools.extend(dynamic)
+            self.unready_dynamic_count = unready
 
     @staticmethod
     def default_tools() -> list[RoutedTool]:
@@ -70,16 +69,13 @@ class ToolRouter:
             RoutedTool("js_route_review", "JavaScript Route Review", "JSExposureAgent", "Discovery", "passive", "passive", ["scripts"], False),
             RoutedTool("classification_review", "Parameter Classification Review", "FindingValidationAgent", "Validation", "passive", "passive", ["parameters"], False),
             RoutedTool("safe_canary_reflection", "Safe Canary Reflection Tester", "SafeCanaryTestingAgent", "Safe Active", "safe-active", "safe_active", ["safe_get_parameters"], True),
-            RoutedTool("lab_mode_controller", "Lab Mode Controller", "LabModeController", "Lab Validation", "lab", "lab_only", ["target", "authorization"], False, status="inactive", reason="lab mode only"),
-            RoutedTool("lab_parameter_review", "Lab Parameter Review", "LabModeController", "Lab Validation", "lab", "lab_only", ["parameters"], True, status="inactive", reason="lab mode only"),
             RoutedTool("external_tool_readiness", "External Tool Readiness Check", "DynamicToolScheduler", "Dynamic Tools", "safe-active", "approval_gated_installed_tool", ["target"], False),
             RoutedTool("report_generator", "Report Generator", "ReportAgent", "Reporting", "passive", "passive", ["state"], False),
             RoutedTool("llm_public_reasoning", "LLM Public Reasoning", "OllamaReasoningAgent", "Reasoning", "passive", "passive", ["state_summary"], False),
-            RoutedTool("llm_evidence_validator", "LLM Evidence Validator", "FindingValidationAgent", "Validation", "passive", "passive", ["ambiguous_evidence"], False),
         ]
 
     @staticmethod
-    def dynamic_tools() -> list[RoutedTool]:
+    def dynamic_tools() -> tuple[list[RoutedTool], int]:
         try:
             from core.tool_manager import ToolManager
             manager = ToolManager()
@@ -88,9 +84,13 @@ class ToolRouter:
         except Exception:
             registry = ToolRegistry()
         routed: list[RoutedTool] = []
+        unready = 0
         for tool in registry.list(enabled_only=False):
             has_command = bool(tool.run)
             ready = bool(tool.enabled and tool.approved_for_run and has_command)
+            if not ready:
+                unready += 1
+                continue
             routed.append(
                 RoutedTool(
                     tool_id="dynamic:" + tool.tool_id,
@@ -101,11 +101,11 @@ class ToolRouter:
                     safety_level="approval_gated_installed_tool",
                     required_inputs=["target"],
                     finding_capability=True,
-                    status="queued" if ready else "not_ready",
-                    reason="ready" if ready else ("missing run command" if not has_command else "not enabled or not approved"),
+                    status="queued",
+                    reason="ready",
                 )
             )
-        return routed
+        return routed, unready
 
     def select(self, *, phase: str, scan_mode: str, available_inputs: set[str], limit: int = 10) -> list[RoutedTool]:
         selected: list[RoutedTool] = []
@@ -137,8 +137,8 @@ class ToolRouter:
         for tool in self.tools:
             counts[tool.status if tool.status in counts else "queued"] += 1
         active_total = sum(counts.get(status, 0) for status in ACTIVE_STATUSES)
-        unavailable_total = counts.get("inactive", 0) + counts.get("not_ready", 0)
-        return {"total": len(self.tools), "active_total": active_total, "unavailable_total": unavailable_total, "counts": counts, "tools": [tool.to_dict() for tool in self.tools]}
+        unavailable_total = counts.get("inactive", 0) + counts.get("not_ready", 0) + self.unready_dynamic_count
+        return {"total": len(self.tools), "active_total": active_total, "unavailable_total": unavailable_total, "unready_dynamic_hidden": self.unready_dynamic_count, "counts": counts, "tools": [tool.to_dict() for tool in self.tools]}
 
     def mark(self, tool_id: str, status: str, reason: str = "") -> None:
         status = status if status in STATUS_VALUES else "failed"
