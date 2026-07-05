@@ -33,6 +33,8 @@ jobs:
             core/deepseek_autonomy_loop.py \
             core/deepseek_dashboard_engine.py \
             core/safe_surface_engine.py \
+            core/surface_map.py \
+            core/registry_cleaner.py \
             core/agentic_framework.py \
             core/autonomous_scan_engine.py \
             core/live_dashboard.py \
@@ -62,6 +64,8 @@ jobs:
           from core.deepseek_autonomy_loop import DeepSeekAutonomyLoop
           from core.deepseek_dashboard_engine import DeepSeekDashboardEngine
           from core.safe_surface_engine import SafeSurfaceEngine
+          from core.surface_map import SurfaceMapBuilder
+          from core.registry_cleaner import quiet_incomplete_tools
           from core.autonomous_scan_engine import AutonomousScanEngine
           from core.phase_scheduler import PhaseScheduler
           from core.tool_manager import ToolManager
