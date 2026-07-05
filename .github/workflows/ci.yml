@@ -56,7 +56,8 @@ jobs:
             core/ai_tool_auto_configurator.py \
             core/ai_tool_registry_repair.py \
             scripts/diagnose_tools.py \
-            scripts/network_diag.py
+            scripts/network_diag.py \
+            scripts/repo_healthcheck.py
 
       - name: Import critical modules
         run: |
@@ -84,6 +85,10 @@ jobs:
           from core.agentic_framework import TraceLogger
           print('critical imports ok')
           PY
+
+      - name: Repository healthcheck
+        run: |
+          python scripts/repo_healthcheck.py
 
       - name: Verify autonomous engine complete flow markers
         run: |
