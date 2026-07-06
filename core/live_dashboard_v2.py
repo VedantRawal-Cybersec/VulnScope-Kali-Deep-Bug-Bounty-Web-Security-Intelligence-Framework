@@ -12,6 +12,10 @@ class LiveDashboard(BaseLiveDashboard):
 
     TOOL_ORDER_V2 = [
         "technology_intelligence",
+        "api_discovery",
+        "access_matrix",
+        "security_scorecard",
+        "final_report_index",
         "crawler_v2",
         "browser_crawler",
         "parameter_inventory",
@@ -37,6 +41,12 @@ class LiveDashboard(BaseLiveDashboard):
         "availability_checker": ["metadata_checker"],
         "technology_intelligence": ["technology_intelligence"],
         "TechnologyIntelAgent": ["technology_intelligence"],
+        "api_discovery": ["api_discovery"],
+        "APIDiscoveryAgent": ["api_discovery"],
+        "access_matrix": ["access_matrix"],
+        "AccessMatrixAgent": ["access_matrix"],
+        "security_scorecard": ["security_scorecard"],
+        "final_report_index": ["final_report_index"],
         "passive_analyzers": ["header_analyzer", "cookie_analyzer"],
         "header_analyzer": ["header_analyzer"],
         "cookie_analyzer": ["cookie_analyzer"],
@@ -63,20 +73,7 @@ class LiveDashboard(BaseLiveDashboard):
         "report_generator": ["report_generator"],
     }
 
-    LABELS = {
-        "running": "running",
-        "completed": "completed",
-        "failed": "failed",
-        "timed_out": "timed out",
-        "blocked": "blocked",
-        "blocked_by_safety": "blocked",
-        "blocked_by_scope": "blocked",
-        "skipped": "skipped",
-        "not_ready": "needs config",
-        "inactive": "inactive",
-        "queued": "queued",
-    }
-
+    LABELS = {"running": "running", "completed": "completed", "failed": "failed", "timed_out": "timed out", "blocked": "blocked", "blocked_by_safety": "blocked", "blocked_by_scope": "blocked", "skipped": "skipped", "not_ready": "needs config", "inactive": "inactive", "queued": "queued"}
     TERMINAL = {"completed", "failed", "timed_out", "blocked", "blocked_by_safety", "blocked_by_scope", "skipped", "not_ready", "inactive"}
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -152,11 +149,7 @@ class LiveDashboard(BaseLiveDashboard):
 
     def _tool_rows(self, snap: Any) -> list[str]:
         counts = self._counts_v2()
-        rows = [
-            f"Total: {counts['total']:<3} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}",
-            f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3}   (inactive = not needed in this run)",
-            "─" * 76,
-        ]
+        rows = [f"Total: {counts['total']:<3} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}", f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3}   (inactive = not needed in this run)", "─" * 76]
         order = list(self.TOOL_ORDER_V2)
         for key in sorted(self.tool_statuses_v2):
             if key not in order and self.tool_statuses_v2.get(key) != "inactive":
@@ -181,7 +174,7 @@ class LiveDashboard(BaseLiveDashboard):
             else:
                 label = "◻ " + label
             rows.append(f"► {tool:<30} {label}")
-        return rows[:22]
+        return rows[:26]
 
     def write_reports(self, out_dir: Any) -> dict[str, str]:
         self._finalize_v2()
