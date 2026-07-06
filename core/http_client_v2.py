@@ -11,7 +11,7 @@ import requests
 from core.evidence_store import EvidenceStore
 from core.scan_state import ScanState
 
-DEFAULT_USER_AGENT = "VulnScope-Autonomous-Safe-Scanner/1.8"
+DEFAULT_USER_AGENT = "VulnScope-Autonomous-Safe-Scanner/1.9"
 
 
 @dataclass
@@ -26,24 +26,18 @@ class ResponseRecord:
     error: str = ""
 
     @property
-    def ok(self) -> bool:
+    def received(self) -> bool:
         return not self.error and self.status_code > 0
+
+    @property
+    def ok(self) -> bool:
+        return not self.error and 200 <= self.status_code < 400
 
 
 class SafeHttpClientV2:
     """Transparent, budgeted, rate-aware GET/HEAD client for authorized scans."""
 
-    def __init__(
-        self,
-        *,
-        state: ScanState,
-        evidence: EvidenceStore,
-        headers: dict[str, str] | None = None,
-        timeout: int = 8,
-        delay: float = 0.5,
-        request_budget: int = 500,
-        max_body_bytes: int = 1024 * 1024,
-    ) -> None:
+    def __init__(self, *, state: ScanState, evidence: EvidenceStore, headers: dict[str, str] | None = None, timeout: int = 8, delay: float = 0.5, request_budget: int = 500, max_body_bytes: int = 1024 * 1024) -> None:
         self.state = state
         self.evidence = evidence
         self.timeout = max(3, int(timeout))
@@ -55,6 +49,9 @@ class SafeHttpClientV2:
         self.last_request_at = 0.0
         self.pause_until = 0.0
         self.consecutive_errors = 0
+
+    def include_subdomains(self) -> bool:
+        return bool(self.state.stats.get("include_subdomains", False))
 
     def budget_remaining(self) -> int:
         return max(0, self.request_budget - int(self.state.stats.get("requests", 0)))
@@ -68,13 +65,16 @@ class SafeHttpClientV2:
     def _same_host_guard(self, url: str) -> None:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
-            raise ValueError("blocked non-http URL")
+            raise ValueError("non-http URL is outside scan scope")
         if not parsed.hostname:
-            raise ValueError("blocked URL without hostname")
+            raise ValueError("URL without hostname is outside scan scope")
         host = parsed.hostname.lower()
         base = self.state.host.lower()
-        if host != base and not host.endswith("." + base):
-            raise ValueError("blocked out-of-scope hostname")
+        if host == base:
+            return
+        if self.include_subdomains() and host.endswith("." + base):
+            return
+        raise ValueError("hostname is outside scan scope")
 
     def _fetch_once(self, method: str, url: str, purpose: str) -> ResponseRecord:
         self._same_host_guard(url)
@@ -122,8 +122,7 @@ class SafeHttpClientV2:
         method = method.upper()
         if method not in {"GET", "HEAD"}:
             raise ValueError("safe client only permits GET and HEAD")
-        current = url
-        response = self._fetch_once(method, current, purpose)
+        response = self._fetch_once(method, url, purpose)
         redirects = 0
         while allow_redirects and response.status_code in {301, 302, 303, 307, 308} and redirects < 3:
             location = response.headers.get("Location", "")
@@ -133,6 +132,7 @@ class SafeHttpClientV2:
             try:
                 self._same_host_guard(next_url)
             except Exception:
+                self.state.add_event("INFO", "redirect left scan scope", source=response.url, location=location)
                 break
             redirects += 1
             response = self._fetch_once("GET" if response.status_code in {301, 302, 303} else method, next_url, purpose + ":redirect")
