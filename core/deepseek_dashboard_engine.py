@@ -8,12 +8,22 @@ from core.ai_brain import AIBrain
 from core.autonomous_scan_engine import AutonomousScanEngine, build_parser, parse_headers
 from core.deepseek_autonomy_loop import DeepSeekAutonomyLoop
 from core.safe_surface_engine import SafeSurfaceEngine
+from core.technology_intelligence import TechnologyIntelligence
 
 
 class DeepSeekDashboardEngine(AutonomousScanEngine):
-    """Full dashboard engine with deterministic mapping before AI control."""
+    """Full dashboard engine with technology intelligence before AI control."""
+
+    def _run_technology_intelligence(self) -> dict[str, Any]:
+        self._dashboard("Technology Intelligence", "Fingerprinting visible technologies and public advisory leads", progress=23, agent="TechnologyIntelAgent", tool="technology_intelligence")
+        intel = TechnologyIntelligence(state=self.state, client=self.client, dashboard=self.dashboard, advisory_lookup=True, max_advisories=30).run()
+        self.extra_reports.update(intel.get("reports", {}))
+        self.state.add_event("INFO", "technology intelligence completed", summary=intel)
+        self.state.save()
+        return intel
 
     def _safe_parameter_review(self) -> dict[str, Any]:
+        intel = self._run_technology_intelligence()
         self._dashboard("Surface Mapping", "Mapping URLs, forms, parameters, scripts, and checks", progress=74, agent="SafeSurfaceEngine", tool="safe_surface_engine")
         surface = SafeSurfaceEngine(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard, max_pages=self.max_pages, max_depth=self.max_depth, max_params=self.max_params, mode=self.scan_mode, include_subdomains=self.include_subdomains).run_all()
         self.extra_reports.update(surface.get("reports", {}))
@@ -25,6 +35,7 @@ class DeepSeekDashboardEngine(AutonomousScanEngine):
         loop = DeepSeekAutonomyLoop(target=self.target, state=self.state, crawler=self.crawler, tester=self.tester, dashboard=self.dashboard, dynamic_scheduler=self.dynamic_scheduler, brain=brain, max_turns=min(max(20, self.max_actions), 120), max_params=self.max_params, scan_mode=self.scan_mode)
         self.react_summary = loop.run()
         self.react_summary["surface"] = surface
+        self.react_summary["technology_intelligence"] = intel
         if self.react_summary.get("summary_path"):
             self.extra_reports["deepseek_autonomy_summary"] = self.react_summary["summary_path"]
         if self.react_summary.get("markdown_path"):
