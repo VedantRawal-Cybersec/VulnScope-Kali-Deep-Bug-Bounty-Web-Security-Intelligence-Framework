@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
+from core.access_matrix import AccessMatrixEngine
 from core.ai_brain import AIBrain
+from core.api_discovery import APIDiscoveryEngine
 from core.autonomous_scan_engine import AutonomousScanEngine, build_parser, parse_headers
 from core.deepseek_autonomy_loop import DeepSeekAutonomyLoop
+from core.ethical_methodology import EthicalMethodologyLedger
+from core.final_report_index import FinalReportIndex
 from core.safe_surface_engine import SafeSurfaceEngine
+from core.security_scorecard import SecurityScorecard
 from core.technology_intelligence import TechnologyIntelligence
 
 
 class DeepSeekDashboardEngine(AutonomousScanEngine):
-    """Full dashboard engine with technology intelligence before AI control."""
+    """Full dashboard engine with full orchestration modules before AI control."""
 
     def _run_technology_intelligence(self) -> dict[str, Any]:
         self._dashboard("Technology Intelligence", "Fingerprinting visible technologies and public advisory leads", progress=23, agent="TechnologyIntelAgent", tool="technology_intelligence")
@@ -22,12 +28,45 @@ class DeepSeekDashboardEngine(AutonomousScanEngine):
         self.state.save()
         return intel
 
+    def _run_api_discovery(self) -> dict[str, Any]:
+        self._dashboard("API Discovery", "Discovering API documents and API-like routes", progress=76, agent="APIDiscoveryAgent", tool="api_discovery")
+        seed_env = os.getenv("VULNSCOPE_API_SEEDS", "")
+        seeds = [item.strip() for item in seed_env.split(",") if item.strip()]
+        result = APIDiscoveryEngine(state=self.state, client=self.client, dashboard=self.dashboard, seed_urls=seeds, max_docs=60).run()
+        self.extra_reports.update(result.get("reports", {}))
+        self.state.add_event("INFO", "api discovery completed", summary=result)
+        self.state.save()
+        return result
+
+    def _run_access_matrix(self) -> dict[str, Any]:
+        self._dashboard("Access Matrix", "Comparing authorized auth profiles if supplied", progress=78, agent="AccessMatrixAgent", tool="access_matrix")
+        profiles_file = os.getenv("VULNSCOPE_AUTH_PROFILES_FILE", "")
+        result = AccessMatrixEngine(state=self.state, client=self.client, dashboard=self.dashboard, auth_profiles_file=profiles_file, max_urls=min(120, self.max_pages)).run()
+        self.extra_reports.update(result.get("reports", {}))
+        self.state.add_event("INFO", "access matrix completed", summary=result)
+        self.state.save()
+        return result
+
+    def _write_scorecard_and_index(self) -> dict[str, str]:
+        score_reports = SecurityScorecard(state=self.state, extra_reports=self.extra_reports).write()
+        self.extra_reports.update(score_reports)
+        try:
+            methodology = EthicalMethodologyLedger(state=self.state, mode=self.scan_mode, include_subdomains=self.include_subdomains, dynamic_ready=0).write()
+            self.extra_reports.update(methodology)
+        except Exception as exc:
+            self.state.add_event("WARNING", "methodology ledger failed", error=str(exc)[:500])
+        index_reports = FinalReportIndex(state=self.state, reports=self.extra_reports, summary={"react_turns": len(self.react_summary.get("turns", []) if isinstance(self.react_summary, dict) else [])}).write()
+        self.extra_reports.update(index_reports)
+        return {**score_reports, **index_reports}
+
     def _safe_parameter_review(self) -> dict[str, Any]:
         intel = self._run_technology_intelligence()
         self._dashboard("Surface Mapping", "Mapping URLs, forms, parameters, scripts, and checks", progress=74, agent="SafeSurfaceEngine", tool="safe_surface_engine")
         surface = SafeSurfaceEngine(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard, max_pages=self.max_pages, max_depth=self.max_depth, max_params=self.max_params, mode=self.scan_mode, include_subdomains=self.include_subdomains).run_all()
         self.extra_reports.update(surface.get("reports", {}))
         self.state.add_event("INFO", "surface mapping completed", summary=surface)
+        api = self._run_api_discovery()
+        access = self._run_access_matrix()
         self.state.save()
 
         self._dashboard("DeepSeek Autonomous ReAct", "DeepSeek is choosing the next action from mapped scan state", progress=80, agent="DeepSeekPlannerAgent", tool="deepseek_react_loop")
@@ -36,10 +75,14 @@ class DeepSeekDashboardEngine(AutonomousScanEngine):
         self.react_summary = loop.run()
         self.react_summary["surface"] = surface
         self.react_summary["technology_intelligence"] = intel
+        self.react_summary["api_discovery"] = api
+        self.react_summary["access_matrix"] = access
         if self.react_summary.get("summary_path"):
             self.extra_reports["deepseek_autonomy_summary"] = self.react_summary["summary_path"]
         if self.react_summary.get("markdown_path"):
             self.extra_reports["deepseek_autonomy_markdown"] = self.react_summary["markdown_path"]
+        post_reports = self._write_scorecard_and_index()
+        self.react_summary["post_reports"] = post_reports
         self.state.add_event("INFO", "deepseek autonomous react completed", turns=len(self.react_summary.get("turns", [])), summary_path=self.react_summary.get("summary_path", ""))
         self.state.save()
         return self.react_summary
