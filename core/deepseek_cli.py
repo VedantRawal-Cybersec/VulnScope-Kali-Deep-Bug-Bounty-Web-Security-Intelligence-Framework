@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "2.0.2-autonomous-deepseek"
+VERSION = "2.0.3-autonomy-guard"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -137,6 +137,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["agentic", "bugbounty", "lab", "react"], default="agentic")
     parser.add_argument("--react-ai", action="store_true")
+    parser.add_argument("--allow-ai-fallback", action="store_true", help="Continue deterministic scan if Ollama health check fails.")
     parser.add_argument("--lab-mode", action="store_true")
     parser.add_argument("--scan-mode", choices=["passive", "safe-active", "lab"], default="passive")
     parser.add_argument("--yes", action="store_true")
@@ -183,6 +184,7 @@ def finish(target: str, result: dict) -> None:
     (OUT / "final-summary.json").write_text(json.dumps({"target": target, "result": result, "version": VERSION, "generated_at": datetime.now(timezone.utc).isoformat()}, indent=2, ensure_ascii=False), encoding="utf-8")
     print(c("\n✅ VulnScope run complete.", GREEN))
     print("   • reports/output/cai-superior/" + host + "/")
+    print("   • logs/ai-health.json")
     print("   • reports/output/vulnscope-main/final-summary.json")
 
 
@@ -202,7 +204,16 @@ def main(argv: list[str] | None = None) -> int:
     module = "core.deepseek_dashboard_engine" if react else "core.autonomous_scan_engine"
     env = {"OLLAMA_HOST": args.ollama_url, "VULNSCOPE_OLLAMA_URL": args.ollama_url, "VULNSCOPE_OLLAMA_MODEL": args.ollama_model, "VULNSCOPE_SCAN_MODE": mode, "VULNSCOPE_REACT_AI": "1" if react else "0"}
     if react:
+        from core.ai_health import ollama_health
+        health = ollama_health(host=args.ollama_url, model=args.ollama_model, write=True)
+        if health.get("selected_model") and health.get("selected_model") != args.ollama_model:
+            args.ollama_model = str(health["selected_model"])
+            env["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
         print(c(f"\n[DeepSeek] Host: {args.ollama_url} | Model: {args.ollama_model}", CYAN))
+        print(c(f"[AI Health] ok={health.get('ok')} error={health.get('error') or 'none'}", GREEN if health.get("ok") else YELLOW))
+        if not health.get("ok") and not args.allow_ai_fallback:
+            finish(target, {"ok": False, "error": "AI health check failed", "ai_health": health})
+            return 2
         print(c("[DeepSeek] Starting dashboard autonomy loop.", GREEN))
     result = run_subprocess("DeepSeek dashboard engine" if react else "dashboard engine", build_command(target, args, mode, module, react), env)
     finish(target, result)
