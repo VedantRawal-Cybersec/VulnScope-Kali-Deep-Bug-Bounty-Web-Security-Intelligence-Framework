@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from core.deepseek_cli import main
+from core.security_orchestration_cli import main
 
 
 if __name__ == "__main__":
