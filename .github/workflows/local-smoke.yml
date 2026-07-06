@@ -1,0 +1,25 @@
+name: VulnScope Local Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  local-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile smoke test
+        run: python -m py_compile scripts/local_e2e_smoke.py core/safe_surface_engine.py
+      - name: Run local smoke test
+        run: python scripts/local_e2e_smoke.py
