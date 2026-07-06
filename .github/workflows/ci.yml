@@ -36,6 +36,7 @@ jobs:
             core/surface_map.py \
             core/registry_cleaner.py \
             core/tool_suite_integrator.py \
+            core/ai_health.py \
             core/agentic_framework.py \
             core/autonomous_scan_engine.py \
             core/live_dashboard.py \
@@ -69,6 +70,7 @@ jobs:
           from core.surface_map import SurfaceMapBuilder
           from core.registry_cleaner import quiet_incomplete_tools
           from core.tool_suite_integrator import integrate_tools
+          from core.ai_health import ollama_health
           from core.autonomous_scan_engine import AutonomousScanEngine
           from core.phase_scheduler import PhaseScheduler
           from core.tool_manager import ToolManager
