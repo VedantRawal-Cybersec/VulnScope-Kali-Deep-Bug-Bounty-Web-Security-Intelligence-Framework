@@ -16,32 +16,12 @@ from core.http_client_v2 import ResponseRecord, SafeHttpClientV2
 from core.scan_state import ParamRecord, ScanState, _param_kind, _risk_score
 from core.test_engine import TestEngine
 
-SAFE_CHECK_PATHS = [
-    "/robots.txt",
-    "/sitemap.xml",
-    "/.well-known/security.txt",
-    "/security.txt",
-    "/admin",
-    "/login",
-    "/dashboard",
-    "/api",
-    "/debug",
-    "/config.json",
-]
-
-SECURITY_HEADERS = [
-    "Content-Security-Policy",
-    "Strict-Transport-Security",
-    "X-Frame-Options",
-    "X-Content-Type-Options",
-    "Referrer-Policy",
-    "Permissions-Policy",
-]
-
+SAFE_CHECK_PATHS = ["/robots.txt", "/sitemap.xml", "/.well-known/security.txt", "/security.txt", "/admin", "/login", "/dashboard", "/api", "/debug", "/config.json"]
+SECURITY_HEADERS = ["Content-Security-Policy", "Strict-Transport-Security", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy"]
 ROUTE_RE = re.compile(r"(?P<quote>['\"])(?P<route>/(?:api/)?[A-Za-z0-9_./?=&:%#-]{2,180})(?P=quote)")
 FETCH_RE = re.compile(r"(?:fetch|axios\.(?:get|post|request)|open)\s*\(\s*['\"]([^'\"]{2,240})['\"]", re.I)
 SOURCE_MAP_RE = re.compile(r"sourceMappingURL\s*=\s*([^\s*]+)", re.I)
-JS_MARKER_RE = re.compile(r"(?i)(api[_-]?key|token|secret|bearer|private[_-]?key|access[_-]?key)\s*[:=]\s*['\"]([^'\"]{8,160})['\"]")
+JS_MARKER_RE = re.compile(r"(?i)(api[_-]?key|token|bearer|access[_-]?key)\s*[:=]\s*['\"]([^'\"]{8,160})['\"]")
 
 
 def normalize_url(base: str, raw: str) -> str:
@@ -64,12 +44,11 @@ def masked(value: str) -> str:
 class SafeSurfaceEngine:
     """Deterministic surface mapper and safe evidence checks.
 
-    This engine does not require AI. It uses existing same-scope HTTP guards,
-    GET/HEAD requests, safe canary checks from TestEngine, and produces explicit
-    report messages when paths, parameters, or findings are empty.
+    Same-scope behavior is strict by default. Subdomains are included only when
+    include_subdomains=True. This prevents accidental scope expansion.
     """
 
-    def __init__(self, *, state: ScanState, client: SafeHttpClientV2, tester: TestEngine, dashboard: Any | None = None, max_pages: int = 100, max_depth: int = 3, max_params: int = 250, mode: str = "safe-active") -> None:
+    def __init__(self, *, state: ScanState, client: SafeHttpClientV2, tester: TestEngine, dashboard: Any | None = None, max_pages: int = 100, max_depth: int = 3, max_params: int = 250, mode: str = "safe-active", include_subdomains: bool | None = None) -> None:
         self.state = state
         self.client = client
         self.tester = tester
@@ -78,6 +57,7 @@ class SafeSurfaceEngine:
         self.max_depth = max(0, int(max_depth))
         self.max_params = max(1, int(max_params))
         self.mode = mode
+        self.include_subdomains = bool(self.state.stats.get("include_subdomains", False) if include_subdomains is None else include_subdomains)
         self.host = self.state.host.lower()
         self.fetched: dict[str, ResponseRecord] = {}
         self.forms: list[dict[str, Any]] = []
@@ -89,11 +69,19 @@ class SafeSurfaceEngine:
 
     def same_scope(self, url: str) -> bool:
         host = (urlparse(url).hostname or "").lower()
-        return bool(host and (host == self.host or host.endswith("." + self.host)))
+        if not host:
+            return False
+        if host == self.host:
+            return True
+        return bool(self.include_subdomains and host.endswith("." + self.host))
+
+    def surface_counts(self) -> dict[str, int]:
+        api_routes = [item for item in set(self.routes) if "/api" in (urlparse(item).path or "").lower() or "graphql" in item.lower()]
+        return {"urls_found": len(self.state.urls), "paths_found": len(self.paths), "params_found": len(self.state.params), "forms_found": len(self.forms), "js_found": len(set(self.js_files)), "api_routes_found": len(api_routes), "requests": int(self.state.stats.get("requests", 0)), "findings": len(self.state.findings)}
 
     def dash(self, phase: str, action: str, *, url: str = "", param: str = "", evidence: str = "", progress: int = 0) -> None:
         if self.dashboard is not None and hasattr(self.dashboard, "update"):
-            self.dashboard.update(phase=phase, phase_progress=progress, current_agent="SafeSurfaceEngine", current_tool="surface_mapper", action=action, endpoint=url or self.state.target, parameters=param, evidence=evidence[:1000], requests=self.state.stats.get("requests", 0), findings=len(self.state.findings), safety_status="authorized scope • GET/HEAD only • deterministic checks")
+            self.dashboard.update(phase=phase, phase_progress=progress, current_agent="SafeSurfaceEngine", current_tool="surface_mapper", action=action, endpoint=url or self.state.target, parameters=param or "No query parameters on current URL", evidence=evidence[:1000], safety_status="authorized scope • GET/HEAD only • deterministic checks", **self.surface_counts())
         if self.dashboard is not None and hasattr(self.dashboard, "event"):
             self.dashboard.event("INFO", action)
 
@@ -121,25 +109,7 @@ class SafeSurfaceEngine:
         if key in self.finding_keys:
             return
         self.finding_keys.add(key)
-        finding = {
-            "id": "finding_" + str(len(self.state.findings) + 1).zfill(4),
-            "title": title,
-            "status": status,
-            "severity": severity,
-            "confidence": int(max(0, min(100, confidence))),
-            "category": category,
-            "affected_url": url,
-            "path": urlparse(url).path or "/",
-            "parameter": parameter or None,
-            "method": "GET",
-            "tool_name": "safe_surface_engine",
-            "safe_probe_used": "deterministic-safe-check",
-            "evidence": evidence[:3000],
-            "impact": impact,
-            "recommendation": recommendation,
-            "reproduction_steps": [f"Request `{url}` within the authorized scope.", "Review the response evidence shown in this finding."],
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
+        finding = {"id": "finding_" + str(len(self.state.findings) + 1).zfill(4), "title": title, "status": status, "severity": severity, "confidence": int(max(0, min(100, confidence))), "category": category, "affected_url": url, "path": urlparse(url).path or "/", "parameter": parameter or None, "method": "GET", "tool_name": "safe_surface_engine", "safe_probe_used": "deterministic-safe-check", "evidence": evidence[:3000], "impact": impact, "recommendation": recommendation, "reproduction_steps": [f"Request `{url}` within the authorized scope.", "Review the response evidence shown in this finding."], "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         self.state.add_finding(finding)
         if self.dashboard is not None and hasattr(self.dashboard, "add_finding"):
             self.dashboard.add_finding(title, impact, severity, url=url, parameter=parameter or "—", test_string="deterministic-safe-check", evidence=evidence[:1000], confidence=f"{confidence}%", reproduction="\n".join(finding["reproduction_steps"]), confirmation=status.lower())
@@ -230,8 +200,7 @@ class SafeSurfaceEngine:
                 value = str(field.get("value") or self.default_value(name, ftype))
                 fields.append({"name": name, "type": ftype, "value": value})
                 if method == "GET" and action and self.same_scope(action):
-                    form_url = self.url_with_param(action, name, value)
-                    self.add_url(form_url, depth=0, source="get-form")
+                    self.add_url(self.url_with_param(action, name, value), depth=0, source="get-form")
             self.forms.append({"url": response.url, "method": method, "action": action, "fields": fields})
 
     @staticmethod
@@ -278,7 +247,7 @@ class SafeSurfaceEngine:
             ctype = response.headers.get("Content-Type", "").lower()
             if "html" in ctype or "<html" in (response.text or "")[:600].lower():
                 for link in self.parse_html(response, depth):
-                    if link not in self.state.urls:
+                    if link not in self.fetched:
                         self.add_url(link, depth=depth + 1, source="html")
                         queue.append((link, depth + 1))
             elif response.url.endswith(".js") or "javascript" in ctype:
@@ -353,7 +322,7 @@ class SafeSurfaceEngine:
         for match in JS_MARKER_RE.finditer(response.text or ""):
             hits.append(f"{match.group(1)}={masked(match.group(2))}")
         if hits:
-            self.finding(title="JavaScript Exposure Indicator", status="Potential", severity="Medium", confidence=75, url=response.url, category="JavaScript Review", evidence="; ".join(sorted(set(hits)))[:2000], recommendation="Review client-side JavaScript and remove sensitive configuration from public assets.", impact="Client-side files may reveal implementation details or accidentally exposed tokens.")
+            self.finding(title="JavaScript Exposure Indicator", status="Potential", severity="Medium", confidence=75, url=response.url, category="JavaScript Review", evidence="; ".join(sorted(set(hits)))[:2000], recommendation="Review client-side JavaScript and remove exposed configuration from public assets.", impact="Client-side files may reveal implementation details or exposed configuration.")
 
     def check_source_map(self, response: ResponseRecord) -> None:
         for match in SOURCE_MAP_RE.finditer(response.text or ""):
@@ -368,12 +337,13 @@ class SafeSurfaceEngine:
         if self.mode == "passive":
             self.state.add_event("INFO", "safe-active checks skipped in passive mode")
             return
-        params = self.state.queued_params(limit=min(self.max_params, 120))
+        params = self.state.queued_params(limit=self.max_params)
         if not params:
             self.state.add_event("INFO", "No safe query parameters or GET inputs were discovered within the selected scan scope.")
             return
-        for param in params:
-            self.dash("Safe Active Testing", "Running safe deterministic parameter checks", url=param.url, param=param.name, progress=70)
+        for index, param in enumerate(params, 1):
+            progress = 70 + min(20, int(20 * index / max(1, len(params))))
+            self.dash("Safe Active Testing", "Running safe deterministic parameter checks", url=param.url, param=param.name, progress=progress)
             self.tester.run_test(param, "baseline")
             self.tester.run_test(param, "reflection_canary")
             if param.kind in {"route-like", "reference-like"}:
@@ -383,47 +353,32 @@ class SafeSurfaceEngine:
     def write_reports(self) -> dict[str, str]:
         out = self.state.out_dir
         out.mkdir(parents=True, exist_ok=True)
-        surface = {
-            "target": self.state.target,
-            "urls": sorted(self.state.urls.keys()),
-            "paths": sorted(self.paths),
-            "parameters": [vars(p) for p in self.state.params.values()],
-            "forms": self.forms,
-            "javascript_files": sorted(set(self.js_files)),
-            "routes": sorted(set(self.routes)),
-            "errors": self.errors,
-            "messages": {
-                "paths": "No internal paths were discovered within the selected scan scope." if not self.paths else "Internal paths discovered.",
-                "parameters": "No safe query parameters or GET inputs were discovered within the selected scan scope." if not self.state.params else "Safe query parameters or GET inputs discovered.",
-                "findings": "No confirmed vulnerabilities were detected in the selected safe assessment scope." if not self.state.findings else "Findings were detected and recorded.",
-            },
-        }
+        surface = {"target": self.state.target, "scope": {"host": self.host, "include_subdomains": self.include_subdomains}, "urls": sorted(self.state.urls.keys()), "paths": sorted(self.paths), "parameters": [vars(p) for p in self.state.params.values()], "forms": self.forms, "javascript_files": sorted(set(self.js_files)), "routes": sorted(set(self.routes)), "errors": self.errors, "messages": {"paths": "No internal paths were discovered within the selected scan scope." if not self.paths else "Internal paths discovered.", "parameters": "No safe query parameters or GET inputs were discovered within the selected scan scope." if not self.state.params else "Safe query parameters or GET inputs discovered.", "findings": "No confirmed vulnerabilities were detected in the selected safe assessment scope." if not self.state.findings else "Findings were detected and recorded."}}
         json_path = out / "surface-map.json"
         md_path = out / "surface-map.md"
         json_path.write_text(json.dumps(surface, indent=2, ensure_ascii=False), encoding="utf-8")
-        lines = ["# VulnScope Surface Map", "", f"Target: `{self.state.target}`", "", "## Summary", "", f"- URLs: `{len(surface['urls'])}`", f"- Paths: `{len(surface['paths'])}`", f"- Parameters: `{len(surface['parameters'])}`", f"- Forms: `{len(self.forms)}`", f"- JavaScript files: `{len(set(self.js_files))}`", f"- Routes: `{len(set(self.routes))}`", f"- Findings: `{len(self.state.findings)}`", "", "## Messages", ""]
+        lines = ["# VulnScope Surface Map", "", f"Target: `{self.state.target}`", f"Scope: `{self.host}` include_subdomains=`{self.include_subdomains}`", "", "## Summary", "", f"- URLs: `{len(surface['urls'])}`", f"- Paths: `{len(surface['paths'])}`", f"- Parameters: `{len(surface['parameters'])}`", f"- Forms: `{len(self.forms)}`", f"- JavaScript files: `{len(set(self.js_files))}`", f"- Routes: `{len(set(self.routes))}`", f"- Findings: `{len(self.state.findings)}`", "", "## Messages", ""]
         for value in surface["messages"].values():
             lines.append(f"- {value}")
         lines.extend(["", "## Parameters", ""])
         if not surface["parameters"]:
             lines.append("No safe query parameters or GET inputs were discovered within the selected scan scope.")
         else:
-            for p in surface["parameters"][:200]:
+            for p in surface["parameters"][: self.max_params]:
                 lines.append(f"- `{p['method']}` `{p['name']}` kind=`{p['kind']}` risk=`{p['risk_score']}` url=`{p['url']}`")
         md_path.write_text("\n".join(lines), encoding="utf-8")
         return {"surface_map_json": str(json_path), "surface_map_md": str(md_path)}
 
     def run_all(self) -> dict[str, Any]:
-        self.state.add_event("INFO", "safe surface engine started", mode=self.mode)
+        self.state.add_event("INFO", "safe surface engine started", mode=self.mode, include_subdomains=self.include_subdomains, max_pages=self.max_pages, max_depth=self.max_depth, max_params=self.max_params)
         self.crawl()
         self.passive_checks()
         self.safe_active_checks()
         reports = self.write_reports()
-        self.state.stats["safe_surface_urls"] = len(self.state.urls)
-        self.state.stats["safe_surface_params"] = len(self.state.params)
-        self.state.stats["safe_surface_forms"] = len(self.forms)
-        self.state.stats["safe_surface_js_files"] = len(set(self.js_files))
-        self.state.stats["safe_surface_routes"] = len(set(self.routes))
+        counts = self.surface_counts()
+        self.state.stats.update({"safe_surface_urls": len(self.state.urls), "safe_surface_params": len(self.state.params), "safe_surface_forms": len(self.forms), "safe_surface_js_files": len(set(self.js_files)), "safe_surface_routes": len(set(self.routes)), "safe_surface_include_subdomains": self.include_subdomains})
+        if self.dashboard is not None and hasattr(self.dashboard, "update"):
+            self.dashboard.update(phase="Surface Mapping", phase_progress=90, current_tool="safe_surface_engine", tool_status="completed", evidence="Surface mapping and safe checks completed", **counts)
         self.state.add_event("INFO", "safe surface engine completed", **reports)
         self.state.save()
-        return {"ok": True, "reports": reports, "urls": len(self.state.urls), "paths": len(self.paths), "params": len(self.state.params), "forms": len(self.forms), "javascript_files": len(set(self.js_files)), "routes": len(set(self.routes)), "findings": len(self.state.findings), "errors": len(self.errors)}
+        return {"ok": True, "reports": reports, "urls": len(self.state.urls), "paths": len(self.paths), "params": len(self.state.params), "forms": len(self.forms), "javascript_files": len(set(self.js_files)), "routes": len(set(self.routes)), "findings": len(self.state.findings), "errors": len(self.errors), "include_subdomains": self.include_subdomains}
