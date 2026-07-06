@@ -11,6 +11,7 @@ class LiveDashboard(BaseLiveDashboard):
     """Dashboard wrapper that tracks actual module lifecycle rows."""
 
     TOOL_ORDER_V2 = [
+        "technology_intelligence",
         "crawler_v2",
         "browser_crawler",
         "parameter_inventory",
@@ -34,6 +35,8 @@ class LiveDashboard(BaseLiveDashboard):
         "bootstrap": ["llm_public_reasoning"],
         "scope_guard": ["llm_public_reasoning"],
         "availability_checker": ["metadata_checker"],
+        "technology_intelligence": ["technology_intelligence"],
+        "TechnologyIntelAgent": ["technology_intelligence"],
         "passive_analyzers": ["header_analyzer", "cookie_analyzer"],
         "header_analyzer": ["header_analyzer"],
         "cookie_analyzer": ["cookie_analyzer"],
@@ -74,6 +77,8 @@ class LiveDashboard(BaseLiveDashboard):
         "queued": "queued",
     }
 
+    TERMINAL = {"completed", "failed", "timed_out", "blocked", "blocked_by_safety", "blocked_by_scope", "skipped", "not_ready", "inactive"}
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.tool_statuses_v2: dict[str, str] = {tool: "inactive" for tool in self.TOOL_ORDER_V2}
@@ -85,7 +90,7 @@ class LiveDashboard(BaseLiveDashboard):
             return []
         if raw_text.startswith("dynamic:"):
             return [raw_text]
-        return list(self.TOOL_ALIASES_V2.get(raw_text, [raw_text]))
+        return [item for item in self.TOOL_ALIASES_V2.get(raw_text, [raw_text]) if item]
 
     def _status_v2(self, kwargs: dict[str, Any]) -> str:
         raw = str(kwargs.get("tool_status") or kwargs.get("status") or kwargs.get("decision") or "running").lower()
@@ -116,32 +121,34 @@ class LiveDashboard(BaseLiveDashboard):
         if current is None:
             return
         ids = self._ids_for_tool_v2(current)
-        status = self._status_v2(kwargs)
         if not ids:
             return
+        status = self._status_v2(kwargs)
         for old in self.last_active_tools_v2:
             if old not in ids and self.tool_statuses_v2.get(old) in {"running", "queued"}:
                 self.tool_statuses_v2[old] = "completed"
         for tool_id in ids:
+            if self.tool_statuses_v2.get(tool_id) in self.TERMINAL and status == "running":
+                continue
             self.tool_statuses_v2[tool_id] = status
-        self.last_active_tools_v2 = [] if status == "completed" else ids
+        self.last_active_tools_v2 = [] if status in self.TERMINAL else ids
 
     def update(self, **kwargs: Any) -> None:
         self._touch_tools_v2(kwargs)
         super().update(**kwargs)
 
+    def _finalize_v2(self) -> None:
+        for tool_id in list(self.last_active_tools_v2):
+            if self.tool_statuses_v2.get(tool_id) == "running":
+                self.tool_statuses_v2[tool_id] = "completed"
+        self.last_active_tools_v2 = []
+        for tool_id, status in list(self.tool_statuses_v2.items()):
+            if status == "queued":
+                self.tool_statuses_v2[tool_id] = "inactive"
+
     def _counts_v2(self) -> dict[str, int]:
         values = list(self.tool_statuses_v2.values())
-        return {
-            "total": len(values),
-            "running": values.count("running"),
-            "completed": values.count("completed"),
-            "failed": values.count("failed") + values.count("timed_out"),
-            "blocked": values.count("blocked") + values.count("blocked_by_safety") + values.count("blocked_by_scope"),
-            "skipped": values.count("skipped"),
-            "inactive": values.count("inactive"),
-            "not_ready": values.count("not_ready"),
-        }
+        return {"total": len(values), "running": values.count("running"), "completed": values.count("completed"), "failed": values.count("failed") + values.count("timed_out"), "blocked": values.count("blocked") + values.count("blocked_by_safety") + values.count("blocked_by_scope"), "skipped": values.count("skipped"), "inactive": values.count("inactive"), "not_ready": values.count("not_ready")}
 
     def _tool_rows(self, snap: Any) -> list[str]:
         counts = self._counts_v2()
@@ -174,16 +181,17 @@ class LiveDashboard(BaseLiveDashboard):
             else:
                 label = "◻ " + label
             rows.append(f"► {tool:<30} {label}")
-        return rows[:19]
+        return rows[:22]
 
     def write_reports(self, out_dir: Any) -> dict[str, str]:
+        self._finalize_v2()
         reports = super().write_reports(out_dir)
         try:
             from pathlib import Path
             import json
             out = Path(out_dir)
             path = out / "tool-status-dashboard.json"
-            path.write_text(json.dumps({"tool_statuses": self.tool_statuses_v2, "generated_at": time.time()}, indent=2, ensure_ascii=False), encoding="utf-8")
+            path.write_text(json.dumps({"tool_statuses": self.tool_statuses_v2, "counts": self._counts_v2(), "generated_at": time.time()}, indent=2, ensure_ascii=False), encoding="utf-8")
             reports["tool_status_dashboard_json"] = str(path)
         except Exception:
             pass
