@@ -15,7 +15,7 @@ class DeepSeekDashboardEngine(AutonomousScanEngine):
 
     def _safe_parameter_review(self) -> dict[str, Any]:
         self._dashboard("Surface Mapping", "Mapping URLs, forms, parameters, scripts, and checks", progress=74, agent="SafeSurfaceEngine", tool="safe_surface_engine")
-        surface = SafeSurfaceEngine(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard, max_pages=self.max_pages, max_depth=self.max_depth, max_params=self.max_params, mode=self.scan_mode).run_all()
+        surface = SafeSurfaceEngine(state=self.state, client=self.client, tester=self.tester, dashboard=self.dashboard, max_pages=self.max_pages, max_depth=self.max_depth, max_params=self.max_params, mode=self.scan_mode, include_subdomains=self.include_subdomains).run_all()
         self.extra_reports.update(surface.get("reports", {}))
         self.state.add_event("INFO", "surface mapping completed", summary=surface)
         self.state.save()
