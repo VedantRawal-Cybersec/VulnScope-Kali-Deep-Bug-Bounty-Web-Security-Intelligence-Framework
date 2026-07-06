@@ -21,6 +21,7 @@ from core.live_dashboard_v2 import LiveDashboard
 from core.llm_gateway import LLMGateway
 from core.llm_memory import LLMMemory
 from core.llm_policy import LLMPolicy
+from core.orchestration_contract import OrchestrationContract
 from core.phase_runner import PhaseRunner
 from core.phase_scheduler import PhaseScheduler
 from core.reporting_v2 import ReportingV2
@@ -29,7 +30,7 @@ from core.scan_health import ScanHealthReporter
 from core.scan_state import ScanState
 from core.test_engine import TestEngine
 
-VERSION = "1.17.6-real-tool-states"
+VERSION = "1.17.7-strict-orchestration-contract"
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -108,6 +109,7 @@ class AutonomousScanEngine:
         self.deep_scan_summary: dict[str, Any] = {}
         self.react_summary: dict[str, Any] = {}
         self.health_reports: dict[str, str] = {}
+        self.orchestration_contract: dict[str, Any] = {}
 
     def _surface(self) -> dict[str, int]:
         paths = {urlparse(item.url).path or "/" for item in self.state.urls.values()}
@@ -134,9 +136,9 @@ class AutonomousScanEngine:
         root = self.client.get(self.target, purpose="target-availability")
         self._dash("Scope", "Availability check completed", progress=8, agent="ScopeAgent", tool="availability_checker", status="completed" if root.ok else "failed", evidence=f"HTTP {root.status_code} {root.error}", url=root.url)
         if not root.ok:
-            self.state.stats.update({"target_reachable": False, "target_reachability_error": root.error})
+            self.state.stats.update({"target_reachable": False, "target_reachability_error": root.error or f"HTTP {root.status_code}"})
             self.state.save()
-            return {"root_ok": False, "status_code": root.status_code, "error": root.error}
+            return {"root_ok": False, "status_code": root.status_code, "error": root.error or f"HTTP {root.status_code}"}
         self.state.stats["target_reachable"] = True
         summary = self.analyzers.run_all(root)
         self.dashboard.update(current_tool="passive_analyzers", tool_status="completed")
@@ -195,7 +197,7 @@ class AutonomousScanEngine:
         allowed, reason = self.llm_policy.allow("public_reasoning", force=True)
         if not allowed:
             self.dashboard.update(current_tool="llm_gateway.plan_actions", tool_status="inactive")
-            return {"ok": False, "reason": reason}
+            return {"skipped": True, "reason": reason}
         response = self.llm.plan_actions({"coverage": self.state.coverage(), "surface": self._surface(), "memory": self.memory.llm_summary(limit=20)}, model_role="fast")
         self.dashboard.update(current_tool="llm_gateway.plan_actions", tool_status="completed" if getattr(response, "ok", False) else "failed")
         return response.to_dict() if hasattr(response, "to_dict") else {"ok": bool(getattr(response, "ok", False))}
@@ -240,12 +242,16 @@ class AutonomousScanEngine:
         health = ScanHealthReporter(state=self.state, phase_runner=self.phase_runner, dynamic_summary=self.dynamic_tool_summary, extra=self.extra_reports).write_all()
         self.health_reports = health
         self.extra_reports.update(health)
+        self.orchestration_contract = OrchestrationContract(state=self.state, phase_runner=self.phase_runner, extra_reports=self.extra_reports, dynamic_summary=self.dynamic_tool_summary, react_summary=self.react_summary).write()
+        for key, value in self.orchestration_contract.items():
+            if isinstance(value, str):
+                self.extra_reports[key] = value
         self.extra_reports.update(self.dashboard.write_reports(self.state.out_dir))
         self.trace.write_reports(self.state.out_dir)
-        self.state.add_event("INFO", "reports written", reports=self.extra_reports)
+        self.state.add_event("INFO", "reports written", reports=self.extra_reports, orchestration_contract=self.orchestration_contract)
         self.state.save()
         self.dashboard.update(current_tool="report_generator", tool_status="completed")
-        return {"reports": self.extra_reports}
+        return {"reports": self.extra_reports, "orchestration_contract": self.orchestration_contract}
 
     def bootstrap(self) -> dict[str, Any]:
         self.dashboard.start()
@@ -265,8 +271,11 @@ class AutonomousScanEngine:
             self.phase_runner.run("11 Dynamic Tool Scheduler", self._dynamic_tool_phase, progress_start=76, progress_end=82, url=self.target, agent="DynamicToolScheduler", tool="dynamic_tool_scheduler")
             self.phase_runner.run("12 Safe Parameter + Endpoint Review", self._safe_parameter_review, progress_start=83, progress_end=92, url=self.target, agent="CAIReActPlannerAgent", tool="cai_react_planner")
             self.phase_runner.run("13 Reporting", self._write_reports, progress_start=93, progress_end=100, url=self.target, agent="ReportAgent", tool="report_generator", required=True)
-            summary = {"ok": True, "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "phase_summary": self.phase_runner.summary(), "coverage": self.state.coverage(), "reports": self.extra_reports, "dynamic_tools": self.dynamic_tool_summary, "react": self.react_summary}
-            self.state.add_event("SUCCESS", "autonomous scan completed", summary=summary)
+            phase_summary = self.phase_runner.summary()
+            contract_ok = bool(self.orchestration_contract.get("orchestration_contract_ok", True))
+            required_failed = bool(phase_summary.get("failed_required", 0))
+            summary = {"ok": bool(contract_ok and not required_failed), "version": VERSION, "target": self.target, "scan_mode": self.scan_mode, "phase_summary": phase_summary, "coverage": self.state.coverage(), "reports": self.extra_reports, "dynamic_tools": self.dynamic_tool_summary, "react": self.react_summary, "orchestration_contract": self.orchestration_contract}
+            self.state.add_event("SUCCESS" if summary["ok"] else "WARNING", "autonomous scan completed", summary=summary)
             self.state.save()
             return summary
         finally:
@@ -304,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     engine = AutonomousScanEngine(args.target, scan_mode=args.scan_mode, include_subdomains=args.include_subdomains, headers=parse_headers(args.header), max_pages=args.max_pages, max_depth=args.max_depth, max_params=args.max_params, request_timeout=args.request_timeout, delay=args.delay, request_budget=args.request_budget, max_actions=args.max_actions, resume=args.resume, browser=args.browser, live_dashboard=not args.no_live_dashboard, deep_assets=not args.no_deep_assets, dynamic_tools=not args.no_dynamic_tools, asset_doc_limit=args.asset_doc_limit, ollama_url=args.ollama_url, ollama_model=args.ollama_model)
     summary = engine.run()
-    print(json.dumps({"ok": bool(summary.get("ok")), "coverage": summary.get("coverage"), "reports": summary.get("reports")}, indent=2, ensure_ascii=False))
+    print(json.dumps({"ok": bool(summary.get("ok")), "coverage": summary.get("coverage"), "reports": summary.get("reports"), "orchestration_contract": summary.get("orchestration_contract")}, indent=2, ensure_ascii=False))
     return 0 if summary.get("ok") else 1
 
 
