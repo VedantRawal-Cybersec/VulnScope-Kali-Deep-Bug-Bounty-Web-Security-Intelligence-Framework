@@ -12,15 +12,21 @@ class FinalReportIndex:
 
     ORDER = [
         "technology_intelligence_md",
+        "technology_test_plan_md",
         "surface_map_md",
+        "browser_network_capture_md",
+        "endpoint_artifact_import_md",
         "api_discovery_md",
         "access_matrix_md",
+        "tool_manifest_registry_md",
+        "advisory_enrichment_md",
         "security_scorecard_md",
         "ethical_methodology_md",
         "orchestration_contract_md",
         "deepseek_autonomy_markdown",
         "scan_health_md",
         "dynamic_tool_phase_summary",
+        "tool_status_dashboard_json",
     ]
 
     def __init__(self, *, state: Any, reports: dict[str, str], summary: dict[str, Any] | None = None) -> None:
