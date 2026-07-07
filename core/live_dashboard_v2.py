@@ -91,8 +91,8 @@ class LiveDashboard(BaseLiveDashboard):
         "report_generator": ["report_generator"],
     }
 
-    LABELS = {"pending": "pending", "running": "running", "completed": "completed", "failed": "failed", "timed_out": "timed out", "blocked": "blocked", "blocked_by_safety": "blocked", "blocked_by_scope": "blocked", "skipped": "skipped", "not_ready": "needs config", "inactive": "inactive", "queued": "queued"}
-    TERMINAL = {"completed", "failed", "timed_out", "blocked", "blocked_by_safety", "blocked_by_scope", "skipped", "not_ready", "inactive"}
+    LABELS = {"pending": "pending", "running": "running", "completed": "completed", "failed": "failed", "external_failed": "tool failed", "timed_out": "timed out", "blocked": "blocked", "blocked_by_safety": "blocked", "blocked_by_scope": "blocked", "skipped": "skipped", "not_ready": "needs config", "inactive": "inactive", "queued": "queued"}
+    TERMINAL = {"completed", "failed", "external_failed", "timed_out", "blocked", "blocked_by_safety", "blocked_by_scope", "skipped", "not_ready", "inactive"}
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -109,12 +109,14 @@ class LiveDashboard(BaseLiveDashboard):
 
     def _status_v2(self, kwargs: dict[str, Any]) -> str:
         raw = str(kwargs.get("tool_status") or kwargs.get("status") or kwargs.get("decision") or "running").lower()
+        current = str(kwargs.get("current_tool") or "")
+        is_external = bool(current.startswith("dynamic:") or (current and current not in self.TOOL_ALIASES_V2 and current not in self.TOOL_ORDER_V2))
         if "completed" in raw or raw in {"done", "success"}:
             return "completed"
         if "timeout" in raw:
-            return "timed_out"
+            return "external_failed" if is_external else "timed_out"
         if "failed" in raw or "error" in raw:
-            return "failed"
+            return "external_failed" if is_external else "failed"
         if "blocked" in raw:
             return "blocked"
         if "skip" in raw:
@@ -133,7 +135,7 @@ class LiveDashboard(BaseLiveDashboard):
         explicit = kwargs.get("tool_statuses")
         if isinstance(explicit, dict):
             for key, value in explicit.items():
-                self.tool_statuses_v2[str(key)] = self._status_v2({"status": value})
+                self.tool_statuses_v2[str(key)] = self._status_v2({"status": value, "current_tool": key})
         current = kwargs.get("current_tool")
         if current is None:
             return
@@ -165,11 +167,11 @@ class LiveDashboard(BaseLiveDashboard):
 
     def _counts_v2(self) -> dict[str, int]:
         values = list(self.tool_statuses_v2.values())
-        return {"total": len(values), "pending": values.count("pending"), "running": values.count("running"), "completed": values.count("completed"), "failed": values.count("failed") + values.count("timed_out"), "blocked": values.count("blocked") + values.count("blocked_by_safety") + values.count("blocked_by_scope"), "skipped": values.count("skipped"), "inactive": values.count("inactive"), "not_ready": values.count("not_ready")}
+        return {"total": len(values), "pending": values.count("pending"), "running": values.count("running"), "completed": values.count("completed"), "failed": values.count("failed") + values.count("timed_out"), "external_failed": values.count("external_failed"), "blocked": values.count("blocked") + values.count("blocked_by_safety") + values.count("blocked_by_scope"), "skipped": values.count("skipped"), "inactive": values.count("inactive"), "not_ready": values.count("not_ready")}
 
     def _tool_rows(self, snap: Any) -> list[str]:
         counts = self._counts_v2()
-        rows = [f"Total: {counts['total']:<3} Pending: {counts['pending']:<2} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}", f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3}   (pending = phase not reached yet)", "─" * 76]
+        rows = [f"Total: {counts['total']:<3} Pending: {counts['pending']:<2} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed']:<2} ToolFail: {counts['external_failed']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}", f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3}   (pending = phase not reached yet)", "─" * 76]
         order = list(self.TOOL_ORDER_V2)
         for key in sorted(self.tool_statuses_v2):
             if key not in order and self.tool_statuses_v2.get(key) not in {"inactive", "pending"}:
@@ -189,6 +191,8 @@ class LiveDashboard(BaseLiveDashboard):
                 label = "⚙ needs config"
             elif status in {"failed", "timed_out"}:
                 label = "✗ " + label
+            elif status == "external_failed":
+                label = "△ tool failed"
             elif status in {"blocked", "blocked_by_safety", "blocked_by_scope"}:
                 label = "■ blocked"
             elif status == "skipped":
