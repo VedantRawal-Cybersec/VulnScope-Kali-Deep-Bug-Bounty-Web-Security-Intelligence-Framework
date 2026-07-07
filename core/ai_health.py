@@ -16,20 +16,25 @@ else:
     OLLAMA_IMPORT_ERROR = ""
 
 
-def ollama_health(*, host: str | None = None, model: str | None = None, write: bool = True) -> dict[str, Any]:
+def _write(payload: dict[str, Any]) -> None:
+    out = Path("logs/ai-health.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def ollama_health(*, host: str | None = None, model: str | None = None, write: bool = True, timeout: float | None = None) -> dict[str, Any]:
     host = (host or os.getenv("OLLAMA_HOST") or "http://192.168.199.1:11434").rstrip("/")
     model = model or os.getenv("VULNSCOPE_OLLAMA_MODEL") or "deepseek-local"
-    payload: dict[str, Any] = {"ok": False, "host": host, "model": model, "available_models": [], "selected_model": model, "error": "", "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    timeout = float(timeout if timeout is not None else os.getenv("VULNSCOPE_AI_HEALTH_TIMEOUT", "5"))
+    payload: dict[str, Any] = {"ok": False, "host": host, "model": model, "available_models": [], "selected_model": model, "error": "", "timeout_seconds": timeout, "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if ollama is None:
         payload["error"] = "Python package 'ollama' is not installed. Install with: pip install ollama. Continuing is allowed only when --allow-ai-fallback is used."
         payload["import_error"] = OLLAMA_IMPORT_ERROR
         if write:
-            out = Path("logs/ai-health.json")
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            _write(payload)
         return payload
     try:
-        client = ollama.Client(host=host)
+        client = ollama.Client(host=host, timeout=timeout)
         listed = client.list()
         raw = listed.get("models", []) if isinstance(listed, dict) else getattr(listed, "models", [])
         names: list[str] = []
@@ -59,9 +64,7 @@ def ollama_health(*, host: str | None = None, model: str | None = None, write: b
     except Exception as exc:
         payload["error"] = str(exc)
     if write:
-        out = Path("logs/ai-health.json")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        _write(payload)
     return payload
 
 
