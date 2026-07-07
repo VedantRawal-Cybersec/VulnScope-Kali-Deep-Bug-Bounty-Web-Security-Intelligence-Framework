@@ -11,6 +11,9 @@ class FinalReportIndex:
     """Single report index that links and summarizes generated artifacts."""
 
     ORDER = [
+        "autonomous_learning_md",
+        "learning_graph_md",
+        "self_healing_diagnostics_md",
         "technology_intelligence_md",
         "technology_test_plan_md",
         "surface_map_md",
