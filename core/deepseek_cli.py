@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-VERSION = "2.0.3-autonomy-guard"
+VERSION = "2.0.4-bounded-ai-health"
 OUT = Path("reports/output/vulnscope-main")
 AUTH = Path("reports/output/authorization/vulnscope-session-confirmation.json")
 
@@ -49,7 +49,7 @@ def selected_mode(args: argparse.Namespace) -> str:
 
 def confirm(target: str, mode: str, yes: bool, include_subdomains: bool) -> None:
     host = host_from_target(target)
-    print(c("\n[Authorization] Target: " + target, GREEN))
+    print(c("\n[Authorization] Target: " + target, GREEN), flush=True)
     if not yes and os.getenv("VULNSCOPE_AUTHORIZED", "0") != "1":
         print("\nRules:")
         print("- Use only on systems you own or have permission to assess.")
@@ -57,8 +57,8 @@ def confirm(target: str, mode: str, yes: bool, include_subdomains: bool) -> None
         answer = input("\nDo you have authorization? (yes/no): ").strip().lower()
         if answer not in {"yes", "y"}:
             raise SystemExit("Authorization not confirmed.")
-    print(c("  Scope: " + host + (" + subdomains" if include_subdomains else ""), CYAN))
-    print(c("  Mode: " + mode, CYAN))
+    print(c("  Scope: " + host + (" + subdomains" if include_subdomains else ""), CYAN), flush=True)
+    print(c("  Mode: " + mode, CYAN), flush=True)
     AUTH.parent.mkdir(parents=True, exist_ok=True)
     AUTH.write_text(json.dumps({"target": target, "host": host, "mode": mode, "include_subdomains": include_subdomains, "confirmed_at": datetime.now(timezone.utc).isoformat()}, indent=2), encoding="utf-8")
 
@@ -132,7 +132,7 @@ def handle_tools(args: argparse.Namespace) -> int | None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="VulnScope DeepSeek runner")
+    parser = argparse.ArgumentParser(description="VulnScope ultimate autonomous security scanner")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--target", "--url", dest="target", default="")
     parser.add_argument("--mode", choices=["agentic", "bugbounty", "lab", "react"], default="agentic")
@@ -158,6 +158,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--asset-doc-limit", type=int, default=40)
     parser.add_argument("--ollama-url", default=os.getenv("OLLAMA_HOST", "http://192.168.199.1:11434"))
     parser.add_argument("--ollama-model", default=os.getenv("VULNSCOPE_OLLAMA_MODEL", "deepseek-local"))
+    parser.add_argument("--ai-health-timeout", type=float, default=float(os.getenv("VULNSCOPE_AI_HEALTH_TIMEOUT", "5")))
     parser.add_argument("--ai-repair-tools", action="store_true")
     parser.add_argument("--ai-repair-approve-safe-run", action="store_true")
     parser.add_argument("--ai-repair-limit", type=int, default=0)
@@ -182,10 +183,10 @@ def finish(target: str, result: dict) -> None:
     host = host_from_target(target)
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "final-summary.json").write_text(json.dumps({"target": target, "result": result, "version": VERSION, "generated_at": datetime.now(timezone.utc).isoformat()}, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(c("\n✅ VulnScope run complete.", GREEN))
-    print("   • reports/output/cai-superior/" + host + "/")
-    print("   • logs/ai-health.json")
-    print("   • reports/output/vulnscope-main/final-summary.json")
+    print(c("\n✅ VulnScope run complete.", GREEN), flush=True)
+    print("   • reports/output/cai-superior/" + host + "/", flush=True)
+    print("   • logs/ai-health.json", flush=True)
+    print("   • reports/output/vulnscope-main/final-summary.json", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -196,25 +197,26 @@ def main(argv: list[str] | None = None) -> int:
     handled = handle_tools(args)
     if handled is not None:
         return handled
-    print(c(f"\nVulnScope Ultimate v{VERSION}", CYAN))
+    print(c(f"\nVulnScope Ultimate v{VERSION}", CYAN), flush=True)
     target = normalize_target(args.target or input("\nTarget URL/domain: ").strip())
     mode = selected_mode(args)
     confirm(target, mode, args.yes, args.include_subdomains)
     react = args.react_ai or args.mode == "react"
     module = "core.deepseek_dashboard_engine" if react else "core.autonomous_scan_engine"
-    env = {"OLLAMA_HOST": args.ollama_url, "VULNSCOPE_OLLAMA_URL": args.ollama_url, "VULNSCOPE_OLLAMA_MODEL": args.ollama_model, "VULNSCOPE_SCAN_MODE": mode, "VULNSCOPE_REACT_AI": "1" if react else "0"}
+    env = {"OLLAMA_HOST": args.ollama_url, "VULNSCOPE_OLLAMA_URL": args.ollama_url, "VULNSCOPE_OLLAMA_MODEL": args.ollama_model, "VULNSCOPE_SCAN_MODE": mode, "VULNSCOPE_REACT_AI": "1" if react else "0", "VULNSCOPE_AI_HEALTH_TIMEOUT": str(args.ai_health_timeout)}
     if react:
+        print(c(f"\n[AI Health] Checking Ollama for at most {args.ai_health_timeout}s...", CYAN), flush=True)
         from core.ai_health import ollama_health
-        health = ollama_health(host=args.ollama_url, model=args.ollama_model, write=True)
+        health = ollama_health(host=args.ollama_url, model=args.ollama_model, write=True, timeout=args.ai_health_timeout)
         if health.get("selected_model") and health.get("selected_model") != args.ollama_model:
             args.ollama_model = str(health["selected_model"])
             env["VULNSCOPE_OLLAMA_MODEL"] = args.ollama_model
-        print(c(f"\n[DeepSeek] Host: {args.ollama_url} | Model: {args.ollama_model}", CYAN))
-        print(c(f"[AI Health] ok={health.get('ok')} error={health.get('error') or 'none'}", GREEN if health.get("ok") else YELLOW))
+        print(c(f"[DeepSeek] Host: {args.ollama_url} | Model: {args.ollama_model}", CYAN), flush=True)
+        print(c(f"[AI Health] ok={health.get('ok')} error={health.get('error') or 'none'}", GREEN if health.get("ok") else YELLOW), flush=True)
         if not health.get("ok") and not args.allow_ai_fallback:
             finish(target, {"ok": False, "error": "AI health check failed", "ai_health": health})
             return 2
-        print(c("[DeepSeek] Starting dashboard autonomy loop.", GREEN))
+        print(c("[DeepSeek] Starting dashboard autonomy loop.", GREEN), flush=True)
     result = run_subprocess("DeepSeek dashboard engine" if react else "dashboard engine", build_command(target, args, mode, module, react), env)
     finish(target, result)
     return 0 if result.get("ok") else 1
