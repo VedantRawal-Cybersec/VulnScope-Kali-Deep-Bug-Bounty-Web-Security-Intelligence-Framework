@@ -12,8 +12,13 @@ class LiveDashboard(BaseLiveDashboard):
 
     TOOL_ORDER_V2 = [
         "technology_intelligence",
+        "technology_test_planner",
+        "browser_network_capture",
+        "endpoint_artifact_import",
         "api_discovery",
         "access_matrix",
+        "tool_manifest_system",
+        "advisory_enrichment",
         "security_scorecard",
         "final_report_index",
         "crawler_v2",
@@ -32,6 +37,7 @@ class LiveDashboard(BaseLiveDashboard):
         "llm_public_reasoning",
         "safe_surface_engine",
         "deepseek_react_loop",
+        "deep_asset_discovery",
     ]
 
     TOOL_ALIASES_V2 = {
@@ -41,13 +47,25 @@ class LiveDashboard(BaseLiveDashboard):
         "availability_checker": ["metadata_checker"],
         "technology_intelligence": ["technology_intelligence"],
         "TechnologyIntelAgent": ["technology_intelligence"],
+        "technology_test_planner": ["technology_test_planner"],
+        "TechnologyPlannerAgent": ["technology_test_planner"],
+        "browser_network_capture": ["browser_network_capture"],
+        "BrowserNetworkAgent": ["browser_network_capture"],
+        "endpoint_artifact_import": ["endpoint_artifact_import"],
+        "EndpointImportAgent": ["endpoint_artifact_import"],
         "api_discovery": ["api_discovery"],
         "APIDiscoveryAgent": ["api_discovery"],
         "access_matrix": ["access_matrix"],
         "AccessMatrixAgent": ["access_matrix"],
+        "tool_manifest_system": ["tool_manifest_system"],
+        "ToolManifestAgent": ["tool_manifest_system"],
+        "advisory_enrichment": ["advisory_enrichment"],
+        "AdvisoryEnrichmentAgent": ["advisory_enrichment"],
         "security_scorecard": ["security_scorecard"],
         "final_report_index": ["final_report_index"],
-        "passive_analyzers": ["header_analyzer", "cookie_analyzer"],
+        "deep_asset_discovery": ["deep_asset_discovery"],
+        "DeepAssetDiscovery": ["deep_asset_discovery"],
+        "passive_analyzers": ["header_analyzer", "cookie_analyzer", "metadata_checker"],
         "header_analyzer": ["header_analyzer"],
         "cookie_analyzer": ["cookie_analyzer"],
         "metadata_checker": ["metadata_checker"],
@@ -73,12 +91,12 @@ class LiveDashboard(BaseLiveDashboard):
         "report_generator": ["report_generator"],
     }
 
-    LABELS = {"running": "running", "completed": "completed", "failed": "failed", "timed_out": "timed out", "blocked": "blocked", "blocked_by_safety": "blocked", "blocked_by_scope": "blocked", "skipped": "skipped", "not_ready": "needs config", "inactive": "inactive", "queued": "queued"}
+    LABELS = {"pending": "pending", "running": "running", "completed": "completed", "failed": "failed", "timed_out": "timed out", "blocked": "blocked", "blocked_by_safety": "blocked", "blocked_by_scope": "blocked", "skipped": "skipped", "not_ready": "needs config", "inactive": "inactive", "queued": "queued"}
     TERMINAL = {"completed", "failed", "timed_out", "blocked", "blocked_by_safety", "blocked_by_scope", "skipped", "not_ready", "inactive"}
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.tool_statuses_v2: dict[str, str] = {tool: "inactive" for tool in self.TOOL_ORDER_V2}
+        self.tool_statuses_v2: dict[str, str] = {tool: "pending" for tool in self.TOOL_ORDER_V2}
         self.last_active_tools_v2: list[str] = []
 
     def _ids_for_tool_v2(self, raw: Any) -> list[str]:
@@ -107,6 +125,8 @@ class LiveDashboard(BaseLiveDashboard):
             return "inactive"
         if "queued" in raw:
             return "queued"
+        if "pending" in raw:
+            return "pending"
         return "running"
 
     def _touch_tools_v2(self, kwargs: dict[str, Any]) -> None:
@@ -140,27 +160,29 @@ class LiveDashboard(BaseLiveDashboard):
                 self.tool_statuses_v2[tool_id] = "completed"
         self.last_active_tools_v2 = []
         for tool_id, status in list(self.tool_statuses_v2.items()):
-            if status == "queued":
+            if status in {"queued", "pending"}:
                 self.tool_statuses_v2[tool_id] = "inactive"
 
     def _counts_v2(self) -> dict[str, int]:
         values = list(self.tool_statuses_v2.values())
-        return {"total": len(values), "running": values.count("running"), "completed": values.count("completed"), "failed": values.count("failed") + values.count("timed_out"), "blocked": values.count("blocked") + values.count("blocked_by_safety") + values.count("blocked_by_scope"), "skipped": values.count("skipped"), "inactive": values.count("inactive"), "not_ready": values.count("not_ready")}
+        return {"total": len(values), "pending": values.count("pending"), "running": values.count("running"), "completed": values.count("completed"), "failed": values.count("failed") + values.count("timed_out"), "blocked": values.count("blocked") + values.count("blocked_by_safety") + values.count("blocked_by_scope"), "skipped": values.count("skipped"), "inactive": values.count("inactive"), "not_ready": values.count("not_ready")}
 
     def _tool_rows(self, snap: Any) -> list[str]:
         counts = self._counts_v2()
-        rows = [f"Total: {counts['total']:<3} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}", f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3}   (inactive = not needed in this run)", "─" * 76]
+        rows = [f"Total: {counts['total']:<3} Pending: {counts['pending']:<2} Running: {counts['running']:<2} Completed: {counts['completed']:<3} Failed: {counts['failed']:<2} Blocked: {counts['blocked']:<2} Skip: {counts['skipped']:<2}", f"Inactive: {counts['inactive']:<3} Needs Config: {counts['not_ready']:<3}   (pending = phase not reached yet)", "─" * 76]
         order = list(self.TOOL_ORDER_V2)
         for key in sorted(self.tool_statuses_v2):
-            if key not in order and self.tool_statuses_v2.get(key) != "inactive":
+            if key not in order and self.tool_statuses_v2.get(key) not in {"inactive", "pending"}:
                 order.append(key)
         for tool in order:
-            status = self.tool_statuses_v2.get(tool, "inactive")
+            status = self.tool_statuses_v2.get(tool, "pending")
             label = self.LABELS.get(status, status)
             if status == "running":
                 label = f"{SPINNER[snap.spinner_index]} running"
             elif status == "completed":
                 label = "✓ completed"
+            elif status == "pending":
+                label = "… pending"
             elif status == "inactive":
                 label = "— inactive"
             elif status == "not_ready":
@@ -174,7 +196,7 @@ class LiveDashboard(BaseLiveDashboard):
             else:
                 label = "◻ " + label
             rows.append(f"► {tool:<30} {label}")
-        return rows[:26]
+        return rows[:31]
 
     def write_reports(self, out_dir: Any) -> dict[str, str]:
         self._finalize_v2()
