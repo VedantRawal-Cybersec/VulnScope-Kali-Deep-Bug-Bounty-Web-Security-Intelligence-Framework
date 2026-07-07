@@ -10,12 +10,10 @@ from urllib.parse import urlparse
 
 from cai_error_handler import write_json, write_markdown
 from cai_scope_guard import cai_output_dir, normalize_target
+from core.evidence_validator import EvidenceValidator
 from core.scan_state import ScanState
 
-
-SENSITIVE_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie|session|password)=([^\s&;]+)"),
-]
+SENSITIVE_PATTERNS = [re.compile(r"(?i)(api[_-]?key|token|secret|authorization|cookie|session|password)=([^\s&;]+)")]
 
 
 def clean_text(value: Any, limit: int = 600) -> str:
@@ -47,11 +45,11 @@ def cvss_style_reason(severity: Any, confidence: Any, status: Any) -> str:
     if bucket.startswith("CONFIRMED") and sev in {"CRITICAL", "HIGH"}:
         return f"{sev}: confirmed behavior with high business/security impact; confidence {conf}%."
     if bucket.startswith("CONFIRMED") and sev == "MEDIUM":
-        return f"MEDIUM: confirmed behavior that may affect security if reachable in an exploitable workflow; confidence {conf}%."
+        return f"MEDIUM: confirmed behavior that may affect security if reachable in an exposed workflow; confidence {conf}%."
     if bucket.startswith("CONFIRMED"):
         return f"{sev}: confirmed low-impact or hardening observation; confidence {conf}%."
     if bucket.startswith("MANUAL"):
-        return f"{sev}: not confirmed as exploitable; flagged because the parameter or route pattern needs authorized manual validation; confidence {conf}%."
+        return f"{sev}: not confirmed; flagged because the parameter or route pattern needs authorized validation; confidence {conf}%."
     return f"{sev}: informational hardening or exposure note; confidence {conf}%."
 
 
@@ -59,14 +57,14 @@ def safe_next_action(finding: dict[str, Any]) -> str:
     status = str(finding.get("status") or "").lower()
     category = str(finding.get("category") or "").lower()
     if status == "confirmed" and "reflection" in category:
-        return "Review output encoding and context. Validate only with harmless canaries inside authorized scope. Do not attempt script execution on production."
+        return "Review output encoding and context. Validate only with harmless canaries inside authorized scope."
     if "redirect" in category:
-        return "Check destination allowlisting and normalization in staging or an approved test account. Do not test external redirect abuse on production."
+        return "Check destination allowlisting and normalization in staging or an approved test account."
     if "parameter" in category:
-        return "Validate server-side authorization/validation with approved accounts or staging. Keep production checks low-impact."
+        return "Validate server-side authorization and validation with approved accounts or staging."
     if "header" in category or "cookie" in category or "csp" in category:
-        return "Treat as hardening unless tied to a reachable exploit chain. Apply configuration fix and re-run passive verification."
-    return "Review the captured evidence, reproduce only in the authorized scope, and document impact before claiming exploitability."
+        return "Treat as hardening unless tied to a reachable chain. Apply configuration fix and re-run passive verification."
+    return "Review the captured evidence, reproduce only in the authorized scope, and document impact before claiming impact."
 
 
 class ReportingV2:
@@ -75,13 +73,34 @@ class ReportingV2:
         self.target = normalize_target(state.target)
         self.out = cai_output_dir(self.target)
         self.extra_reports = extra_reports or {}
+        self.validator = EvidenceValidator()
+
+    def normalized_findings(self) -> list[dict[str, Any]]:
+        return [self.validator.normalize_finding(dict(item)) for item in self.state.findings]
 
     def severity_counts(self) -> dict[str, int]:
         counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
-        for finding in self.state.findings:
+        for finding in self.normalized_findings():
             sev = str(finding.get("severity") or "INFO").upper()
             counts[sev if sev in counts else "INFO"] += 1
         return counts
+
+    def verdict_payload(self) -> dict[str, Any]:
+        findings = self.normalized_findings()
+        confirmed = [f for f in findings if str(f.get("status")) == "Confirmed"]
+        potential = [f for f in findings if str(f.get("status")) not in {"Confirmed", "Informational"}]
+        informational = [f for f in findings if str(f.get("status")) == "Informational"]
+        coverage = self.state.coverage()
+        blockers: list[str] = []
+        if not self.state.params:
+            blockers.append("No query parameters or GET form inputs were discovered, so parameter validation had little to test.")
+        if coverage.get("tests_total", 0) == 0:
+            blockers.append("No validation tests were queued. Increase crawl depth, add seed URLs, or supply endpoint artifacts.")
+        if not confirmed and potential:
+            blockers.append("Review leads exist, but evidence did not meet the confirmed threshold.")
+        if not confirmed and informational and not potential:
+            blockers.append("Only hardening or metadata observations were collected.")
+        return {"target": self.target, "coverage": coverage, "confirmed_count": len(confirmed), "review_lead_count": len(potential), "informational_count": len(informational), "confirmed": confirmed, "review_leads": potential, "informational": informational, "blockers": blockers, "verdict": "confirmed_items_present" if confirmed else "no_confirmed_items_under_current_scope"}
 
     def directed_finding_card(self, finding: dict[str, Any], index: int) -> dict[str, Any]:
         affected_url = clean_text(finding.get("affected_url") or finding.get("url") or self.target, 1000)
@@ -98,76 +117,22 @@ class ReportingV2:
         probe = clean_text(finding.get("safe_probe") or finding.get("probe") or "N/A", 220)
         category = clean_text(finding.get("category") or "General", 120)
         steps = [clean_text(step, 500) for step in (finding.get("reproduction_steps") or [])[:8]] or ["Review the evidence artifact inside the authorized scope."]
-        return {
-            "number": index,
-            "id": clean_text(finding.get("id") or f"finding-{index}", 120),
-            "status_bucket": status_bucket(status),
-            "status": status,
-            "severity": severity,
-            "confidence": confidence,
-            "category": category,
-            "what": title,
-            "where": {
-                "url": affected_url,
-                "request": request_line,
-                "path": clean_text(parsed.path or "/", 300),
-                "parameter": parameter,
-                "safe_probe": probe,
-            },
-            "why": evidence,
-            "impact": impact,
-            "severity_reason": cvss_style_reason(severity, finding.get("confidence"), status),
-            "safe_validation": steps,
-            "fix": recommendation,
-            "next_safe_action": safe_next_action(finding),
-        }
+        return {"number": index, "id": clean_text(finding.get("id") or f"finding-{index}", 120), "status_bucket": status_bucket(status), "status": status, "severity": severity, "confidence": confidence, "category": category, "what": title, "where": {"url": affected_url, "request": request_line, "path": clean_text(parsed.path or "/", 300), "parameter": parameter, "safe_probe": probe}, "why": evidence, "impact": impact, "severity_reason": cvss_style_reason(severity, finding.get("confidence"), status), "safe_validation": steps, "fix": recommendation, "next_safe_action": safe_next_action(finding)}
 
     def directed_cards(self) -> list[dict[str, Any]]:
         severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
-        findings = sorted(
-            self.state.findings,
-            key=lambda item: (
-                severity_rank.get(str(item.get("severity") or "INFO").upper(), 4),
-                -int(item.get("confidence") or 0),
-                str(item.get("title") or ""),
-            ),
-        )
+        findings = sorted(self.normalized_findings(), key=lambda item: (severity_rank.get(str(item.get("severity") or "INFO").upper(), 4), -int(item.get("confidence") or 0), str(item.get("title") or "")))
         return [self.directed_finding_card(finding, idx) for idx, finding in enumerate(findings, 1)]
 
     def write_json_report(self) -> Path:
         path = self.out / "autonomous-scan-report.json"
-        payload = {
-            "target": self.target,
-            "coverage": self.state.coverage(),
-            "severity_counts": self.severity_counts(),
-            "directed_findings": self.directed_cards(),
-            "findings": self.state.findings,
-            "parameters": [vars(item) for item in self.state.params.values()],
-            "urls": [vars(item) for item in self.state.urls.values()],
-            "tests": [vars(item) for item in self.state.tests.values()],
-            "reports": self.extra_reports,
-            "safety": {
-                "same_scope_only": True,
-                "transparent_user_agent": True,
-                "request_budget": True,
-                "adaptive_backoff": True,
-                "resume_supported": True,
-                "target_data_modification": False,
-            },
-        }
+        payload = {"target": self.target, "coverage": self.state.coverage(), "severity_counts": self.severity_counts(), "directed_findings": self.directed_cards(), "findings": self.normalized_findings(), "parameters": [vars(item) for item in self.state.params.values()], "urls": [vars(item) for item in self.state.urls.values()], "tests": [vars(item) for item in self.state.tests.values()], "reports": self.extra_reports, "safety": {"same_scope_only": True, "transparent_user_agent": True, "request_budget": True, "adaptive_backoff": True, "resume_supported": True, "target_data_modification": False}}
         write_json(path, payload)
         return path
 
     def write_directed_findings_json(self) -> Path:
         path = self.out / "final-findings-dashboard.json"
-        payload = {
-            "target": self.target,
-            "coverage": self.state.coverage(),
-            "severity_counts": self.severity_counts(),
-            "findings_total": len(self.state.findings),
-            "dashboard_schema": "what_where_why_evidence_impact_fix",
-            "findings": self.directed_cards(),
-        }
+        payload = {"target": self.target, "coverage": self.state.coverage(), "severity_counts": self.severity_counts(), "findings_total": len(self.normalized_findings()), "dashboard_schema": "what_where_why_evidence_impact_fix", "findings": self.directed_cards()}
         write_json(path, payload)
         return path
 
@@ -175,65 +140,15 @@ class ReportingV2:
         cov = self.state.coverage()
         counts = self.severity_counts()
         cards = self.directed_cards()
-        lines = [
-            "# VulnScope Final Findings Dashboard",
-            "",
-            f"Target: `{self.target}`",
-            "",
-            "## Scan Coverage",
-            "",
-            f"- URLs completed: `{cov['urls_done']}/{cov['urls_total']}`",
-            f"- Parameters completed: `{cov['params_done']}/{cov['params_total']}`",
-            f"- Tests completed: `{cov['tests_done']}/{cov['tests_total']}`",
-            f"- Requests: `{cov['requests']}`",
-            f"- Timeouts: `{cov['timeouts']}`",
-            f"- Findings / review leads: `{cov['findings']}`",
-            "",
-            "## Severity Counts",
-            "",
-            f"`CRITICAL:{counts['CRITICAL']}` `HIGH:{counts['HIGH']}` `MEDIUM:{counts['MEDIUM']}` `LOW:{counts['LOW']}` `INFO:{counts['INFO']}`",
-            "",
-            "## Directed Finding Cards",
-            "",
-        ]
+        lines = ["# VulnScope Final Findings Dashboard", "", f"Target: `{self.target}`", "", "## Scan Coverage", "", f"- URLs completed: `{cov['urls_done']}/{cov['urls_total']}`", f"- Parameters completed: `{cov['params_done']}/{cov['params_total']}`", f"- Tests completed: `{cov['tests_done']}/{cov['tests_total']}`", f"- Requests: `{cov['requests']}`", f"- Timeouts: `{cov['timeouts']}`", f"- Findings / review leads: `{cov['findings']}`", "", "## Severity Counts", "", f"`CRITICAL:{counts['CRITICAL']}` `HIGH:{counts['HIGH']}` `MEDIUM:{counts['MEDIUM']}` `LOW:{counts['LOW']}` `INFO:{counts['INFO']}`", "", "## Directed Finding Cards", ""]
         if not cards:
-            lines += [
-                "No confirmed findings or review leads were generated in the selected safe scope.",
-                "",
-                "This does not prove the application is vulnerability-free. It only means VulnScope did not collect evidence strong enough to create a finding under the selected mode, scope, and request budget.",
-            ]
+            lines += ["No confirmed findings or review leads were generated in the selected safe scope.", "", "This does not prove the application is issue-free. It only means VulnScope did not collect evidence strong enough to create a finding under the selected mode, scope, and request budget."]
             return lines
         for card in cards:
-            lines += [
-                f"### Finding #{card['number']} — {card['severity']} — {card['status_bucket']}",
-                "",
-                f"**WHAT:** {card['what']}",
-                "",
-                f"**WHERE:** `{card['where']['url']}`",
-                f"- Request: `{card['where']['request']}`",
-                f"- Path: `{card['where']['path']}`",
-                f"- Parameter: `{card['where']['parameter']}`",
-                f"- Safe probe: `{card['where']['safe_probe']}`",
-                "",
-                f"**WHY THIS WAS FLAGGED:** {card['why']}",
-                "",
-                f"**IMPACT:** {card['impact']}",
-                "",
-                f"**SEVERITY / CONFIDENCE:** `{card['severity']}` with confidence `{card['confidence']}`. {card['severity_reason']}",
-                "",
-                "**SAFE VALIDATION STEPS:**",
-            ]
+            lines += [f"### Finding #{card['number']} — {card['severity']} — {card['status_bucket']}", "", f"**WHAT:** {card['what']}", "", f"**WHERE:** `{card['where']['url']}`", f"- Request: `{card['where']['request']}`", f"- Path: `{card['where']['path']}`", f"- Parameter: `{card['where']['parameter']}`", f"- Safe probe: `{card['where']['safe_probe']}`", "", f"**WHY THIS WAS FLAGGED:** {card['why']}", "", f"**IMPACT:** {card['impact']}", "", f"**SEVERITY / CONFIDENCE:** `{card['severity']}` with confidence `{card['confidence']}`. {card['severity_reason']}", "", "**SAFE VALIDATION STEPS:**"]
             for step in card["safe_validation"]:
                 lines.append(f"- {step}")
-            lines += [
-                "",
-                f"**FIX:** {card['fix']}",
-                "",
-                f"**NEXT SAFE ACTION:** {card['next_safe_action']}",
-                "",
-                "---",
-                "",
-            ]
+            lines += ["", f"**FIX:** {card['fix']}", "", f"**NEXT SAFE ACTION:** {card['next_safe_action']}", "", "---", ""]
         return lines
 
     def write_final_findings_dashboard_md(self) -> Path:
@@ -260,45 +175,14 @@ class ReportingV2:
         path = self.out / "autonomous-scan-report.md"
         cov = self.state.coverage()
         counts = self.severity_counts()
-        lines = [
-            "# VulnScope Autonomous Scan Report",
-            "",
-            f"Target: `{self.target}`",
-            "",
-            "## Coverage",
-            "",
-            f"- URLs: `{cov['urls_done']}/{cov['urls_total']}`",
-            f"- Parameters: `{cov['params_done']}/{cov['params_total']}`",
-            f"- Tests: `{cov['tests_done']}/{cov['tests_total']}`",
-            f"- Requests: `{cov['requests']}`",
-            f"- Timeouts: `{cov['timeouts']}`",
-            f"- Findings/leads: `{cov['findings']}`",
-            "",
-            "## Severity Summary",
-            "",
-        ]
+        lines = ["# VulnScope Autonomous Scan Report", "", f"Target: `{self.target}`", "", "## Coverage", "", f"- URLs: `{cov['urls_done']}/{cov['urls_total']}`", f"- Parameters: `{cov['params_done']}/{cov['params_total']}`", f"- Tests: `{cov['tests_done']}/{cov['tests_total']}`", f"- Requests: `{cov['requests']}`", f"- Timeouts: `{cov['timeouts']}`", f"- Findings/leads: `{cov['findings']}`", "", "## Severity Summary", ""]
         for key in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
             lines.append(f"- `{key}`: `{counts[key]}`")
         lines += ["", "## Final Directed Findings Dashboard", "", "Open `final-findings-dashboard.md` for the clean WHAT / WHERE / WHY / EVIDENCE / IMPACT / FIX view.", "", "## Findings and Review Leads", ""]
-        if not self.state.findings:
+        if not self.normalized_findings():
             lines.append("No confirmed findings or review leads were generated in the selected safe scope.")
         for card in self.directed_cards():
-            lines.extend([
-                f"### Finding #{card['number']} — {card['what']}",
-                f"- Status: `{card['status_bucket']}`",
-                f"- Severity: `{card['severity']}`",
-                f"- Confidence: `{card['confidence']}`",
-                f"- Category: `{card['category']}`",
-                f"- WHAT: {card['what']}",
-                f"- WHERE: `{card['where']['url']}`",
-                f"- REQUEST: `{card['where']['request']}`",
-                f"- PARAMETER: `{card['where']['parameter']}`",
-                f"- WHY: {card['why']}",
-                f"- IMPACT: {card['impact']}",
-                f"- FIX: {card['fix']}",
-                f"- NEXT SAFE ACTION: {card['next_safe_action']}",
-                "",
-            ])
+            lines.extend([f"### Finding #{card['number']} — {card['what']}", f"- Status: `{card['status_bucket']}`", f"- Severity: `{card['severity']}`", f"- Confidence: `{card['confidence']}`", f"- Category: `{card['category']}`", f"- WHAT: {card['what']}", f"- WHERE: `{card['where']['url']}`", f"- REQUEST: `{card['where']['request']}`", f"- PARAMETER: `{card['where']['parameter']}`", f"- WHY: {card['why']}", f"- IMPACT: {card['impact']}", f"- FIX: {card['fix']}", f"- NEXT SAFE ACTION: {card['next_safe_action']}", ""])
         lines += ["## Top Parameter Inventory", ""]
         for param in sorted(self.state.params.values(), key=lambda p: p.risk_score, reverse=True)[:100]:
             lines.append(f"- `{param.name}` kind=`{param.kind}` risk=`{param.risk_score}` status=`{param.status}` source=`{param.source}` url=`{param.url}`")
@@ -317,25 +201,29 @@ class ReportingV2:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             for card in self.directed_cards():
-                writer.writerow({
-                    "id": card["id"],
-                    "title": card["what"],
-                    "status": card["status_bucket"],
-                    "severity": card["severity"],
-                    "confidence": card["confidence"],
-                    "category": card["category"],
-                    "affected_url": card["where"]["url"],
-                    "parameter": card["where"]["parameter"],
-                    "evidence": card["why"],
-                    "impact": card["impact"],
-                    "recommendation": card["fix"],
-                    "next_safe_action": card["next_safe_action"],
-                })
+                writer.writerow({"id": card["id"], "title": card["what"], "status": card["status_bucket"], "severity": card["severity"], "confidence": card["confidence"], "category": card["category"], "affected_url": card["where"]["url"], "parameter": card["where"]["parameter"], "evidence": card["why"], "impact": card["impact"], "recommendation": card["fix"], "next_safe_action": card["next_safe_action"]})
         return path
 
     def write_parameter_inventory(self) -> Path:
         path = self.out / "parameter-inventory-v2.json"
         write_json(path, [vars(item) for item in self.state.params.values()])
+        return path
+
+    def write_defined_verdict_json(self) -> Path:
+        path = self.out / "defined-verdict.json"
+        write_json(path, self.verdict_payload())
+        return path
+
+    def write_defined_verdict_md(self) -> Path:
+        path = self.out / "defined-verdict.md"
+        verdict = self.verdict_payload()
+        lines = ["# Defined Verdict", "", f"Target: `{self.target}`", f"Verdict: `{verdict['verdict']}`", "", "## Counts", "", f"- Confirmed: `{verdict['confirmed_count']}`", f"- Review leads: `{verdict['review_lead_count']}`", f"- Informational: `{verdict['informational_count']}`", "", "## Blockers", ""]
+        if verdict["blockers"]:
+            for item in verdict["blockers"]:
+                lines.append("- " + item)
+        else:
+            lines.append("No verdict blockers were recorded.")
+        write_markdown(path, lines)
         return path
 
     def write_all(self) -> dict[str, str]:
@@ -344,15 +232,6 @@ class ReportingV2:
         final_dashboard_md = self.write_final_findings_dashboard_md()
         final_dashboard_json = self.write_directed_findings_json()
         final_dashboard_txt = self.write_final_findings_dashboard_txt()
-        return {
-            "autonomous_report_json": str(self.write_json_report()),
-            "autonomous_report_md": str(self.write_markdown_report()),
-            "final_findings_dashboard_md": str(final_dashboard_md),
-            "final_findings_dashboard_json": str(final_dashboard_json),
-            "final_findings_dashboard_txt": str(final_dashboard_txt),
-            "autonomous_findings_csv": str(self.write_csv_findings()),
-            "parameter_inventory_v2": str(self.write_parameter_inventory()),
-            "autonomous_state_json": str(self.state.path),
-            "autonomous_state_md": str(state_md),
-            **self.extra_reports,
-        }
+        verdict_json = self.write_defined_verdict_json()
+        verdict_md = self.write_defined_verdict_md()
+        return {"autonomous_report_json": str(self.write_json_report()), "autonomous_report_md": str(self.write_markdown_report()), "final_findings_dashboard_md": str(final_dashboard_md), "final_findings_dashboard_json": str(final_dashboard_json), "final_findings_dashboard_txt": str(final_dashboard_txt), "defined_verdict_json": str(verdict_json), "defined_verdict_md": str(verdict_md), "autonomous_findings_csv": str(self.write_csv_findings()), "parameter_inventory_v2": str(self.write_parameter_inventory()), "autonomous_state_json": str(self.state.path), "autonomous_state_md": str(state_md), **self.extra_reports}
