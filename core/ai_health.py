@@ -7,13 +7,27 @@ import time
 from pathlib import Path
 from typing import Any
 
-import ollama
+try:
+    import ollama  # type: ignore
+except Exception as exc:  # pragma: no cover - depends on local environment
+    ollama = None  # type: ignore
+    OLLAMA_IMPORT_ERROR = str(exc)
+else:
+    OLLAMA_IMPORT_ERROR = ""
 
 
 def ollama_health(*, host: str | None = None, model: str | None = None, write: bool = True) -> dict[str, Any]:
     host = (host or os.getenv("OLLAMA_HOST") or "http://192.168.199.1:11434").rstrip("/")
     model = model or os.getenv("VULNSCOPE_OLLAMA_MODEL") or "deepseek-local"
     payload: dict[str, Any] = {"ok": False, "host": host, "model": model, "available_models": [], "selected_model": model, "error": "", "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if ollama is None:
+        payload["error"] = "Python package 'ollama' is not installed. Install with: pip install ollama. Continuing is allowed only when --allow-ai-fallback is used."
+        payload["import_error"] = OLLAMA_IMPORT_ERROR
+        if write:
+            out = Path("logs/ai-health.json")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return payload
     try:
         client = ollama.Client(host=host)
         listed = client.list()
