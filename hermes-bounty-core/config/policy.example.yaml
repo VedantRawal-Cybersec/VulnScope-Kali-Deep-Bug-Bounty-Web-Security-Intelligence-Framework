@@ -1,0 +1,25 @@
+finding_policy:
+  allow_unverified_findings: false
+
+  require:
+    scope_confirmed: true
+    reproducible: true
+    independent_validation: true
+    control_test: true
+    request_evidence: true
+    response_evidence: true
+    affected_asset_confirmed: true
+    impact_confirmed: true
+    contradictory_evidence: false
+
+  reject_if:
+    scanner_only: true
+    llm_only: true
+    theoretical_only: true
+    non_reproducible: true
+    outside_scope: true
+
+planning:
+  prefer_unknown_coverage: true
+  deduplicate_equivalent_jobs: true
+  retain_negative_knowledge: true
