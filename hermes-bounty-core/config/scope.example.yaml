@@ -1,0 +1,12 @@
+scope:
+  allow:
+    - "app.example.invalid"
+    - "api.example.invalid"
+  deny:
+    - "status.example.invalid"
+
+limits:
+  max_requests_per_second: 5
+  follow_redirects_only_if_in_scope: true
+
+default_decision: deny
