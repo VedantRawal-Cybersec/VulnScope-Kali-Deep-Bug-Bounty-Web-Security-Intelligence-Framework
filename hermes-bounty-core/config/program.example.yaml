@@ -1,0 +1,23 @@
+program:
+  name: "Example Bug Bounty"
+  program_url: "https://example.invalid/program"
+  authorization_confirmed: false
+
+rules:
+  notes: []
+  prohibited:
+    - denial_of_service
+    - social_engineering
+    - destructive_data_modification
+  requires_human_approval:
+    - high_risk_state_change
+
+sessions:
+  - id: user_a
+    role: standard
+  - id: user_b
+    role: standard
+
+burp:
+  enabled: true
+  bridge: "http://127.0.0.1:8765/mcp"
